@@ -1,4 +1,6 @@
 /.env
-
 virtual-env
 /__pycache__
+*.xlsx
+*x.xls
+*.csv

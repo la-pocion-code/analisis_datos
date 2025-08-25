@@ -222,7 +222,8 @@ class ReportClass():
             'Asesor Comercial': 'first',
             'Origen': 'first',
             'Origen/Nombre de la Fuente': 'first',
-            'Tipo de cliente': 'first'
+            'Tipo de cliente': 'first',
+            'Etiqueta contacto': 'first'
 
         })
         # Paso 12: Eliminar la columna temporal NUMERO_FACTURA-PRODUCTO
@@ -306,7 +307,6 @@ class ReportClass():
         # Crear la columna 'total' con la lógica especificada
         df['Líneas de factura/Asociado/Ciudad'] = df['Líneas de factura/Asociado/Ciudad'].astype(str).fillna("Desconocido")
 
-        df.columns
 
         # # Paso 4: Eliminar registros que no corresponden a ventas de la poción
         # productos_a_eliminar = [
@@ -339,33 +339,47 @@ class ReportClass():
         # Esta linea mantiene solo los pruductos comerciales
         df_filtrado = df[df['Líneas de factura/Producto'].str.startswith(('[PCN','[KD','[TNG','[B8'))]   ###### linea modificada
         # Paso 6: Mostrar resumen
-        print("\nResumen del proceso:")
-        print(f"- Registros originales: {len(df)}")
-        print(f"- Registros después de filtrar: {len(df_filtrado)}")
-        print(f"- Registros eliminados: {len(df) - len(df_filtrado)}")
+      
         # '''# Paso 1: Agrupar por 'Líneas de factura/Número' y propagar el valor de 'Equipo de Ventas' hacia abajo
         # df_filtrado['Equipo de Ventas'] = df_filtrado.groupby('Líneas de factura/Número')['Equipo de Ventas'].transform(lambda x: x.ffill())
         # # Crear una copia explícita del DataFrame
         # df_filtrado = df_filtrado.copy()
+
+                # Guarda en la variables las ventas sin tipo de cliente y con etiqueta mayorista
+        etiqueta_mayorista = df_filtrado[(df_filtrado['Tipo de cliente'].isna())&
+                    (df_filtrado['Etiqueta contacto']=='MAYORISTA NV')
+                    ] 
+        # Copia de la etiqueta los clientes mayoristas que aparecen en blanco
+        df_filtrado.loc[(df_filtrado['Tipo de cliente'].isna())&
+                    (df_filtrado['Etiqueta contacto']=='MAYORISTA NV'), 'Tipo de cliente'
+                    ] = 'MAYORISTA NV'
 
         # # Paso 2: Verificar el resultado
         # print(df_filtrado[['Líneas de factura/Número', 'Equipo de Ventas']].head(20))  # Mostrar las primeras 20 filas para verificar'''
         equipo_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Equipo de Ventas'].first().to_dict()
 
         # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
-        df_filtrado['Equipo de Ventas'] = df['Líneas de factura/Número'].map(equipo_por_factura)
-        print(f"- Registros originales: {len(df_filtrado)}")
+        df_filtrado.loc[:,'Equipo de Ventas'] = df['Líneas de factura/Número'].map(equipo_por_factura)
+
         asesora_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Asesor Comercial'].first().to_dict()
 
         # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
         # df_filtrado['Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
         df_filtrado.loc[:, 'Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
 
-        print(f"- Registros originales: {len(df_filtrado)}")
+        asesora_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Tipo de cliente'].first().to_dict()
+
+        # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
+        # df_filtrado['Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
+        df_filtrado.loc[:, 'Tipo de cliente'] = df['Líneas de factura/Número'].map(asesora_por_factura)
+
+
+
+   
         # Ahora puedes modificar df_filtrado sin preocuparte por el warning
         df_filtrado.loc[:, 'Líneas de factura/Fecha de factura'] = pd.to_datetime(df_filtrado['Líneas de factura/Fecha de factura'])
         # df_filtrado['Líneas de factura/Fecha de factura'] = pd.to_datetime(df_filtrado['Líneas de factura/Fecha de factura'])
-        print(f"- Registros originales: {len(df_filtrado)}")
+    
         df_filtrado = df_filtrado.reset_index(drop=True)
         # Convertir la columna 'Líneas de factura/Total' a tipo numérico
         df_filtrado['Líneas de factura/Total'] = pd.to_numeric(df_filtrado['Líneas de factura/Total'], errors='coerce')
@@ -375,8 +389,7 @@ class ReportClass():
         # Paso 1: Verificar valores nulos en la columna de fecha
         print("Valores nulos en 'Líneas de factura/Fecha de factura':", df_filtrado['Líneas de factura/Fecha de factura'].isnull().sum())
         df_filtrado = df_filtrado.dropna(subset=['Líneas de factura/Fecha de factura'])
-        print(f"Valores nulos en fecha después de limpiar: {df_filtrado['Líneas de factura/Fecha de factura'].isna().sum()}")
-        print(f"- Registros originales: {len(df_filtrado)}")
+     
 
         #  Leer el CSV desde la URL
         url = "https://www.datos.gov.co/resource/32sa-8pi3.csv"
@@ -417,14 +430,13 @@ class ReportClass():
         df_TRM_expandido = df_TRM_expandido.sort_values('Fecha')
 
         # Verificar el nuevo DataFrame
-        print("Nuevo DataFrame TRM expandido:")
-        print(f"- Registros originales: {len(df_filtrado)}")
+     
+    
         df_filtrado['Líneas de factura/Fecha de factura'] = pd.to_datetime(df_filtrado['Líneas de factura/Fecha de factura'])
         df_TRM_expandido['Fecha'] = pd.to_datetime(df_TRM_expandido['Fecha'])
         df_filtrado = df_filtrado.sort_values(by='Líneas de factura/Fecha de factura')
         df_TRM_expandido = df_TRM_expandido.sort_values(by='Fecha')
-        print(f"- Registros originales: {len(df_filtrado)}")
-
+    
         # Intentar el merge_asof
         try:
             df_resultado = pd.merge_asof(
@@ -445,7 +457,7 @@ class ReportClass():
             import traceback
             traceback.print_exc()
             
-        print(f"- Registros originales: {len(df_resultado)}")
+   
 
         # # Limpiar y convertir la columna 'TRM'
         # df_resultado['TRM'] = (
@@ -456,31 +468,20 @@ class ReportClass():
         # )
 
         # Verificar los valores únicos después de la conversión
-        print("Valores únicos en 'TRM' después de la limpieza:", df_resultado['TRM'].unique())
-        print(f"- Registros originales: {len(df_resultado)}")
+ 
         # Crear la columna `total`
         df_resultado['total'] = df_resultado.apply(
             lambda row: row['Líneas de factura/Total'] if row['pais'] in ['CO', 'Desconocido'] else row['Líneas de factura/Total'] * row['TRM'],
             axis=1
         )
-        print(f"- Registros originales: {len(df_resultado)}")
-        ''''# Crear la columna `total`
-        df_resultado['subtotal_'] = df_resultado.apply(
-            lambda row: row['Subtotal'] if row['pais'] in ['CO', 'Desconocido'] else row['Subtotal'] * row['TRM'],
-            axis=1
-        )
-        print(f"- Registros originales: {len(df_resultado)}")'''
-        # Verificar el resultado
-        print("\nPrimeras filas del resultado:")
-        print(df_resultado[['Líneas de factura/Número', 'pais', 'Líneas de factura/Total', 'TRM', 'total']].head(10))
-        print(f"- Registros originales: {len(df_resultado)}")
+        
 
         ciudad_url = "https://www.datos.gov.co/resource/gdxc-w37w.csv?$limit=5000"
         DF_CIUDADES = pd.read_csv(ciudad_url)
         # DF_CIUDADES = pd.read_excel(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\CIUDAD.xlsx") # Dataset con nombres correctos
         DF_CIUDADES = DF_CIUDADES.rename(columns= {'nom_mpio':'Ciudad_Correcta'})
         df_resultado = df_resultado.rename(columns= {'Líneas de factura/Asociado/Ciudad':'Ciudad'})
-        print(f"- Registros originales: {len(df_resultado)}")
+       
         # 2️⃣ Definir los nombres de columnas
         col_ciudad_correcta = "Ciudad_Correcta"  # Nombre en DF_CIUDADES
         col_ciudad_ventas = "Ciudad"  # Nombre en DF_VENTAS
@@ -491,7 +492,7 @@ class ReportClass():
 
         # 4️⃣ Lista de ciudades correctas (convertidas a string)
         lista_ciudades_correctas = DF_CIUDADES[col_ciudad_correcta].astype(str).unique()
-        print(f"- Registros originales: {len(df_resultado)}")
+       
         # 5️⃣ Función para encontrar la mejor coincidencia
         def corregir_ciudad(ciudad_mal):
             if ciudad_mal.lower() == "nan" or ciudad_mal.strip() == "":
@@ -501,13 +502,12 @@ class ReportClass():
 
         # 5️⃣ Aplicar la función a la columna de ciudades en ventas
         df_resultado["Ciudad_Corregida"] = df_resultado[col_ciudad_ventas].apply(corregir_ciudad)
-        print(f"- Registros originales: {len(df_resultado)}")
-        # 6️⃣ Ver los resultados
-        df_resultado[[col_ciudad_ventas, "Ciudad_Corregida"]].head()
-        print(f"- Registros originales: {len(df_resultado)}")
+       
+   
+      
         # 6️⃣ Convertir la columna "Ciudad_Corregida" a mayúsculas
         df_resultado["Ciudad_Corregida"] = df_resultado["Ciudad_Corregida"].str.upper()
-        print(f"- Registros originales: {len(df_filtrado)}")
+       
         # Diccionario para renombrar las columnas
         nuevos_nombres = {
             'Líneas de factura/Fecha de factura': 'Fecha_Factura',
@@ -535,8 +535,7 @@ class ReportClass():
         df_resultado = df_resultado.rename(columns=nuevos_nombres)
 
         # Verificar el resultado
-        print(df_resultado.columns.tolist())
-        print(f"- Registros originales: {len(df_resultado)}")
+    
         # Extraer el día, mes y año en nuevas columnas
         df_resultado['Dia'] = df_resultado['Fecha_Factura'].dt.day
         df_resultado['Mes'] = df_resultado['Fecha_Factura'].dt.month
@@ -549,9 +548,8 @@ class ReportClass():
                         'Equipo_Ventas', 'Referencia', 'Asesor Comercial', 'Tipo de cliente']
         df_resultado = df_resultado[column_order]
 
-        # Mostrar las primeras filas del dataset para verificar los cambios
-        df_resultado.head()
-        print(f"- Registros originales: {len(df_resultado)}")
+  
+     
         # Convertir la columna "Cliente" a mayúsculas
         df_resultado['Cliente'] = df_resultado['Cliente'].str.upper()
 
@@ -564,10 +562,9 @@ class ReportClass():
         # Convertir los nombres de las columnas a mayúsculas
         df_resultado.columns = df_resultado.columns.str.upper()
 
-        df_resultado.head()
-        print(f"- Registros originales: {len(df_resultado)}")
+      
 
-        df_resultado.columns
+
 
 
 
@@ -606,7 +603,7 @@ class ReportClass():
         # )
         # print(f"Registros después del merge: {len(df_resultado)}")
 
-        df_resultado.columns
+    
 
         # # 3. Renombrar la columna "Etiquetas" a "Categoría"
         # df_resultado.rename(columns={'Etiquetas': 'CATEGORÍA'}, inplace=True)
@@ -623,7 +620,7 @@ class ReportClass():
 
         # Reorganizamos el DataFrame
         df_resultado = df_resultado[columnas]
-        print(f"- Registros originales: {len(df_resultado)}")
+    
         # Rellenar los valores NaN en "Categoría" cuando EQUIPO_VENTAS sea "Shopify"
         df_resultado.loc[(df_resultado['TIPO DE CLIENTE'].isna()) & (df_resultado['EQUIPO_VENTAS'] == 'Shopify'), 'TIPO DE CLIENTE'] = 'SHOPIFY'
         # Rellenar los valores NaN en "Categoría" cuando EQUIPO_VENTAS sea "Shopify"
@@ -632,18 +629,14 @@ class ReportClass():
       
         # df_resultado[df_resultado['CATEGORÍA'].isna()].to_excel(r"C:\Users\Dataa\Desktop\ventas_sin_categoria.xlsx")
 
-        # Mostrar las primeras filas para verificar los cambios
-        df_resultado[['IDENTIFICACION_CLIENTE', 'EQUIPO_VENTAS','TIPO DE CLIENTE']].head(10)
-        print(f"- Registros originales: {len(df_resultado)}")
         df_resultado.loc[~df_resultado['PAIS'].isin(['CO', 'Desconocido']), 'TIPO DE CLIENTE'] = df_resultado['PAIS']
 
 
         # Mostrar las primeras filas para verificar los cambios
-        print(df_resultado[['PAIS', 'TIPO DE CLIENTE']].head(10))
-        print(f"- Registros originales: {len(df_resultado)}")
+    
         # Rellenar los valores vacíos en "Categoría" con "Call center"
         df_resultado['TIPO DE CLIENTE'].fillna('CALL CENTER', inplace=True)
-        print(f"- Registros originales: {len(df_resultado)}")
+     
 
         # 9. Eliminar las columnas "REFERENCIA" y "Número de Identificación"
         # df_resultado.drop(columns=['Número de Identificación'], inplace=True)
@@ -658,7 +651,8 @@ class ReportClass():
         
         return  {'Base':df_resultado,
                 'nombre_archivo':notas_creditos['nombre_archivo'],
-                'facturas_afectadas':notas_creditos['facturas_afectadas']
+                'facturas_afectadas':notas_creditos['facturas_afectadas'],
+                'errores':etiqueta_mayorista
                  }
 
 
