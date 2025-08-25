@@ -1,0 +1,666 @@
+import pandas as pd
+from pathlib import Path
+import os 
+from thefuzz import process
+import pandas as pd
+import os
+import re
+import tkinter as tk
+from tkinter import filedialog
+
+
+
+
+class ReportClass():
+    """
+    Esta clase contiene las funciones que su utilizan para actulizar el bi
+    y las ventas procesadas.    
+    """
+
+
+
+
+
+    def consolidar_carpeta(self, extension='xlsx', sheet_name=None, ruta_carpeta=None):
+        """
+        Consolida archivos de una carpeta en un único DataFrame.
+
+        Esta función lee todos los archivos con una extensión específica de una
+        carpeta y los une en un solo DataFrame de pandas. La carpeta puede ser
+        especificada a través de un argumento o seleccionada interactivamente
+        mediante una ventana de diálogo.
+
+        Args:
+            extension (str, optional): La extensión de los archivos a consolidar.
+                Soporta 'xlsx', 'xls', 'xlsb' y 'csv'. Por defecto es 'xlsx'.
+            
+            sheet_name (str, int, list o None, optional): Especifica las hojas a leer
+                en archivos Excel.
+                - (default): Lee la primera hoja.
+                - 'NombreHoja': Lee la hoja con ese nombre.
+                - None: Lee todas las hojas del archivo y las concatena.
+                
+            ruta_carpeta (str, optional): La ruta a la carpeta que contiene los
+                archivos. Si es None (por defecto), se abrirá una ventana para
+                seleccionar la carpeta manualmente.
+
+        Returns:
+            pandas.DataFrame: Un DataFrame con los datos consolidados de todos los
+            archivos. Si no se selecciona una carpeta o no se encuentran archivos,
+            devuelve un DataFrame vacío.
+        """
+        carpeta_seleccionada = ''
+
+        if ruta_carpeta:
+            # Validamos que la ruta proporcionada (ya un string válido) sea un directorio real.
+            if os.path.isdir(ruta_carpeta):
+                carpeta_seleccionada = ruta_carpeta
+            else:
+                # Este es el manejo de error de ejecución que SÍ podemos programar.
+                print(f"Error: La ruta '{ruta_carpeta}' no existe o no es un directorio.")
+                print("Sugerencia: Verifique que la ruta esté bien escrita y, si usa Windows, "
+                    "que comience con 'r' (ej: r'C:\\...').")
+                return pd.DataFrame()     
+
+        else:
+            # Si no se proporciona una ruta, abrir el diálogo
+            root = tk.Tk()
+            root.withdraw()
+            carpeta_seleccionada = filedialog.askdirectory(
+                title="Selecciona la carpeta que contiene los archivos"
+            )
+
+        if not carpeta_seleccionada:
+            print("Operación cancelada. No se seleccionó ninguna carpeta.")
+            return pd.DataFrame()
+
+        lista_dataframes = []
+        print(f"Buscando archivos con extensión '.{extension}' en: {carpeta_seleccionada}")
+
+        for archivo in os.listdir(carpeta_seleccionada):
+            if archivo.endswith(f'.{extension}'):
+                ruta_completa = os.path.join(carpeta_seleccionada, archivo)
+                try:
+                    if extension in ['xlsx', 'xls', 'xlsb']:
+                        # pd.read_excel puede devolver un DataFrame o un dict de DataFrames
+                        df_o_dict = pd.read_excel(ruta_completa, sheet_name=sheet_name)
+                        
+                        if isinstance(df_o_dict, dict):
+                            # Si es un diccionario, concatenar todas las hojas de ese archivo
+                            df_archivo = pd.concat(df_o_dict.values(), ignore_index=True)
+                            lista_dataframes.append(df_archivo)
+                        else:
+                            # Si es un solo DataFrame
+                            lista_dataframes.append(df_o_dict)
+                            
+                    elif extension == 'csv':
+                        df = pd.read_csv(ruta_completa)
+                        lista_dataframes.append(df)
+
+                    print(f"  - Archivo '{archivo}' leído correctamente.")
+
+                except Exception as e:
+                    print(f"  - No se pudo leer el archivo '{archivo}'. Error: {e}")
+
+        if not lista_dataframes:
+            print(f"No se encontraron archivos válidos con la extensión '.{extension}' en la carpeta.")
+            return pd.DataFrame()
+
+        print("Concatenando todos los archivos...")
+        df_concatenado = pd.concat(lista_dataframes, ignore_index=True)
+        print("¡Consolidación completada!")
+        
+        return df_concatenado
+
+
+
+
+    def validar_ruta(self):
+        """
+        Esta funcion se encarga de validar la ruta donde se guardara la información local
+        """
+        if Path("E:/Otros ordenadores/Mi portátil/VENTA MENSUAL").exists():
+            ruta = Path("E:/Otros ordenadores/Mi portátil/VENTA MENSUAL")
+        elif Path("G:/Otros ordenadores/Mi portátil/VENTA MENSUAL").exists():
+            ruta = Path("G:/Otros ordenadores/Mi portátil/VENTA MENSUAL")
+        elif Path("C:/Users/Dataa/Desktop/VENTAS/VENTA MENSUAL").exists():
+            ruta = Path("C:/Users/Dataa/Desktop/VENTAS/VENTA MENSUAL")
+        else:
+            print('No se encontro la ruta')
+
+        return ruta
+
+
+
+
+    def notas_creditos(self):
+
+        """
+        Esta funcion procesa las ventas descargadas de odoo y descuentas la notas crédito
+        al ejecutarce se deben seleccionar los archivos correspondientes.
+        """
+
+        # Ocultar la ventana principal de tkinter
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes('-topmost', True)
+
+        # Paso 1: Seleccionar el archivo de ventas
+        nombre_archivo_ventas = filedialog.askopenfilename(
+            title="Selecciona el archivo de ventas (.xlsx)",
+            filetypes=[("Archivos de Excel", "*.xlsx")]
+        )
+
+        # Verificar si se seleccionó un archivo
+        if not nombre_archivo_ventas:
+            print("No se seleccionó el archivo de ventas.")
+            exit()
+
+        # Paso 2: Cargar el archivo de ventas
+        try:
+            df_ventas = pd.read_excel(nombre_archivo_ventas)
+            print(f"Archivo de ventas '{os.path.basename(nombre_archivo_ventas)}' cargado correctamente.")
+        except Exception as e:
+            print(f"Error al cargar el archivo de ventas: {e}")
+            exit()
+
+        # Paso 3: Seleccionar el archivo de notas crédito
+        nombre_archivo_notas_credito = filedialog.askopenfilename(
+            title="Selecciona el archivo de notas crédito (.xlsx)",
+            filetypes=[("Archivos de Excel", "*.xlsx")]
+        )
+
+        # Verificar si se seleccionó un archivo
+        if not nombre_archivo_notas_credito:
+            print("No se seleccionó el archivo de notas crédito.")
+            exit()
+
+        # Paso 4: Cargar el archivo de notas crédito
+        try:
+            df_notas_credito = pd.read_excel(nombre_archivo_notas_credito)
+            print(f"Archivo de notas crédito '{os.path.basename(nombre_archivo_notas_credito)}' cargado correctamente.")
+        except Exception as e:
+            print(f"Error al cargar el archivo de notas crédito: {e}")
+            exit()
+
+        # Paso 5: Extraer el número de factura de la columna "Referencia" en las notas crédito
+        df_notas_credito['NUMERO_FACTURA'] = df_notas_credito['Líneas de factura/Referencia'].apply(
+            lambda x: re.search(r'(FEVY\d+)', x).group(1) if pd.notna(x) and re.search(r'(FEVY\d+)', x) else None
+        )
+        df_notas_credito = df_notas_credito.drop(columns=['Líneas de factura/Número'])
+        df_notas_credito = df_notas_credito.rename(columns={'NUMERO_FACTURA': 'Líneas de factura/Número'})
+        # Paso 6: Convertir las cantidades y totales de las notas crédito a valores negativos
+        df_notas_credito['Líneas de factura/Cantidad'] = -df_notas_credito['Líneas de factura/Cantidad']
+        df_notas_credito['Líneas de factura/Total'] = -df_notas_credito['Líneas de factura/Total']
+        # Paso 8: Crear una columna temporal que combine NUMERO_FACTURA y PRODUCTO
+        df_ventas['NUMERO_FACTURA-PRODUCTO'] = df_ventas['Líneas de factura/Número'] + '-' + df_ventas['Líneas de factura/Producto']
+        df_notas_credito['NUMERO_FACTURA-PRODUCTO'] = df_notas_credito['Líneas de factura/Número'] + '-' + df_notas_credito['Líneas de factura/Producto']
+        # Paso 9: Filtrar las notas crédito para incluir solo las que coinciden con ventas existentes
+        notas_credito_validas = df_notas_credito['NUMERO_FACTURA-PRODUCTO'].isin(df_ventas['NUMERO_FACTURA-PRODUCTO'])
+        df_notas_credito_filtrado = df_notas_credito[notas_credito_validas]
+        # Paso 8: Combinar ambos datasets (ventas y notas crédito)
+        df_consolidado = pd.concat([df_ventas, df_notas_credito_filtrado], ignore_index=True)
+        # Paso 10: Agrupar por la columna temporal NUMERO_FACTURA-PRODUCTO
+        df_consolidado = df_consolidado.groupby(
+            'NUMERO_FACTURA-PRODUCTO',  # Agrupar por la combinación de factura y producto
+            as_index=False
+        ).agg({
+            'Líneas de factura/Fecha de factura': 'first',
+            'Líneas de factura/Asociado': 'first',
+            'Líneas de factura/Número': 'first',
+            'Líneas de factura/Producto': 'first',
+            'Líneas de factura/Cantidad': 'sum',  # Sumar las cantidades
+            'Líneas de factura/Total': 'sum',     # Sumar los totales
+            'Líneas de factura/Moneda/Tasa actual': 'first',
+            'Líneas de factura/Asociado/Número de Identificación': 'first',
+            'Líneas de factura/Asociado/Teléfono': 'first',
+            'Líneas de factura/Asociado/Correo electrónico': 'first',
+            'Líneas de factura/Asociado/Ciudad': 'first',
+            'Líneas de factura/Asociado/Estado': 'first',
+            'Equipo de Ventas': 'first',
+            'Líneas de factura/Referencia': 'first',
+            'Asesor Comercial': 'first',
+            'Origen': 'first',
+            'Origen/Nombre de la Fuente': 'first',
+            'Tipo de cliente': 'first'
+
+        })
+        # Paso 12: Eliminar la columna temporal NUMERO_FACTURA-PRODUCTO
+        df_consolidado.drop(columns=['NUMERO_FACTURA-PRODUCTO'], inplace=True)
+        # Paso 13: Filtrar solo las filas donde la cantidad sea mayor que 0 (eliminar ventas canceladas)
+        df_consolidado = df_consolidado[df_consolidado['Líneas de factura/Cantidad'] > 0]
+        # Paso 14: Generar el nombre del archivo de salida
+        nombre_archivo_salida = os.path.splitext(nombre_archivo_ventas)[0] + "_procesado.xlsx"
+
+        # Paso 15: Guardar el archivo consolidado
+        try:
+            df_consolidado.to_excel(nombre_archivo_salida, index=False)
+            print(f"Archivo consolidado guardado como '{nombre_archivo_salida}'.")
+        except Exception as e:
+            print(f"Error al guardar el archivo consolidado: {e}")
+
+        # Paso 16: Obtener el listado de facturas afectadas por notas crédito
+        facturas_afectadas = df_notas_credito_filtrado[['Líneas de factura/Número', 'Líneas de factura/Producto', 'Líneas de factura/Cantidad', 'Líneas de factura/Total']].dropna(subset=['Líneas de factura/Número'])
+
+        # Paso 17: Mostrar el listado de facturas afectadas
+        print("Facturas afectadas por notas crédito:")
+        print(facturas_afectadas.shape)
+
+        # ruta = self.validar_ruta()
+        # Paso 18: Guardar el listado de facturas afectadas en un archivo Excel (opcional)
+        nombre_archivo_facturas_afectadas = os.path.splitext(nombre_archivo_ventas)[0] + "_facturas_afectadas.xlsx"
+        try:
+            facturas_afectadas.to_excel(nombre_archivo_facturas_afectadas, index=False)
+            print(f"Listado de facturas afectadas guardado como '{nombre_archivo_facturas_afectadas}'.")
+        except Exception as e:
+            print(f"Error al guardar el listado de facturas afectadas: {e}")
+
+        return {'archivo_salida': df_consolidado,
+                'nombre_archivo':nombre_archivo_salida,
+                'facturas_afectadas' :facturas_afectadas}
+    
+
+    def transformar_base(self, origen=False):
+        """
+        Esta funcion transforma la base de ventas deajano el archivo de ventas limpio,
+        este toma tres archivos excel de deben estar actualizados al momento de la 
+        ejecucion, TRM (web scrapping), CIUDAD.xlsx, BD_clientes. 
+
+        arg: origen[Flase] = Si desea ejecutar notas crédito use True
+        
+        """
+
+     
+        if origen:
+            notas_creditos = self.notas_creditos()
+            nombre_archivo = notas_creditos['nombre_archivo']
+            df = notas_creditos['archivo_salida']
+        else:
+            # Ocultar la ventana principal de tkinter
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            # Paso 1: Seleccionar el archivo de ventas
+            nombre_archivo_ventas = filedialog.askopenfilename(
+                title="Por favor, ingresa el nombre del archivo de ventas (incluye la extensión .xlsx): ",
+                filetypes=[("Archivos de Excel", "*.xlsx")]
+            )
+
+            # Verificar si se seleccionó un archivo
+            if not nombre_archivo_ventas:
+                print("No se seleccionó el archivo.")
+                exit()
+
+            # Paso 2: Cargar el archivo de ventas
+            try:
+                df = pd.read_excel(nombre_archivo_ventas)
+                nombre_archivo = os.path.basename(nombre_archivo_ventas)
+                print(f"Archivo  '{nombre_archivo}' cargado correctamente.")
+            except Exception as e:
+                print(f"Error al cargar el archivo: {e}")
+                exit()
+
+        # Extraer el código de país y reemplazar NaN con "Desconocido" en un solo paso
+        df['pais'] = df['Líneas de factura/Asociado/Estado'].str.extract(r'\(([A-Z]{2})\)').fillna("Desconocido")
+
+        # Crear la columna 'total' con la lógica especificada
+        df['Líneas de factura/Asociado/Ciudad'] = df['Líneas de factura/Asociado/Ciudad'].astype(str).fillna("Desconocido")
+
+        df.columns
+
+        # # Paso 4: Eliminar registros que no corresponden a ventas de la poción
+        # productos_a_eliminar = [
+        #     '[FLETEGRAV19] FLETE GRAVADO IVA 19% (en ventas)',
+        #     '[ALOJAMIENTO] SERV. ALOJAMIENTO',
+        #     '[reintegro] Reintegro de costos y gastos',
+        #     '[BKRAFT4] Bolsa de Papel Kraft Boutique 4',
+        #     '[PLEGP] CAJAS PLEGADIZAS POCION',
+        #     '[SCHT05] SACHET MSC ANCESTRAL 15 ML',
+        #     '[MAE20] Laminado Sachet Shampoo La Pocion 60ml',
+        #     '[SERVICIO ALOJAMIENTO EXTERIOR] SERVICIO ALOJAMIENTO EXTERIOR',
+        #     '[ACTIVOF] VENTA ACTIVO FIJO',
+        #     '[EXP01] FLETE INTERNACIONAL EXP',
+        #     '[EXP02] SEGURO INTERNACIONAL EXP',
+        #     '[MPE02] ENVASE PET MILK X 440 ML',
+        #     '[FLETE NG] FLETE NG',
+        #     '[EXP02] SEGURO INTERNACIONAL EXP',
+        #     '[EXP01] FLETE INTERNACIONAL EXP',
+        #     '[EXP01] Flete Internacional EXP',
+        #     '[EXP02] Seguro Internacional EXP',
+        #     '[MPE02] ENVASE PET MILK X 440 ML',
+        #     '[ARRENDAMIENTO INMUEBLE GRAVADO 19%] ARRENDAMIENTO INMUEBLE GRAVADO 19%' ## preguntar si se elimina
+            
+        # ]
+
+
+        # df_filtrado = df[~df['Líneas de factura/Producto'].isin(productos_a_eliminar)]
+
+
+        # Esta linea mantiene solo los pruductos comerciales
+        df_filtrado = df[df['Líneas de factura/Producto'].str.startswith(('[PCN','[KD','[TNG','[B8'))]   ###### linea modificada
+        # Paso 6: Mostrar resumen
+        print("\nResumen del proceso:")
+        print(f"- Registros originales: {len(df)}")
+        print(f"- Registros después de filtrar: {len(df_filtrado)}")
+        print(f"- Registros eliminados: {len(df) - len(df_filtrado)}")
+        # '''# Paso 1: Agrupar por 'Líneas de factura/Número' y propagar el valor de 'Equipo de Ventas' hacia abajo
+        # df_filtrado['Equipo de Ventas'] = df_filtrado.groupby('Líneas de factura/Número')['Equipo de Ventas'].transform(lambda x: x.ffill())
+        # # Crear una copia explícita del DataFrame
+        # df_filtrado = df_filtrado.copy()
+
+        # # Paso 2: Verificar el resultado
+        # print(df_filtrado[['Líneas de factura/Número', 'Equipo de Ventas']].head(20))  # Mostrar las primeras 20 filas para verificar'''
+        equipo_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Equipo de Ventas'].first().to_dict()
+
+        # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
+        df_filtrado['Equipo de Ventas'] = df['Líneas de factura/Número'].map(equipo_por_factura)
+        print(f"- Registros originales: {len(df_filtrado)}")
+        asesora_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Asesor Comercial'].first().to_dict()
+
+        # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
+        # df_filtrado['Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
+        df_filtrado.loc[:, 'Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
+
+        print(f"- Registros originales: {len(df_filtrado)}")
+        # Ahora puedes modificar df_filtrado sin preocuparte por el warning
+        df_filtrado.loc[:, 'Líneas de factura/Fecha de factura'] = pd.to_datetime(df_filtrado['Líneas de factura/Fecha de factura'])
+        # df_filtrado['Líneas de factura/Fecha de factura'] = pd.to_datetime(df_filtrado['Líneas de factura/Fecha de factura'])
+        print(f"- Registros originales: {len(df_filtrado)}")
+        df_filtrado = df_filtrado.reset_index(drop=True)
+        # Convertir la columna 'Líneas de factura/Total' a tipo numérico
+        df_filtrado['Líneas de factura/Total'] = pd.to_numeric(df_filtrado['Líneas de factura/Total'], errors='coerce')
+        # df_filtrado.loc['', 'Líneas de factura/Total'] = pd.to_numeric(df_filtrado['Líneas de factura/Total'], errors='coerce')
+        # Verificar si hay valores nulos después de la conversión
+        print("Valores nulos en 'Líneas de factura/Total':", df_filtrado['Líneas de factura/Total'].isnull().sum())
+        # Paso 1: Verificar valores nulos en la columna de fecha
+        print("Valores nulos en 'Líneas de factura/Fecha de factura':", df_filtrado['Líneas de factura/Fecha de factura'].isnull().sum())
+        df_filtrado = df_filtrado.dropna(subset=['Líneas de factura/Fecha de factura'])
+        print(f"Valores nulos en fecha después de limpiar: {df_filtrado['Líneas de factura/Fecha de factura'].isna().sum()}")
+        print(f"- Registros originales: {len(df_filtrado)}")
+
+        #  Leer el CSV desde la URL
+        url = "https://www.datos.gov.co/resource/32sa-8pi3.csv"
+        df_TRM = pd.read_csv(url)
+
+        #  Cambiar tipos de datos
+        df_TRM['valor'] = pd.to_numeric(df_TRM['valor'], errors='coerce')
+        df_TRM['unidad'] = df_TRM['unidad'].astype(str)
+        df_TRM['vigenciadesde'] = pd.to_datetime(df_TRM['vigenciadesde'], errors='coerce')
+        df_TRM['vigenciahasta'] = pd.to_datetime(df_TRM['vigenciahasta'], errors='coerce')
+
+        #  Crear una nueva columna con el año de 'vigenciadesde'
+        df_TRM['Año'] = df_TRM['vigenciadesde'].dt.year
+
+        #  Filtrar por el año 2025
+        today = pd.to_datetime('now')
+        df_TRM = df_TRM[df_TRM['Año'] == today.year]
+        df_TRM['TRM'] = df_TRM['valor']
+
+        # df_TRM = pd.read_excel(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\TRM.xlsx")
+
+        # Crear una lista para almacenar las filas expandidas
+        expanded_rows = []
+
+        # Iterar sobre cada fila de df_TRM y generar las fechas dentro del rango de vigencia
+        for _, row in df_TRM.iterrows():
+            date_range = pd.date_range(start=row['vigenciadesde'], end=row['vigenciahasta'], freq='D')
+            for date in date_range:
+                expanded_rows.append({'Fecha': date, 'TRM': row['TRM']})
+
+        # Crear un nuevo DataFrame a partir de la lista
+        df_TRM_expandido = pd.DataFrame(expanded_rows)
+
+        # Eliminar duplicados (si los hay)
+        df_TRM_expandido = df_TRM_expandido.drop_duplicates(subset=['Fecha'])
+
+        # Ordenar por fecha
+        df_TRM_expandido = df_TRM_expandido.sort_values('Fecha')
+
+        # Verificar el nuevo DataFrame
+        print("Nuevo DataFrame TRM expandido:")
+        print(f"- Registros originales: {len(df_filtrado)}")
+        df_filtrado['Líneas de factura/Fecha de factura'] = pd.to_datetime(df_filtrado['Líneas de factura/Fecha de factura'])
+        df_TRM_expandido['Fecha'] = pd.to_datetime(df_TRM_expandido['Fecha'])
+        df_filtrado = df_filtrado.sort_values(by='Líneas de factura/Fecha de factura')
+        df_TRM_expandido = df_TRM_expandido.sort_values(by='Fecha')
+        print(f"- Registros originales: {len(df_filtrado)}")
+
+        # Intentar el merge_asof
+        try:
+            df_resultado = pd.merge_asof(
+                df_filtrado,
+                df_TRM_expandido[['Fecha', 'TRM']],  # Mantener solo las columnas necesarias
+                left_on='Líneas de factura/Fecha de factura',
+                right_on='Fecha',
+                direction='backward'  # Tomar la TRM vigente más reciente anterior o igual a la fecha
+            )
+            
+            # Verificar si la columna TRM está vacía
+            if df_resultado['TRM'].isnull().all():
+                print("Advertencia: La columna TRM está vacía después del merge. Verifica las fechas y los datos.")
+            else:
+                print("Merge completado correctamente.")
+        except Exception as e:
+            print(f"Error al realizar el merge: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
+        print(f"- Registros originales: {len(df_resultado)}")
+
+        # # Limpiar y convertir la columna 'TRM'
+        # df_resultado['TRM'] = (
+        #     df_resultado['TRM']
+        #     .str.replace('.', '', regex=False)  # Eliminar puntos (separadores de miles)
+        #     .str.replace(',', '.', regex=False)  # Reemplazar comas por puntos (separadores decimales)
+        #     .astype(float)  # Convertir a tipo numérico
+        # )
+
+        # Verificar los valores únicos después de la conversión
+        print("Valores únicos en 'TRM' después de la limpieza:", df_resultado['TRM'].unique())
+        print(f"- Registros originales: {len(df_resultado)}")
+        # Crear la columna `total`
+        df_resultado['total'] = df_resultado.apply(
+            lambda row: row['Líneas de factura/Total'] if row['pais'] in ['CO', 'Desconocido'] else row['Líneas de factura/Total'] * row['TRM'],
+            axis=1
+        )
+        print(f"- Registros originales: {len(df_resultado)}")
+        ''''# Crear la columna `total`
+        df_resultado['subtotal_'] = df_resultado.apply(
+            lambda row: row['Subtotal'] if row['pais'] in ['CO', 'Desconocido'] else row['Subtotal'] * row['TRM'],
+            axis=1
+        )
+        print(f"- Registros originales: {len(df_resultado)}")'''
+        # Verificar el resultado
+        print("\nPrimeras filas del resultado:")
+        print(df_resultado[['Líneas de factura/Número', 'pais', 'Líneas de factura/Total', 'TRM', 'total']].head(10))
+        print(f"- Registros originales: {len(df_resultado)}")
+
+        ciudad_url = "https://www.datos.gov.co/resource/gdxc-w37w.csv?$limit=5000"
+        DF_CIUDADES = pd.read_csv(ciudad_url)
+        # DF_CIUDADES = pd.read_excel(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\CIUDAD.xlsx") # Dataset con nombres correctos
+        DF_CIUDADES = DF_CIUDADES.rename(columns= {'nom_mpio':'Ciudad_Correcta'})
+        df_resultado = df_resultado.rename(columns= {'Líneas de factura/Asociado/Ciudad':'Ciudad'})
+        print(f"- Registros originales: {len(df_resultado)}")
+        # 2️⃣ Definir los nombres de columnas
+        col_ciudad_correcta = "Ciudad_Correcta"  # Nombre en DF_CIUDADES
+        col_ciudad_ventas = "Ciudad"  # Nombre en DF_VENTAS
+
+        # 3️⃣ Convertir todas las ciudades a string y manejar NaN
+        df_resultado[col_ciudad_ventas] = df_resultado[col_ciudad_ventas].astype(str).fillna("Desconocido")
+
+
+        # 4️⃣ Lista de ciudades correctas (convertidas a string)
+        lista_ciudades_correctas = DF_CIUDADES[col_ciudad_correcta].astype(str).unique()
+        print(f"- Registros originales: {len(df_resultado)}")
+        # 5️⃣ Función para encontrar la mejor coincidencia
+        def corregir_ciudad(ciudad_mal):
+            if ciudad_mal.lower() == "nan" or ciudad_mal.strip() == "":
+                return "Desconocido"  # Manejar valores vacíos o NaN
+            mejor_match, score = process.extractOne(ciudad_mal, lista_ciudades_correctas)
+            return mejor_match if score >= 60 else ciudad_mal  # Si el match es bajo, dejar el original
+
+        # 5️⃣ Aplicar la función a la columna de ciudades en ventas
+        df_resultado["Ciudad_Corregida"] = df_resultado[col_ciudad_ventas].apply(corregir_ciudad)
+        print(f"- Registros originales: {len(df_resultado)}")
+        # 6️⃣ Ver los resultados
+        df_resultado[[col_ciudad_ventas, "Ciudad_Corregida"]].head()
+        print(f"- Registros originales: {len(df_resultado)}")
+        # 6️⃣ Convertir la columna "Ciudad_Corregida" a mayúsculas
+        df_resultado["Ciudad_Corregida"] = df_resultado["Ciudad_Corregida"].str.upper()
+        print(f"- Registros originales: {len(df_filtrado)}")
+        # Diccionario para renombrar las columnas
+        nuevos_nombres = {
+            'Líneas de factura/Fecha de factura': 'Fecha_Factura',
+            'Líneas de factura/Asociado': 'Cliente',
+            'Líneas de factura/Número': 'Numero_Factura',
+            'Líneas de factura/Producto': 'Producto',
+            'Líneas de factura/Cantidad': 'Cantidad',
+            'Líneas de factura/Total': 'Total',
+            'Líneas de factura/Moneda/Tasa actual': 'Tasa_Cambio',
+            'Líneas de factura/Asociado/Número de Identificación': 'Identificacion_Cliente',
+            'Líneas de factura/Asociado/Teléfono': 'Telefono',
+            'Líneas de factura/Asociado/Correo electrónico': 'Email',
+            'Ciudad': 'Ciudad',
+            'Líneas de factura/Asociado/Estado': 'Departamento',
+            'Equipo de Ventas': 'Equipo_Ventas',
+            'Líneas de factura/Referencia': 'Referencia',
+            'pais': 'Pais',
+            'Fecha': 'Fecha_TRM',
+            'TRM': 'TRM',
+            'total': 'Total($)',
+            'Ciudad_Corregida': 'Ciudad_Corregida'
+        }
+
+        # Renombrar las columnas
+        df_resultado = df_resultado.rename(columns=nuevos_nombres)
+
+        # Verificar el resultado
+        print(df_resultado.columns.tolist())
+        print(f"- Registros originales: {len(df_resultado)}")
+        # Extraer el día, mes y año en nuevas columnas
+        df_resultado['Dia'] = df_resultado['Fecha_Factura'].dt.day
+        df_resultado['Mes'] = df_resultado['Fecha_Factura'].dt.month
+        df_resultado['Año'] = df_resultado['Fecha_Factura'].dt.year
+
+
+        # Reorganizar las columnas si es necesario
+        column_order = ['Numero_Factura','Fecha_Factura', 'Dia', 'Mes', 'Año', 'Cliente','Identificacion_Cliente','Producto', 'Cantidad', 
+                        'Total', 'Tasa_Cambio','TRM', 'Total($)','Telefono', 'Email','Pais','Ciudad', 'Ciudad_Corregida', 'Departamento', 
+                        'Equipo_Ventas', 'Referencia', 'Asesor Comercial', 'Tipo de cliente']
+        df_resultado = df_resultado[column_order]
+
+        # Mostrar las primeras filas del dataset para verificar los cambios
+        df_resultado.head()
+        print(f"- Registros originales: {len(df_resultado)}")
+        # Convertir la columna "Cliente" a mayúsculas
+        df_resultado['Cliente'] = df_resultado['Cliente'].str.upper()
+
+        # Eliminar espacios en blanco al principio y al final de cada valor en la columna "Cliente"
+        df_resultado['Cliente'] = df_resultado['Cliente'].str.strip()
+        # Convertir la columna "Producto" a mayúsculas
+        df_resultado['Producto'] = df_resultado['Producto'].str.upper()
+        # Eliminar espacios en blanco al principio y al final de cada valor en la columna "Producto"
+        df_resultado['Producto'] = df_resultado['Producto'].str.strip()
+        # Convertir los nombres de las columnas a mayúsculas
+        df_resultado.columns = df_resultado.columns.str.upper()
+
+        df_resultado.head()
+        print(f"- Registros originales: {len(df_resultado)}")
+
+        df_resultado.columns
+
+
+
+        # # 1. Cargar el dataset BD_CLIENTES
+        # BD_CLIENTES = pd.read_excel(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\BD_CLIENTES.xlsx")
+
+        # 2. Limpieza de la columna de identificación en ambos DataFrames
+        # Limpieza en tu DataFrame actual
+        df_resultado['IDENTIFICACION_CLIENTE'] = (
+            df_resultado['IDENTIFICACION_CLIENTE']
+            .astype(str)  # Convertir a string
+            .str.strip()  # Eliminar espacios al principio y al final
+            .str.replace(r'\s+', '', regex=True)  # Eliminar espacios adicionales entre caracteres
+        )
+        # # Limpieza en BD_CLIENTES
+        # BD_CLIENTES['Número de Identificación'] = (
+        #     BD_CLIENTES['Número de Identificación']
+        #     .astype(str)  # Convertir a string
+        #     .str.strip()  # Eliminar espacios al principio y al final
+        #     .str.replace(r'\s+', '', regex=True)  # Eliminar espacios adicionales entre caracteres
+        # )
+        # print(f"- Registros originales: {len(df_resultado)}")
+        # duplicados = BD_CLIENTES['Número de Identificación'].duplicated(keep=False)
+        # print(BD_CLIENTES[duplicados])
+        # BD_CLIENTES = BD_CLIENTES.drop_duplicates(subset=['Número de Identificación'], keep='first')
+        # print(f"Registros originales: {len(df_resultado)}")
+
+
+
+        # df_resultado = pd.merge(
+        #     df_resultado,
+        #     BD_CLIENTES[['Número de Identificación', 'Etiquetas']],
+        #     left_on='IDENTIFICACION_CLIENTE',
+        #     right_on='Número de Identificación',
+        #     how='left'
+        # )
+        # print(f"Registros después del merge: {len(df_resultado)}")
+
+        df_resultado.columns
+
+        # # 3. Renombrar la columna "Etiquetas" a "Categoría"
+        # df_resultado.rename(columns={'Etiquetas': 'CATEGORÍA'}, inplace=True)
+
+        # 4. Ubicar la columna "Categoría" antes de "Producto"
+        # Primero, obtenemos la lista de columnas
+        columnas = df_resultado.columns.tolist()
+
+        # Encontramos la posición de la columna "Producto"
+        posicion_producto = columnas.index('PRODUCTO')
+
+        # Movemos "Categoría" antes de "Producto"
+        columnas.insert(posicion_producto, columnas.pop(columnas.index('TIPO DE CLIENTE')))
+
+        # Reorganizamos el DataFrame
+        df_resultado = df_resultado[columnas]
+        print(f"- Registros originales: {len(df_resultado)}")
+        # Rellenar los valores NaN en "Categoría" cuando EQUIPO_VENTAS sea "Shopify"
+        df_resultado.loc[(df_resultado['TIPO DE CLIENTE'].isna()) & (df_resultado['EQUIPO_VENTAS'] == 'Shopify'), 'TIPO DE CLIENTE'] = 'SHOPIFY'
+        # Rellenar los valores NaN en "Categoría" cuando EQUIPO_VENTAS sea "Shopify"
+        df_resultado.loc[df_resultado['EQUIPO_VENTAS'] == 'Punto de venta', 'TIPO DE CLIENTE'] = 'CALL CENTER'
+
+      
+        # df_resultado[df_resultado['CATEGORÍA'].isna()].to_excel(r"C:\Users\Dataa\Desktop\ventas_sin_categoria.xlsx")
+
+        # Mostrar las primeras filas para verificar los cambios
+        df_resultado[['IDENTIFICACION_CLIENTE', 'EQUIPO_VENTAS','TIPO DE CLIENTE']].head(10)
+        print(f"- Registros originales: {len(df_resultado)}")
+        df_resultado.loc[~df_resultado['PAIS'].isin(['CO', 'Desconocido']), 'TIPO DE CLIENTE'] = df_resultado['PAIS']
+
+
+        # Mostrar las primeras filas para verificar los cambios
+        print(df_resultado[['PAIS', 'TIPO DE CLIENTE']].head(10))
+        print(f"- Registros originales: {len(df_resultado)}")
+        # Rellenar los valores vacíos en "Categoría" con "Call center"
+        df_resultado['TIPO DE CLIENTE'].fillna('CALL CENTER', inplace=True)
+        print(f"- Registros originales: {len(df_resultado)}")
+
+        # 9. Eliminar las columnas "REFERENCIA" y "Número de Identificación"
+        # df_resultado.drop(columns=['Número de Identificación'], inplace=True)
+        # print(f"- Registros originales: {len(df_resultado)}")
+
+        # df_final = df_resultado[df_resultado["PRODUCTO"] != "[MPE02] ENVASE PET MILK X 440 ML"]
+
+        # # Guardar el DataFrame en un archivo Excel
+        # df_final.to_excel(f"VENTAS_{nombre_archivo}", index=False)
+
+        df_resultado= df_resultado.rename(columns={'TIPO DE CLIENTE':'CATEGORÍA'})
+        
+        return  {'Base':df_resultado,
+                'nombre_archivo':notas_creditos['nombre_archivo'],
+                'facturas_afectadas':notas_creditos['facturas_afectadas']
+                 }
+
+
+
+
