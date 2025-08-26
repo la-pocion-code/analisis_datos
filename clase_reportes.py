@@ -23,31 +23,18 @@ class ReportClass():
 
     def consolidar_carpeta(self, extension='xlsx', sheet_name=None, ruta_carpeta=None):
         """
-        Consolida archivos de una carpeta en un único DataFrame.
+        Consolida todos los archivos de una carpeta en un único DataFrame de pandas.
 
-        Esta función lee todos los archivos con una extensión específica de una
-        carpeta y los une en un solo DataFrame de pandas. La carpeta puede ser
-        especificada a través de un argumento o seleccionada interactivamente
-        mediante una ventana de diálogo.
+        Lee archivos con una extensión específica (xlsx, xls, xlsb, csv) desde una carpeta
+        seleccionada manualmente o por parámetro, y los concatena en un solo DataFrame.
 
         Args:
-            extension (str, optional): La extensión de los archivos a consolidar.
-                Soporta 'xlsx', 'xls', 'xlsb' y 'csv'. Por defecto es 'xlsx'.
-            
-            sheet_name (str, int, list o None, optional): Especifica las hojas a leer
-                en archivos Excel.
-                - (default): Lee la primera hoja.
-                - 'NombreHoja': Lee la hoja con ese nombre.
-                - None: Lee todas las hojas del archivo y las concatena.
-                
-            ruta_carpeta (str, optional): La ruta a la carpeta que contiene los
-                archivos. Si es None (por defecto), se abrirá una ventana para
-                seleccionar la carpeta manualmente.
+            extension (str): Extensión de los archivos a consolidar. Ejemplo: 'xlsx', 'csv'.
+            sheet_name (str/int/list/None): Hoja(s) de Excel a leer. Por defecto lee la primera hoja.
+            ruta_carpeta (str, optional): Ruta de la carpeta con los archivos. Si es None, se abre un diálogo.
 
         Returns:
-            pandas.DataFrame: Un DataFrame con los datos consolidados de todos los
-            archivos. Si no se selecciona una carpeta o no se encuentran archivos,
-            devuelve un DataFrame vacío.
+            pd.DataFrame: DataFrame con los datos consolidados. Si no hay archivos válidos, retorna vacío.
         """
         carpeta_seleccionada = ''
 
@@ -117,7 +104,13 @@ class ReportClass():
 
     def validar_ruta(self):
         """
-        Esta funcion se encarga de validar la ruta donde se guardara la información local
+        Valida y retorna la ruta local donde se guardará la información.
+
+        Busca la carpeta 'VENTA MENSUAL' en diferentes ubicaciones predefinidas.
+        Si no la encuentra, muestra un mensaje de error.
+
+        Returns:
+            pathlib.Path: Ruta válida encontrada.
         """
         if Path("E:/Otros ordenadores/Mi portátil/VENTA MENSUAL").exists():
             ruta = Path("E:/Otros ordenadores/Mi portátil/VENTA MENSUAL")
@@ -136,8 +129,15 @@ class ReportClass():
     def notas_creditos(self):
 
         """
-        Esta funcion procesa las ventas descargadas de odoo y descuentas la notas crédito
-        al ejecutarce se deben seleccionar los archivos correspondientes.
+        Procesa las ventas descargadas de Odoo y descuenta las notas crédito.
+
+        Permite seleccionar los archivos de ventas y notas crédito, realiza el cruce
+        por número de factura y producto, descuenta las cantidades y totales afectados,
+        y genera archivos procesados y un listado de facturas afectadas.
+
+        Returns:
+            dict: Diccionario con el DataFrame consolidado, nombre del archivo de salida,
+                  y listado de facturas afectadas por notas crédito.
         """
 
         # Ocultar la ventana principal de tkinter
@@ -231,12 +231,16 @@ class ReportClass():
         # Paso 13: Filtrar solo las filas donde la cantidad sea mayor que 0 (eliminar ventas canceladas)
         df_consolidado = df_consolidado[df_consolidado['Líneas de factura/Cantidad'] > 0]
         # Paso 14: Generar el nombre del archivo de salida
-        nombre_archivo_salida = os.path.splitext(nombre_archivo_ventas)[0] + "_procesado.xlsx"
+        nombre_archivo= os.path.splitext(os.path.split(nombre_archivo_ventas)[-1])[0]
 
         # Paso 15: Guardar el archivo consolidado
         try:
-            df_consolidado.to_excel(nombre_archivo_salida, index=False)
-            print(f"Archivo consolidado guardado como '{nombre_archivo_salida}'.")
+            ruta = self.validar_ruta()
+            ruta_salida = ruta / 'RAW DATA' / 'PROCESADO' / f'{nombre_archivo}_procesado.xlsx'
+            if not ruta_salida.parent.exists():
+                ruta_salida.parent.mkdir(parents=True, exist_ok=True)
+            df_consolidado.to_excel(ruta_salida, index=False)
+            print(f"Archivo consolidado guardado como '{ruta_salida}'.")
         except Exception as e:
             print(f"Error al guardar el archivo consolidado: {e}")
 
@@ -249,26 +253,32 @@ class ReportClass():
 
         # ruta = self.validar_ruta()
         # Paso 18: Guardar el listado de facturas afectadas en un archivo Excel (opcional)
-        nombre_archivo_facturas_afectadas = os.path.splitext(nombre_archivo_ventas)[0] + "_facturas_afectadas.xlsx"
+       
         try:
+            nombre_archivo_facturas_afectadas = ruta / 'RAW DATA' / 'FACTURAS AFECTADAS' / f'{nombre_archivo}_facturas_afectadas.xlsx' 
             facturas_afectadas.to_excel(nombre_archivo_facturas_afectadas, index=False)
             print(f"Listado de facturas afectadas guardado como '{nombre_archivo_facturas_afectadas}'.")
         except Exception as e:
             print(f"Error al guardar el listado de facturas afectadas: {e}")
 
         return {'archivo_salida': df_consolidado,
-                'nombre_archivo':nombre_archivo_salida,
+                'nombre_archivo':ruta_salida,
                 'facturas_afectadas' :facturas_afectadas}
     
 
     def transformar_base(self, origen=False):
         """
-        Esta funcion transforma la base de ventas deajano el archivo de ventas limpio,
-        este toma tres archivos excel de deben estar actualizados al momento de la 
-        ejecucion, TRM (web scrapping), CIUDAD.xlsx, BD_clientes. 
+        Transforma la base de ventas y genera un archivo limpio y enriquecido.
 
-        arg: origen[Flase] = Si desea ejecutar notas crédito use True
-        
+        Integra información de ventas, TRM, ciudades y clientes. Aplica limpieza,
+        normalización y categorización de datos. Si 'origen' es True, descuenta notas crédito.
+
+        Args:
+            origen (bool): Si True, ejecuta el proceso de notas crédito antes de transformar.
+
+        Returns:
+            dict: Diccionario con la base transformada, nombre del archivo, facturas afectadas,
+                  y registros con errores de categorización.
         """
 
      
@@ -658,3 +668,237 @@ class ReportClass():
 
 
 
+    def explosion_ventas(self, ruta=None, sheet_name=None,):
+        """
+        Realiza la explosión de ventas para actualizar el BI.
+
+        Descompone los kits en productos individuales, calcula cantidades e ingresos,
+        y genera tablas dinámicas por producto, mes y origen (kit/individual).
+
+        Args:
+            ruta (str, optional): Ruta del archivo de ventas. Por defecto usa la carpeta compartida.
+            sheet_name (str, optional): Nombre de la hoja de Excel con las ventas.
+
+        Returns:
+            None: El resultado se utiliza para actualizar reportes y BI.
+        """
+        if ruta:
+            ruta = Path(ruta)
+            ruta_kits = ruta / 'data' / 'kits.xlsx'
+            df_kits = pd.read_excel(ruta_kits, sheet_name=sheet_name)
+        else:
+            ruta = self.validar_ruta()
+            ruta_kits = ruta / 'data' / 'kits.xlsx'
+            df_kits = pd.read_excel(ruta_kits)
+
+
+        ruta_base =ruta / 'file' / 'BASE VENTAS 2025.xlsx'
+
+        # Cargar el archivo de Excel
+        df_ventas = pd.read_excel(ruta_base)  # Reemplaza con la ruta de tu archivo
+
+
+        # Unir df_ventas con df_kits para explotar los kits
+        df_explosion = pd.merge(df_ventas, df_kits, left_on="PRODUCTO", right_on="KIT")
+
+        # Agregar una columna para indicar el origen (kit o individual)
+        df_explosion["ORIGEN"] = "KIT"
+
+        # Calcular las cantidades de productos
+        df_explosion["CANTIDAD_PRODUCTO"] = df_explosion["CANTIDAD"]
+
+        # Calcular el valor por producto en los kits
+        df_explosion["VALOR_POR_PRODUCTO"] = df_explosion["TOTAL($)"] / df_explosion.groupby("KIT")["PRODUCTO_x"].transform("count")
+
+        # Agrupar y sumar las cantidades de productos de kits
+        df_resultado_kits = df_explosion.groupby(["PRODUCTO_y", "MES", "ORIGEN"])["CANTIDAD_PRODUCTO"].sum().reset_index()
+        df_resultado_kits.columns = ["PRODUCTO", "MES","ORIGEN","CANTIDAD_TOTAL"]
+
+
+        # Filtrar productos individuales
+        df_ventas_individuales = df_ventas[~df_ventas["PRODUCTO"].str.startswith(("[PCNKIT","[TNGKIT","[B8KIT"))].reset_index(drop=True)
+        df_ventas_individuales["ORIGEN"] = "INDIVIDUAL"
+
+        # Seleccionar y renombrar columnas para que coincidan con df_resultado_kits
+        df_ventas_individuales = df_ventas_individuales[["PRODUCTO", "MES","ORIGEN" ,"CANTIDAD", "TOTAL($)" ]]
+        df_ventas_individuales.columns = ["PRODUCTO", "MES", "ORIGEN", "CANTIDAD_TOTAL", "INGRESO_TOTAL"]
+
+        # Combinar los resultados de kits y productos individuales
+        df_final = pd.concat([df_resultado_kits, df_ventas_individuales], ignore_index=True)
+
+        ## ingresos
+
+        # Agrupar y sumar las cantidades de productos de kits
+        df_ingresos_kits = df_explosion.groupby(["PRODUCTO_y", "MES"]).agg({
+            "CANTIDAD_PRODUCTO": "sum",
+            "VALOR_POR_PRODUCTO": "sum"
+        }).reset_index()
+        df_ingresos_kits.columns = ["PRODUCTO", "MES", "CANTIDAD_TOTAL", "INGRESO_TOTAL"]
+        df_ingresos= pd.concat([df_ingresos_kits, df_ventas_individuales], ignore_index=True)
+
+
+        # Lista con el orden correcto de los meses en español
+        orden_meses = [
+            'ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO',
+            'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'
+        ]
+
+        # Convertir la columna MES a tipo categoría con orden explícito
+        df_final['MES'] = pd.Categorical(df_final['MES'], categories=orden_meses, ordered=True)
+
+        # Ahora ordenar por MES
+        df_final = df_final.sort_values(by='MES')
+
+
+        # Crear la pivot table
+        pivot_table_por_mes = df_final.pivot_table(
+            index="PRODUCTO",  # Filas: productos
+            columns="MES",     # Columnas: meses
+            values="CANTIDAD_TOTAL",  # Valores: cantidades
+            aggfunc="sum",     # Función de agregación: suma
+            fill_value=0,
+            observed=True 
+                    # Rellenar valores faltantes con 0
+        ).reset_index()
+
+
+        # Crear la pivot table
+        pivot_table_mes_origen = df_final.pivot_table(
+            index="PRODUCTO",  # Filas: productos
+            columns=["MES", "ORIGEN"],  # Columnas: meses y origen (kit o individual)
+            values="CANTIDAD_TOTAL",  # Valores: cantidades
+            aggfunc="sum",     # Función de agregación: suma
+            fill_value=0,
+            observed=True      # Rellenar valores faltantes con 0
+        ).reset_index()
+
+
+        # Crear la pivot table con el nuevo formato
+        pivot_table_resumida = df_final.pivot_table(
+            index=["PRODUCTO", "ORIGEN"],  # Filas: Producto y tipo (Kit o Individual)
+            columns="MES",                 # Columnas: Meses
+            values="CANTIDAD_TOTAL",        # Valores: Cantidad total
+            aggfunc="sum",                  # Sumar cantidades
+            fill_value=0,
+            observed=True                    # Reemplazar NaN con 0
+        ).reset_index()
+
+        ## 
+        # Crear la pivot table para las cantidades
+        pivot_ingresos_cantidades = df_ingresos.pivot_table(
+            index="PRODUCTO",  # Filas: productos
+            columns="MES",     # Columnas: meses
+            values="CANTIDAD_TOTAL",  # Valores: cantidades
+            aggfunc="sum",     # Función de agregación: suma
+            fill_value=0       # Rellenar valores faltantes con 0
+        ).reset_index()
+
+        # Crear la pivot table para los ingresos
+        pivot_table_ingresos = df_ingresos.pivot_table(
+            index="PRODUCTO",  # Filas: productos
+            columns="MES",     # Columnas: meses
+            values="INGRESO_TOTAL",  # Valores: ingresos
+            aggfunc="sum",     # Función de agregación: suma
+            fill_value=0       # Rellenar valores faltantes con 0
+        ).reset_index()
+
+
+        ruta_file = ruta / 'file' 
+
+        try:
+            ruta_file.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
+            print(f"Carpeta '{ruta_file}' creada o ya existe.")
+            # Guardar la pivot table en un archivo de Excel
+            pivot_table_por_mes.to_excel(ruta_file / 'pivot_table_por_mes.xlsx', index=False) ## Es igual a "pivot_table_cantidades_por_mes.xlsx"
+            # Guardar la pivot table en un archivo de Excel
+            pivot_table_mes_origen.to_excel(ruta_file / "pivot_table_por_mes_y_origen.xlsx")
+            # Guardar la pivot table en un archivo de Excel
+            pivot_table_resumida.to_excel(ruta_file / "pivot_table_resumida.xlsx", index=False)
+
+            pivot_ingresos_cantidades.to_excel(ruta_file /"pivot_table_cantidades_por_mes.xlsx", index=False)
+
+            pivot_table_ingresos.to_excel(ruta_file / "pivot_table_ingresos_por_mes.xlsx", index=False)
+            print("Archivos guardados correctamente.")
+        except Exception as e:
+            print(f"Error al crear la carpeta o guardar los archivos: {e}")
+
+
+        return {'pivot_table_por_mes':pivot_table_por_mes,
+                'pivot_table_mes_origen':pivot_table_mes_origen,
+                'pivot_table_resumida':pivot_table_resumida,
+                'pivot_ingresos_cantidades':pivot_ingresos_cantidades,
+                'pivot_table_ingresos':pivot_table_ingresos
+                }
+    
+    def pipeline_bi(self):
+        """
+        Ejecuta el pipeline completo para procesar y transformar la base de ventas,
+        consolidar datos, y realizar la explosión de ventas para el BI.
+
+        Returns:
+            dict: Diccionario con las bases procesadas, base limpia y explosión de ventas.
+
+
+        """
+        # porcesar base de ventas y notas credito
+        ventas_procesadas = self.transformar_base(origen=True)
+        ruta = self.validar_ruta()
+
+        ruta_clean = ruta / 'CLEAN DATA' 
+
+        ruta2 = ventas_procesadas['nombre_archivo']
+        ruta_carpeta = ruta_clean / f'VENTAS_{ruta2.stem}.xlsx'
+        ruta_errores = ruta / 'file' / 'ventas_sin_categoria.xlsx'
+        try:
+            ruta_clean.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
+            print(f"Carpeta '{ruta_clean}' creada o ya existe.")
+            ventas_procesadas['Base'].to_excel(ruta_carpeta, index=False)
+            ventas_procesadas['errores'].to_excel(ruta_errores, index=False)
+        except Exception as e:
+            print(f"Error al crear la carpeta o guardar los archivos: {e}")
+        # Consolidar ventas
+        base_clean = self.consolidar_carpeta(ruta_carpeta=ruta_clean)
+        ruta_base = ruta / 'file' / 'BASE VENTAS 2025.xlsx'
+        import locale
+        try:
+            # Intentamos usar el locale en español para obtener "ENERO", "FEBRERO", etc.
+            locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
+        except locale.Error:
+            print("   - Advertencia: Locale 'es_ES.UTF-8' no disponible. Se usarán nombres de mes en inglés.")
+            
+        base_clean['MES'] = base_clean['FECHA_FACTURA'].dt.strftime('%B').str.upper()
+        columnas_finales = [
+                "Source.Name", "NUMERO_FACTURA", "FECHA_FACTURA", "AÑO", "MES", "DIA",
+                "CLIENTE", "IDENTIFICACION_CLIENTE", "CATEGORÍA", "PRODUCTO", "CANTIDAD",
+                "TOTAL", "TASA_CAMBIO", "TRM", "TOTAL($)", "TELEFONO", "EMAIL", "PAIS",
+                "CIUDAD", "CIUDAD_CORREGIDA", "DEPARTAMENTO", "EQUIPO_VENTAS", "REFERENCIA"
+            ]
+            
+        # Manejo defensivo por si la columna 'ASESOR COMERCIAL' no siempre existe
+        if 'ASESOR COMERCIAL' in base_clean.columns:
+            base_clean['ASESOR COMERCIAL'] = base_clean['ASESOR COMERCIAL'].astype(str)
+            columnas_finales.append('ASESOR COMERCIAL')
+
+        # Aseguramos que solo reordenamos las columnas que realmente existen en el DataFrame
+        columnas_existentes = [col for col in columnas_finales if col in base_clean.columns]
+        base_clean = base_clean[columnas_existentes]
+
+        # Esta linea mantiene solo los pruductos comerciales
+        base_clean = base_clean[base_clean['PRODUCTO'].str.startswith(('[PCN','[KD','[TNG','[B8'))]   ###### linea modificada
+        try:
+            ruta_file = ruta / 'file' 
+            ruta_file.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
+            print(f"Carpeta '{ruta_file}' creada o ya existe.")
+            base_clean.to_excel(ruta_base, index=False)
+            
+        except Exception as e:
+            print(f"Error al crear la carpeta o guardar los archivos: {e}")
+
+       
+        explosion = self.explosion_ventas()
+     
+
+        return {'ventas_procesadas':ventas_procesadas,
+                'base_clean':base_clean,
+                'explosion':explosion
+                }
