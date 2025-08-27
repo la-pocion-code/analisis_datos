@@ -7,7 +7,7 @@ import os
 import re
 import tkinter as tk
 from tkinter import filedialog
-
+import numpy as np
 
 
 
@@ -265,6 +265,32 @@ class ReportClass():
                 'nombre_archivo':ruta_salida,
                 'facturas_afectadas' :facturas_afectadas}
     
+    @staticmethod
+    def limpiar_documento(valor):
+        """
+        Esta función limpia y extrae el número de identificación de un valor dado.
+        Args:
+            valor (str/int/float): Valor que contiene el número de identificación.
+        Returns:
+            str/pd.NA: Número de identificación limpio o pd.NA si no es válido.
+        """
+        valor = str(valor).strip()
+        valor = valor.replace('.', '').replace("'",'').replace("”", '').replace("’",'')  # Elimina espacios en blanco
+
+        # Si el valor es NaN o vacío, retorna NaN
+        if pd.isna(valor) or str(valor).strip() == pd.NaT:
+            return pd.NA
+        # Si el valor contiene solo letras, retorna NaN
+        if re.fullmatch(r'[A-Za-z]+', str(valor).strip()):
+            return pd.NA
+        # Extrae los dígitos iniciales antes de cualquier carácter no numérico
+        match = re.match(r'^(\d+)', str(valor))
+        if match:
+            return match.group(1)
+        return pd.NA    
+
+
+
 
     def transformar_base(self, origen=False):
         """
@@ -555,7 +581,7 @@ class ReportClass():
         # Reorganizar las columnas si es necesario
         column_order = ['Numero_Factura','Fecha_Factura', 'Dia', 'Mes', 'Año', 'Cliente','Identificacion_Cliente','Producto', 'Cantidad', 
                         'Total', 'Tasa_Cambio','TRM', 'Total($)','Telefono', 'Email','Pais','Ciudad', 'Ciudad_Corregida', 'Departamento', 
-                        'Equipo_Ventas', 'Referencia', 'Asesor Comercial', 'Tipo de cliente']
+                        'Equipo_Ventas', 'Referencia', 'Asesor Comercial', 'Tipo de cliente'] ## aqui se agregregan las nuevas columnas
         df_resultado = df_resultado[column_order]
 
   
@@ -572,11 +598,6 @@ class ReportClass():
         # Convertir los nombres de las columnas a mayúsculas
         df_resultado.columns = df_resultado.columns.str.upper()
 
-      
-
-
-
-
 
         # # 1. Cargar el dataset BD_CLIENTES
         # BD_CLIENTES = pd.read_excel(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\BD_CLIENTES.xlsx")
@@ -589,6 +610,9 @@ class ReportClass():
             .str.strip()  # Eliminar espacios al principio y al final
             .str.replace(r'\s+', '', regex=True)  # Eliminar espacios adicionales entre caracteres
         )
+
+        df_resultado['IDENTIFICACION_CLIENTE'] = df_resultado['IDENTIFICACION_CLIENTE'].apply(self.limpiar_documento)
+
         # # Limpieza en BD_CLIENTES
         # BD_CLIENTES['Número de Identificación'] = (
         #     BD_CLIENTES['Número de Identificación']
@@ -632,21 +656,32 @@ class ReportClass():
         df_resultado = df_resultado[columnas]
     
         # Rellenar los valores NaN en "Categoría" cuando EQUIPO_VENTAS sea "Shopify"
-        df_resultado.loc[(df_resultado['TIPO DE CLIENTE'].isna()) & (df_resultado['EQUIPO_VENTAS'] == 'Shopify'), 'TIPO DE CLIENTE'] = 'SHOPIFY'
+        df_resultado.loc[df_resultado['EQUIPO_VENTAS'] == 'Shopify', 'TIPO DE CLIENTE'] = 'SHOPIFY'
         # Rellenar los valores NaN en "Categoría" cuando EQUIPO_VENTAS sea "Shopify"
         df_resultado.loc[df_resultado['EQUIPO_VENTAS'] == 'Punto de venta', 'TIPO DE CLIENTE'] = 'CALL CENTER'
 
-      
+        cliente_call_center = df_resultado[df_resultado['TIPO DE CLIENTE']=='CLIENTE']
+        # Reemplazar "CLIENTE" por "CALL CENTER" en la columna "CATEGORÍA"
+        df_resultado.loc[df_resultado['TIPO DE CLIENTE']=='CLIENTE', 'TIPO DE CLIENTE'] = 'CALL CENTER'
         # df_resultado[df_resultado['CATEGORÍA'].isna()].to_excel(r"C:\Users\Dataa\Desktop\ventas_sin_categoria.xlsx")
 
         df_resultado.loc[~df_resultado['PAIS'].isin(['CO', 'Desconocido']), 'TIPO DE CLIENTE'] = df_resultado['PAIS']
+
+        
+        # Agrgrer varificacion de vendedores mayoristas como asesor comercial
+        asesores_moyorista = df_resultado[df_resultado['TIPO DE CLIENTE'] == 'MAYORISTA NV']['ASESOR COMERCIAL'].drop_duplicates().tolist()
+        asesores_moyorista = [a for a in asesores_moyorista if a is not None]
+        asesores_sin_categoria = df_resultado[(df_resultado['TIPO DE CLIENTE'].isna())&(df_resultado['ASESOR COMERCIAL'].isin(asesores_moyorista))]
+        df_resultado.loc[(df_resultado['TIPO DE CLIENTE'].isna())&(df_resultado['ASESOR COMERCIAL'].isin(asesores_moyorista)), 'TIPO DE CLIENTE'] = 'MAYORISTA NV'
+
+
 
 
         # Mostrar las primeras filas para verificar los cambios
     
         # Rellenar los valores vacíos en "Categoría" con "Call center"
-        df_resultado['TIPO DE CLIENTE'].fillna('CALL CENTER', inplace=True)
-     
+        df_resultado['TIPO DE CLIENTE'] =df_resultado['TIPO DE CLIENTE'].fillna('CALL CENTER')   ### REVISAR
+    
 
         # 9. Eliminar las columnas "REFERENCIA" y "Número de Identificación"
         # df_resultado.drop(columns=['Número de Identificación'], inplace=True)
@@ -658,11 +693,57 @@ class ReportClass():
         # df_final.to_excel(f"VENTAS_{nombre_archivo}", index=False)
 
         df_resultado= df_resultado.rename(columns={'TIPO DE CLIENTE':'CATEGORÍA'})
-        
+
+
+        # Renombra las categorías
+
+        categorias_renombrar = {
+            'Catalogo': 'CATÁLOGO',
+            'Distribuidor': 'DISTRIBUIDOR',
+            'Empleado': 'EMPLEADO',
+            'FARMACIAS': 'FARMACIA',
+            'HOLE COSMETICS':'HOLE COSMETICS SAS',
+            'Surticosmeticos': 'SURTICOSMETICOS'
+        }
+
+        df_resultado['CATEGORÍA'] = df_resultado['CATEGORÍA'].replace(categorias_renombrar)
+
+        # validar clientes nuevos, pendiente por terminar
+        try:
+            ruta = self.validar_ruta()
+            ruta_historoica = ruta / 'file' / f'ventas_historicas.xlsx'
+
+            
+
+            ventas_historicas_agru=pd.read_excel(ruta_historoica)
+            ventas_historicas_agru['FECHA_FACTURA'] = pd.to_datetime(ventas_historicas_agru['FECHA_FACTURA'])
+
+            ventas_historicas_agru['IDENTIFICACION_CLIENTE'] =  ventas_historicas_agru['IDENTIFICACION_CLIENTE'].apply(self.limpiar_documento)
+            ventas_historicas_agru['IDENTIFICACION_CLIENTE'].astype(str)
+
+
+
+            df_resultado = df_resultado.merge(ventas_historicas_agru, on='IDENTIFICACION_CLIENTE', how='left', suffixes=('', '_FECHA_MIN'))
+
+            now = pd.to_datetime('now')
+
+            df_resultado['CLIENTES NUEVOS'] = np.where(
+                ((df_resultado['FECHA_FACTURA_FECHA_MIN'].dt.month == now.month) & 
+                (df_resultado['FECHA_FACTURA_FECHA_MIN'].dt.year == now.year))|((df_resultado['FECHA_FACTURA_FECHA_MIN'].isna())&(df_resultado['CATEGORÍA']=='MAYORISTA NV')),
+                "Cliente sin historico",
+                ""
+            )
+
+            df_resultado = df_resultado.drop(columns=['FECHA_FACTURA_FECHA_MIN'])
+        except Exception as e:
+            print(f"Error al validar clientes nuevos: {e}")
+
         return  {'Base':df_resultado,
                 'nombre_archivo':notas_creditos['nombre_archivo'],
                 'facturas_afectadas':notas_creditos['facturas_afectadas'],
-                'errores':etiqueta_mayorista
+                'errores':etiqueta_mayorista,
+                'asesores_sin_categoria':asesores_sin_categoria,
+                'cliente_call_center':cliente_call_center
                  }
 
 
@@ -827,7 +908,7 @@ class ReportClass():
                 'pivot_table_mes_origen':pivot_table_mes_origen,
                 'pivot_table_resumida':pivot_table_resumida,
                 'pivot_ingresos_cantidades':pivot_ingresos_cantidades,
-                'pivot_table_ingresos':pivot_table_ingresos
+                'pivot_table_ingresos':pivot_table_ingresos,
                 }
     
     def pipeline_bi(self):
@@ -846,14 +927,17 @@ class ReportClass():
 
         ruta_clean = ruta / 'CLEAN DATA' 
 
-        ruta2 = ventas_procesadas['nombre_archivo']
+        ruta2 = Path(ventas_procesadas['nombre_archivo'])
         ruta_carpeta = ruta_clean / f'VENTAS_{ruta2.stem}.xlsx'
         ruta_errores = ruta / 'file' / 'ventas_sin_categoria.xlsx'
         try:
             ruta_clean.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
             print(f"Carpeta '{ruta_clean}' creada o ya existe.")
             ventas_procesadas['Base'].to_excel(ruta_carpeta, index=False)
-            ventas_procesadas['errores'].to_excel(ruta_errores, index=False)
+            with pd.ExcelWriter(ruta_errores, engine='openpyxl') as writer:
+                ventas_procesadas['errores'].to_excel(writer, sheet_name='etiqueta a tipo', index=False)
+                ventas_procesadas['cliente_call_center'].to_excel(writer, sheet_name='CLIENTE a CALL', index=False)
+                ventas_procesadas['asesores_sin_categoria'].to_excel(writer, sheet_name='Mayoristas sin categoria', index=False)
         except Exception as e:
             print(f"Error al crear la carpeta o guardar los archivos: {e}")
         # Consolidar ventas
