@@ -778,6 +778,14 @@ class ReportClass():
         # Cargar el archivo de Excel
         df_ventas = pd.read_excel(ruta_base)  # Reemplaza con la ruta de tu archivo
 
+        # Verifica si falta incluir kit en el archivo kits.xlsx
+        df_explosion_prueba = pd.merge(df_ventas, df_kits, left_on="PRODUCTO", right_on="KIT", indicator=True, how='left')
+
+        productos_con_kit = [
+            producto for producto in df_explosion_prueba[df_explosion_prueba['_merge']=='left_only']['PRODUCTO_x'].unique()
+            if 'KIT' in str(producto)
+        ]
+        print(f"Productos con 'KIT' sin correspondencia en df_kits: {productos_con_kit}")
 
         # Unir df_ventas con df_kits para explotar los kits
         df_explosion = pd.merge(df_ventas, df_kits, left_on="PRODUCTO", right_on="KIT")
@@ -789,8 +797,9 @@ class ReportClass():
         df_explosion["CANTIDAD_PRODUCTO"] = df_explosion["CANTIDAD"]
 
         # Calcular el valor por producto en los kits
-        df_explosion["VALOR_POR_PRODUCTO"] = df_explosion["TOTAL($)"] / df_explosion.groupby("KIT")["PRODUCTO_x"].transform("count")
-
+        # df_explosion["VALOR_POR_PRODUCTO"] = df_explosion["TOTAL($)"] / df_explosion.groupby("KIT")["PRODUCTO_x"].transform("count")
+        conteo_facturas = df_explosion.groupby(['PRODUCTO_x','NUMERO_FACTURA'])['NUMERO_FACTURA'].transform('count')
+        df_explosion["VALOR_POR_PRODUCTO"] = df_explosion['TOTAL($)'] / conteo_facturas
         # Agrupar y sumar las cantidades de productos de kits
         df_resultado_kits = df_explosion.groupby(["PRODUCTO_y", "MES", "ORIGEN"])["CANTIDAD_PRODUCTO"].sum().reset_index()
         df_resultado_kits.columns = ["PRODUCTO", "MES","ORIGEN","CANTIDAD_TOTAL"]
