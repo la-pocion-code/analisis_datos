@@ -200,6 +200,19 @@ class ReportClass():
         df_notas_credito_filtrado = df_notas_credito[notas_credito_validas]
         # Paso 8: Combinar ambos datasets (ventas y notas crédito)
         df_consolidado = pd.concat([df_ventas, df_notas_credito_filtrado], ignore_index=True)
+        # Renombrar columnas para estandarizar nombres
+        df_consolidado= df_consolidado.rename(columns={
+            'Equipo de ventas': 'Equipo de Ventas',
+            'Líneas de factura/Contacto':'Líneas de factura/Asociado',
+            'Líneas de factura/Contacto/Ciudad':'Líneas de factura/Asociado/Ciudad',
+            'Líneas de factura/Contacto/Correo electrónico':'Líneas de factura/Asociado/Correo electrónico',
+            'Líneas de factura/Contacto/Estado':'Líneas de factura/Asociado/Estado',
+            'Líneas de factura/Contacto/NIF':'Líneas de factura/Asociado/Número de Identificación',
+            'Líneas de factura/Contacto/Teléfono':'Líneas de factura/Asociado/Teléfono',
+            'Origen/Nombre de la fuente':'Origen/Nombre de la Fuente'
+
+        })
+
         # Paso 10: Agrupar por la columna temporal NUMERO_FACTURA-PRODUCTO
         df_consolidado = df_consolidado.groupby(
             'NUMERO_FACTURA-PRODUCTO',  # Agrupar por la combinación de factura y producto
@@ -763,15 +776,14 @@ class ReportClass():
         Returns:
             None: El resultado se utiliza para actualizar reportes y BI.
         """
-        if ruta:
+        if ruta: # Si se proporciona una ruta, úsala
             ruta = Path(ruta)
             ruta_kits = ruta / 'data' / 'kits.xlsx'
-            df_kits = pd.read_excel(ruta_kits, sheet_name=sheet_name)
+            df_kits = pd.read_excel(ruta_kits)
         else:
             ruta = self.validar_ruta()
             ruta_kits = ruta / 'data' / 'kits.xlsx'
             df_kits = pd.read_excel(ruta_kits)
-
 
         ruta_base =ruta / 'file' / 'BASE VENTAS 2025.xlsx'
 
@@ -800,21 +812,42 @@ class ReportClass():
         # df_explosion["VALOR_POR_PRODUCTO"] = df_explosion["TOTAL($)"] / df_explosion.groupby("KIT")["PRODUCTO_x"].transform("count")
         conteo_facturas = df_explosion.groupby(['PRODUCTO_x','NUMERO_FACTURA'])['NUMERO_FACTURA'].transform('count')
         df_explosion["VALOR_POR_PRODUCTO"] = df_explosion['TOTAL($)'] / conteo_facturas
+
+
+
         # Agrupar y sumar las cantidades de productos de kits
-        df_resultado_kits = df_explosion.groupby(["PRODUCTO_y", "MES", "ORIGEN"])["CANTIDAD_PRODUCTO"].sum().reset_index()
-        df_resultado_kits.columns = ["PRODUCTO", "MES","ORIGEN","CANTIDAD_TOTAL"]
+        df_resultado_kits = df_explosion.groupby(["PRODUCTO_y", "MES", "ORIGEN", 'CATEGORÍA'])["CANTIDAD_PRODUCTO"].sum().reset_index()
+        df_resultado_kits.columns = ["PRODUCTO", "MES","ORIGEN",'CATEGORÍA', "CANTIDAD_TOTAL"]
+
+        # # Agrupar por categorias
+        # df_resultado_kits_cat = df_explosion.groupby(["PRODUCTO_y", "MES", "ORIGEN",'CATEGORÍA'])["CANTIDAD_PRODUCTO"].sum().reset_index()
+        # df_resultado_kits.columns = ["PRODUCTO", "MES","ORIGEN",'CATEGORÍA', "CANTIDAD_TOTAL"]
 
 
         # Filtrar productos individuales
         df_ventas_individuales = df_ventas[~df_ventas["PRODUCTO"].str.startswith(("[PCNKIT","[TNGKIT","[B8KIT"))].reset_index(drop=True)
         df_ventas_individuales["ORIGEN"] = "INDIVIDUAL"
 
+
+
         # Seleccionar y renombrar columnas para que coincidan con df_resultado_kits
-        df_ventas_individuales = df_ventas_individuales[["PRODUCTO", "MES","ORIGEN" ,"CANTIDAD", "TOTAL($)" ]]
-        df_ventas_individuales.columns = ["PRODUCTO", "MES", "ORIGEN", "CANTIDAD_TOTAL", "INGRESO_TOTAL"]
+        df_ventas_individuales = df_ventas_individuales[["PRODUCTO", "MES","ORIGEN" , 'CATEGORÍA', "CANTIDAD", "TOTAL($)"]]
+        df_ventas_individuales.columns = ["PRODUCTO", "MES", "ORIGEN", 'CATEGORÍA',"CANTIDAD_TOTAL", "INGRESO_TOTAL"]
+        
 
         # Combinar los resultados de kits y productos individuales
         df_final = pd.concat([df_resultado_kits, df_ventas_individuales], ignore_index=True)
+
+
+        ## Categoria producto ingresos
+
+        df_ingresos_kits_cate = df_explosion.groupby(["PRODUCTO_y", "MES", "CATEGORÍA"]).agg({
+            "CANTIDAD_PRODUCTO": "sum",
+            "VALOR_POR_PRODUCTO": "sum"
+        }).reset_index()
+        df_ingresos_kits_cate.columns = ["PRODUCTO", "MES", "CATEGORÍA", "CANTIDAD_TOTAL", "INGRESO_TOTAL"]
+        df_ingresos_cate= pd.concat([df_ingresos_kits_cate, df_ventas_individuales], ignore_index=True)
+
 
         ## ingresos
 
@@ -838,6 +871,18 @@ class ReportClass():
 
         # Ahora ordenar por MES
         df_final = df_final.sort_values(by='MES')
+
+        # Categorias pivot table
+        pivot_table_por_mes_categoria = df_final.pivot_table(
+            index=["PRODUCTO", "CATEGORÍA"],  # Filas: productos
+            columns="MES",     # Columnas: meses
+            values="CANTIDAD_TOTAL",  # Valores: cantidades
+            aggfunc="sum",     # Función de agregación: suma
+            fill_value=0,
+            observed=True 
+                    # Rellenar valores faltantes con 0
+        ).reset_index()
+
 
 
         # Crear la pivot table
@@ -873,14 +918,22 @@ class ReportClass():
             observed=True                    # Reemplazar NaN con 0
         ).reset_index()
 
-        ## 
+
+        # Convertir la columna MES a tipo categoría con orden explícito
+        df_ingresos['MES'] = pd.Categorical(df_ingresos['MES'], categories=orden_meses, ordered=True)
+
+        # Ahora ordenar por MES
+        df_ingresos = df_ingresos.sort_values(by='MES')
+
+
         # Crear la pivot table para las cantidades
         pivot_ingresos_cantidades = df_ingresos.pivot_table(
             index="PRODUCTO",  # Filas: productos
             columns="MES",     # Columnas: meses
             values="CANTIDAD_TOTAL",  # Valores: cantidades
             aggfunc="sum",     # Función de agregación: suma
-            fill_value=0       # Rellenar valores faltantes con 0
+            fill_value=0,
+            observed=True       # Rellenar valores faltantes con 0
         ).reset_index()
 
         # Crear la pivot table para los ingresos
@@ -889,11 +942,53 @@ class ReportClass():
             columns="MES",     # Columnas: meses
             values="INGRESO_TOTAL",  # Valores: ingresos
             aggfunc="sum",     # Función de agregación: suma
-            fill_value=0       # Rellenar valores faltantes con 0
+            fill_value=0, 
+            observed=True       # Rellenar valores faltantes con 0
         ).reset_index()
 
 
+        # Crear la pivot table categorias
+        pivot_table_ingresos_cate = df_ingresos.pivot_table(
+            index=["PRODUCTO", "CATEGORÍA"],  # Filas: productos
+            columns="MES",     # Columnas: meses
+            values="INGRESO_TOTAL",  # Valores: cantidades
+            aggfunc="sum",     # Función de agregación: suma
+            fill_value=0,
+            observed=True        # Rellenar valores faltantes con 0
+        ).reset_index()
+
         ruta_file = ruta / 'file' 
+        cant_ing_cate = pivot_table_por_mes_categoria.melt(
+            id_vars=["PRODUCTO", "CATEGORÍA"],
+            var_name="MES", 
+            value_name="CANTIDAD_TOTAL"
+        )
+        ingre_cate=pivot_table_ingresos_cate.melt(
+        id_vars=["PRODUCTO", "CATEGORÍA"],
+        var_name="MES",
+        value_name="INGRESO_TOTAL"
+        )
+        df_categorias= cant_ing_cate.merge(ingre_cate, on=["PRODUCTO", "CATEGORÍA", "MES"], how="left")
+
+
+        # Diccionario de meses en español
+        meses_es = {
+            'enero': 1, 'febrero': 2, 'marzo': 3,
+            'abril': 4, 'mayo': 5, 'junio': 6,
+            'julio': 7, 'agosto': 8, 'septiembre': 9,
+            'octubre': 10, 'noviembre': 11, 'diciembre': 12
+        }
+
+        # Convertir los nombres de mes en mayúsculas a minúsculas antes de mapear
+        df_categorias['Mes_num'] = df_categorias['MES'].str.lower().map(meses_es)
+
+        # Crear columna de fecha con el día 1 y año 2025
+        df_categorias['Fecha'] = pd.to_datetime({
+            'year': 2025,
+            'month': df_categorias['Mes_num'],
+            'day': 1
+        })
+
 
         try:
             ruta_file.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
@@ -908,6 +1003,8 @@ class ReportClass():
             pivot_ingresos_cantidades.to_excel(ruta_file /"pivot_table_cantidades_por_mes.xlsx", index=False)
 
             pivot_table_ingresos.to_excel(ruta_file / "pivot_table_ingresos_por_mes.xlsx", index=False)
+
+            df_categorias.to_excel(ruta_file / "categorias_df.xlsx", index=False)
             print("Archivos guardados correctamente.")
         except Exception as e:
             print(f"Error al crear la carpeta o guardar los archivos: {e}")
@@ -939,6 +1036,23 @@ class ReportClass():
         ruta2 = Path(ventas_procesadas['nombre_archivo'])
         ruta_carpeta = ruta_clean / f'VENTAS_{ruta2.stem}.xlsx'
         ruta_errores = ruta / 'file' / 'ventas_sin_categoria.xlsx'
+
+        
+        ruta_bgta= ruta / 'data' / 'Base_bogota.xlsx'
+        ruta_zonas= ruta / 'data' / 'zonas.xlsx'
+        df_bogota= pd.read_excel(ruta_bgta)
+        zonas = pd.read_excel(ruta_zonas)
+
+        ventas_procesadas['Base'] = ventas_procesadas['Base'].merge(zonas, on=['DEPARTAMENTO', 'CATEGORÍA'], how='left')
+        df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(str)
+        ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'] = ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'].str.strip()
+        ventas_procesadas['Base'] = ventas_procesadas['Base'].merge(df_bogota[['DOCUMENTO', 'CATEGORÍA', 'ZONA']], 
+                                      left_on=['IDENTIFICACION_CLIENTE','CATEGORÍA'], right_on=['DOCUMENTO', 'CATEGORÍA'], how='left')
+
+        ventas_procesadas['Base']['ZONA'] = ventas_procesadas['Base']['ZONA'].fillna(ventas_procesadas['Base']['zona'])
+
+        ventas_procesadas['Base'] = ventas_procesadas['Base'].drop(columns=['CLIENTES NUEVOS',	'zona',	'DOCUMENTO'])
+
         try:
             ruta_clean.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
             print(f"Carpeta '{ruta_clean}' creada o ya existe.")
@@ -953,7 +1067,7 @@ class ReportClass():
         base_clean = self.consolidar_carpeta(ruta_carpeta=ruta_clean)
         ruta_base = ruta / 'file' / 'BASE VENTAS 2025.xlsx'
         import locale
-        try:
+        try:         
             # Intentamos usar el locale en español para obtener "ENERO", "FEBRERO", etc.
             locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
         except locale.Error:
@@ -978,6 +1092,29 @@ class ReportClass():
 
         # Esta linea mantiene solo los pruductos comerciales
         base_clean = base_clean[base_clean['PRODUCTO'].str.startswith(('[PCN','[KD','[TNG','[B8'))]   ###### linea modificada
+
+        # ruta_bgta= ruta / 'data' / 'Base_bogota.xlsx'
+        # ruta_zonas= ruta / 'data' / 'zonas.xlsx'
+        # df_bogota= pd.read_excel(ruta_bgta)
+        # zonas = pd.read_excel(ruta_zonas)
+
+        # base_clean = base_clean.merge(zonas, on=['DEPARTAMENTO', 'CATEGORÍA'], how='left')
+        # df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(str)
+        # base_clean['IDENTIFICACION_CLIENTE'] = base_clean['IDENTIFICACION_CLIENTE'].str.strip()
+        # base_clean = base_clean.merge(df_bogota[['DOCUMENTO', 'CATEGORÍA', 'ZONA']], 
+        #                               left_on=['IDENTIFICACION_CLIENTE','CATEGORÍA'], right_on=['DOCUMENTO', 'CATEGORÍA'], how='left')
+
+        # base_clean['ZONA'] = base_clean['ZONA'].fillna(base_clean['zona'])
+
+
+        # base_clean = base_clean[['NUMERO_FACTURA', 'FECHA_FACTURA', 'AÑO', 'MES', 'DIA', 'CLIENTE',
+        #     'IDENTIFICACION_CLIENTE', 'CATEGORÍA', 'PRODUCTO', 'CANTIDAD', 'TOTAL',
+        #     'TASA_CAMBIO', 'TRM', 'TOTAL($)', 'TELEFONO', 'EMAIL', 'PAIS', 'CIUDAD',
+        #     'CIUDAD_CORREGIDA', 'DEPARTAMENTO', 'EQUIPO_VENTAS', 'REFERENCIA',
+        #     'ASESOR COMERCIAL', 'ZONA']]
+        
+     
+
         try:
             ruta_file = ruta / 'file' 
             ruta_file.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
