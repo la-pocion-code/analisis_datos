@@ -682,10 +682,10 @@ class ReportClass():
 
         
         # Agrgrer varificacion de vendedores mayoristas como asesor comercial
-        asesores_moyorista = df_resultado[df_resultado['TIPO DE CLIENTE'] == 'MAYORISTA NV']['ASESOR COMERCIAL'].drop_duplicates().tolist()
-        asesores_moyorista = [a for a in asesores_moyorista if a is not None]
-        asesores_sin_categoria = df_resultado[(df_resultado['TIPO DE CLIENTE'].isna())&(df_resultado['ASESOR COMERCIAL'].isin(asesores_moyorista))]
-        df_resultado.loc[(df_resultado['TIPO DE CLIENTE'].isna())&(df_resultado['ASESOR COMERCIAL'].isin(asesores_moyorista)), 'TIPO DE CLIENTE'] = 'MAYORISTA NV'
+        # asesores_moyorista = df_resultado[df_resultado['TIPO DE CLIENTE'] == 'MAYORISTA NV']['ASESOR COMERCIAL'].drop_duplicates().tolist()
+        # asesores_moyorista = [a for a in asesores_moyorista if a is not None]
+        # asesores_sin_categoria = df_resultado[(df_resultado['TIPO DE CLIENTE'].isna())&(df_resultado['ASESOR COMERCIAL'].isin(asesores_moyorista))]
+        # df_resultado.loc[(df_resultado['TIPO DE CLIENTE'].isna())&(df_resultado['ASESOR COMERCIAL'].isin(asesores_moyorista)), 'TIPO DE CLIENTE'] = 'MAYORISTA NV'
 
 
 
@@ -755,7 +755,7 @@ class ReportClass():
                 'nombre_archivo':notas_creditos['nombre_archivo'],
                 'facturas_afectadas':notas_creditos['facturas_afectadas'],
                 'errores':etiqueta_mayorista,
-                'asesores_sin_categoria':asesores_sin_categoria,
+                # 'asesores_sin_categoria':asesores_sin_categoria,
                 'cliente_call_center':cliente_call_center
                  }
 
@@ -1044,8 +1044,15 @@ class ReportClass():
         zonas = pd.read_excel(ruta_zonas)
 
         ventas_procesadas['Base'] = ventas_procesadas['Base'].merge(zonas, on=['DEPARTAMENTO', 'CATEGORÍA'], how='left')
-        df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(str)
-        ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'] = ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'].str.strip()
+        ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'] = pd.to_numeric(
+        ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'], errors='coerce'
+        )
+        df_bogota['DOCUMENTO'] = pd.to_numeric(df_bogota['DOCUMENTO'])
+
+
+        # df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(str)
+        # ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'] = ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'].str.strip()
+
         ventas_procesadas['Base'] = ventas_procesadas['Base'].merge(df_bogota[['DOCUMENTO', 'CATEGORÍA', 'ZONA']], 
                                       left_on=['IDENTIFICACION_CLIENTE','CATEGORÍA'], right_on=['DOCUMENTO', 'CATEGORÍA'], how='left')
 
@@ -1060,7 +1067,7 @@ class ReportClass():
             with pd.ExcelWriter(ruta_errores, engine='openpyxl') as writer:
                 ventas_procesadas['errores'].to_excel(writer, sheet_name='etiqueta a tipo', index=False)
                 ventas_procesadas['cliente_call_center'].to_excel(writer, sheet_name='CLIENTE a CALL', index=False)
-                ventas_procesadas['asesores_sin_categoria'].to_excel(writer, sheet_name='Mayoristas sin categoria', index=False)
+                # ventas_procesadas['asesores_sin_categoria'].to_excel(writer, sheet_name='Mayoristas sin categoria', index=False)
         except Exception as e:
             print(f"Error al crear la carpeta o guardar los archivos: {e}")
         # Consolidar ventas
@@ -1078,7 +1085,7 @@ class ReportClass():
                 "Source.Name", "NUMERO_FACTURA", "FECHA_FACTURA", "AÑO", "MES", "DIA",
                 "CLIENTE", "IDENTIFICACION_CLIENTE", "CATEGORÍA", "PRODUCTO", "CANTIDAD",
                 "TOTAL", "TASA_CAMBIO", "TRM", "TOTAL($)", "TELEFONO", "EMAIL", "PAIS",
-                "CIUDAD", "CIUDAD_CORREGIDA", "DEPARTAMENTO", "EQUIPO_VENTAS", "REFERENCIA"
+                "CIUDAD", "CIUDAD_CORREGIDA", "DEPARTAMENTO", "EQUIPO_VENTAS", "REFERENCIA", "ZONA"
             ]
             
         # Manejo defensivo por si la columna 'ASESOR COMERCIAL' no siempre existe
