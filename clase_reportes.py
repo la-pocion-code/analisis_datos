@@ -185,9 +185,13 @@ class ReportClass():
             exit()
 
         # Paso 5: Extraer el número de factura de la columna "Referencia" en las notas crédito
+        # Paso 5: Extraer el número de factura o código relevante de la columna "Referencia"
         df_notas_credito['NUMERO_FACTURA'] = df_notas_credito['Líneas de factura/Referencia'].apply(
-            lambda x: re.search(r'(FEVY\d+)', x).group(1) if pd.notna(x) and re.search(r'(FEVY\d+)', x) else None
+            lambda x: re.search(r'(?:FEVY|FVE|FYEX|[234]YPO|YPOS|PSYA|PSYB)\d*', x).group(0) if pd.notna(x) and re.search(r'(?:FEVY|FVE|FYEX|[234]YPO|YPOS|PSYA|PSYB)\d*', x) else None
         )
+        # df_notas_credito['NUMERO_FACTURA'] = df_notas_credito['Líneas de factura/Referencia'].apply(
+        #     lambda x: re.search(r'(FEVY\d+)', x).group(1) if pd.notna(x) and re.search(r'(FEVY\d+)', x) else None
+        # )
         df_notas_credito = df_notas_credito.drop(columns=['Líneas de factura/Número'])
         df_notas_credito = df_notas_credito.rename(columns={'NUMERO_FACTURA': 'Líneas de factura/Número'})
         # Paso 6: Convertir las cantidades y totales de las notas crédito a valores negativos
@@ -387,7 +391,7 @@ class ReportClass():
 
 
         # Esta linea mantiene solo los pruductos comerciales
-        df_filtrado = df[df['Líneas de factura/Producto'].str.startswith(('[PCN','[KD','[TNG','[B8'))]   ###### linea modificada
+        df_filtrado = df.copy()
         # Paso 6: Mostrar resumen
       
         # '''# Paso 1: Agrupar por 'Líneas de factura/Número' y propagar el valor de 'Equipo de Ventas' hacia abajo
@@ -404,27 +408,59 @@ class ReportClass():
                     (df_filtrado['Etiqueta contacto']=='MAYORISTA NV'), 'Tipo de cliente'
                     ] = 'MAYORISTA NV'
 
-        # # Paso 2: Verificar el resultado
-        # print(df_filtrado[['Líneas de factura/Número', 'Equipo de Ventas']].head(20))  # Mostrar las primeras 20 filas para verificar'''
-        equipo_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Equipo de Ventas'].first().to_dict()
+        equipo_por_factura = (
+            df_filtrado
+            .groupby('Líneas de factura/Número')['Equipo de Ventas']
+            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+            .to_dict()
+        )
 
-        # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
-        df_filtrado.loc[:,'Equipo de Ventas'] = df['Líneas de factura/Número'].map(equipo_por_factura)
-
-        asesora_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Asesor Comercial'].first().to_dict()
-
-        # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
-        # df_filtrado['Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
-        df_filtrado.loc[:, 'Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
-
-        asesora_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Tipo de cliente'].first().to_dict()
-
-        # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
-        # df_filtrado['Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
-        df_filtrado.loc[:, 'Tipo de cliente'] = df['Líneas de factura/Número'].map(asesora_por_factura)
+        df_filtrado['Equipo de Ventas'] = df_filtrado['Líneas de factura/Número'].map(equipo_por_factura)
 
 
 
+        asesor_por_factura = (
+            df_filtrado
+            .groupby('Líneas de factura/Número')['Asesor Comercial']
+            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+            .to_dict()
+        )
+        df_filtrado['Asesor Comercial'] = df_filtrado['Líneas de factura/Número'].map(asesor_por_factura)
+
+        tipo_por_factura = (
+            df_filtrado
+            .groupby('Líneas de factura/Número')['Tipo de cliente']
+            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+            .to_dict()
+        )
+        df_filtrado['Tipo de cliente'] = df_filtrado['Líneas de factura/Número'].map(tipo_por_factura)
+
+
+
+
+
+        # # # Paso 2: Verificar el resultado
+        # # print(df_filtrado[['Líneas de factura/Número', 'Equipo de Ventas']].head(20))  # Mostrar las primeras 20 filas para verificar'''
+        # equipo_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Equipo de Ventas'].first().to_dict()
+
+        # # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
+        # df_filtrado.loc[:,'Equipo de Ventas'] = df['Líneas de factura/Número'].map(equipo_por_factura)
+
+        # asesora_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Asesor Comercial'].first().to_dict()
+
+        # # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
+        # # df_filtrado['Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
+        # df_filtrado.loc[:, 'Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
+
+        # asesora_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Tipo de cliente'].first().to_dict()
+
+        # # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
+        # # df_filtrado['Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
+        # df_filtrado.loc[:, 'Tipo de cliente'] = df['Líneas de factura/Número'].map(asesora_por_factura)
+
+
+        df_filtrado = df_filtrado[df_filtrado['Líneas de factura/Producto'].str.startswith(('[PCN','[KD','[TNG','[B8'))].copy()   ###### linea modificada
+        print("FILAS CATALOGO:", df_filtrado[df_filtrado['Líneas de factura/Asociado']=='NOVAVENTA S.A.S']['Tipo de cliente'].value_counts())
    
         # Ahora puedes modificar df_filtrado sin preocuparte por el warning
         df_filtrado.loc[:, 'Líneas de factura/Fecha de factura'] = pd.to_datetime(df_filtrado['Líneas de factura/Fecha de factura'])
@@ -1042,13 +1078,19 @@ class ReportClass():
         ruta_bgta= ruta / 'data' / 'Base_bogota.xlsx'
         ruta_zonas= ruta / 'data' / 'zonas.xlsx'
         df_bogota= pd.read_excel(ruta_bgta)
+        df_bogota = df_bogota.drop_duplicates(subset='DOCUMENTO')
+        df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(int)
         zonas = pd.read_excel(ruta_zonas)
 
         ventas_procesadas['Base'] = ventas_procesadas['Base'].merge(zonas, on=['DEPARTAMENTO', 'CATEGORÍA'], how='left')
+        
         ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'] = pd.to_numeric(
-        ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'], errors='coerce'
-        )
-        df_bogota['DOCUMENTO'] = pd.to_numeric(df_bogota['DOCUMENTO'])
+            ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'], errors='coerce'
+        ).astype('float')
+
+        df_bogota['DOCUMENTO'] = pd.to_numeric(
+            df_bogota['DOCUMENTO'], errors='coerce'
+        ).astype('float')
 
 
         # df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(str)
