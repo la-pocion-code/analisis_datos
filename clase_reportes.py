@@ -1182,15 +1182,19 @@ class ReportClass():
                 'base_clean':base_clean,
                 'explosion':explosion
                 }
-    
-
-
 
     def contabilidad(self):
+        """
+        Procese la información contable desde archivos Odoo, asigna niveles, centros de costo y conceptos,
+        y guarda la base procesada en un archivo CSV.    
+            Returns:   
+                None: El resultado se guarda en un archivo CSV en la carpeta de contabilidad.
+        """
+        
         ruta = self.validar_ruta()
         ruta_contabilidad = ruta / 'data' / 'contabilidad'
         df_base = self.consolidar_carpeta(ruta_carpeta=ruta_contabilidad / 'odoo' )
-        # df_base = pd.concat([df_4,df_5,df_6], ignore_index=True)
+
         df_base = df_base.rename(columns={'Cuenta': 'Cuenta Origen'})
         df_base['Cuenta'] = df_base['Cuenta Origen'].str.split(' ', regex=True).str[0]
         df_base['Nombre cuenta'] = df_base['Cuenta Origen'].str.split(' ', regex=True).str[1:].apply(lambda x: ' '.join(x) if isinstance(x, list) else '')
@@ -1198,16 +1202,12 @@ class ReportClass():
         df_base['N2'] = df_base['Cuenta Origen'].astype(str).str[:2]
         df_base['N3'] = df_base['Cuenta Origen'].astype(str).str[:4]
 
-        # df_base['Débito'] = df_base['Débito'].fillna(0)
-        # df_base['Crédito'] = df_base['Crédito'].fillna(0)
-        # df_base['Balance'] = df_base['Débito'] - df_base['Crédito']
-
         # Define la columna nivel
-        df_base['Nivel']  =np.where(df_base['N2']==41, 'Ingreso Operativo',
-                np.where(df_base['N2']==42, 'Otros ingresos',
-                        np.where(df_base['N2']==52, 'Gastos operacionales',
-                                np.where(df_base['N2']==53, 'Gastos No Operacionales',
-                                            np.where(df_base['N2']==61, 'Costo directo de ventas', 
+        df_base['Nivel']  =np.where(df_base['N2']=='41', 'Ingreso Operativo',
+                np.where(df_base['N2']=='42', 'Otros ingresos',
+                        np.where(df_base['N2']=='52', 'Gastos operacionales',
+                                np.where(df_base['N2']=='53', 'Gastos No Operacionales',
+                                            np.where(df_base['N2']=='61', 'Costo directo de ventas', 
                                                     'Revisar'
                                             )
                                 )
@@ -1223,16 +1223,8 @@ class ReportClass():
         df_base['N3'] = df_base['N3'].astype(int)
         df_base['Cuenta'] = df_base['Cuenta'].astype(int)
 
-
         df_base_merge = df_base.merge(df_niveles, left_on='N3', right_on='cuenta', how='left').drop(columns='cuenta')
 
-
-        # df_base_merge = df_base_merge.merge(df_detalle, left_on=['Cuenta', 'Nombre cuenta'], right_on=['CUENTA', 'NOMBRE'], how='left').drop(columns=['CUENTA', 'NOMBRE'])
-
-
-        # df_base_merge[df_base_merge.duplicated(keep=False)].sort_values(by='Número')
-
-        # Supongamos que la columna se llama 'columna_dict'
         def extraer_clave(diccionario_str):
             if pd.isna(diccionario_str):
                 return None
@@ -1242,29 +1234,62 @@ class ReportClass():
             except Exception:
                 return None
 
-
         df_base_merge = df_base_merge.rename(columns={'Distribución analítica': 'Distribución analítica ori'})
 
         df_base_merge['Distribución analítica'] = df_base_merge['Distribución analítica ori'].apply(extraer_clave)
 
 
+        # Ajustes manuales de asignación de centro de costo y concepto
+        df_base_merge['N1'] = df_base_merge['N1'].astype(str)
+        df_base_merge['N2'] = df_base_merge['N2'].astype(str)
+        df_base_merge['N3'] = df_base_merge['N3'].astype(str)
+        
+        df_base_merge.loc[
+            (df_base_merge['N3'] == '4135')&  (df_base_merge['Distribución analítica ori'].isna()),
+            'Distribución analítica', 
+        ] = '6'
+
+
+
+        df_base_merge.loc[
+            (df_base_merge['N1'] == '6') & (df_base_merge['Distribución analítica ori'].isna()),
+            'Distribución analítica'
+        ] =  '6'
+
+
+        df_base_merge.loc[
+            (df_base_merge['N2'] == '42') & (df_base_merge['Distribución analítica ori'].isna()),
+            'Distribución analítica'
+        ] = '6'
+
+
+
+        df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
+                    (df_base_merge['Número'].str.startswith('BNK')) &
+                        (df_base_merge['Cuenta Origen'].isin(['530515001 COMISIONES','530505002 GRAVAMEN CUATRO POR MIL', '530505001 CUOTA DE MANEJO']))
+                    , 'Distribución analítica'
+                    ] = '7'
+
+
+        df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
+                    (df_base_merge['Número'].str.startswith('BNK')) &
+                        (df_base_merge['Cuenta Origen'].isin(['539595001 AJUSTE A MILES']))
+                    , 'Distribución analítica'
+                    ] = '6' 
+        df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
+                    (df_base_merge['Número'].str.startswith('STJ')) 
+                    , 'Distribución analítica'
+                    ] = '6'
+
         df_cc['cc'] = df_cc['cc'].astype(str)
-
-
-
 
         df_base_merge = df_base_merge.merge(df_cc[['cc','Nombre Cencosto', 'ADM/VTAS','Origen' ]],
                                             left_on='Distribución analítica', right_on='cc', how='left').drop(columns='cc')
         df_concepto['CC'] = df_concepto['CC'].str.upper().str.strip()
 
-
         df_base_merge['Nombre Cencosto'] = df_base_merge['Nombre Cencosto'].str.upper().str.strip()
 
-
         df_base_merge = df_base_merge.merge(df_concepto, left_on=['Cuenta','Nombre Cencosto' ], right_on=['Cuenta','CC'], how='left')
-
-        
-
 
         max_date = df_base_merge['Fecha'].max()
         min_date = df_base_merge['Fecha'].min()
@@ -1272,27 +1297,26 @@ class ReportClass():
         ruta_base = ruta_contabilidad / 'base' / f'base_{min_date.strftime('%d-%m-%Y')}_{max_date.strftime('%d-%m-%Y')}.csv'
         df_base_merge.to_csv(ruta_base, sep=";", index=False, encoding='utf-8', decimal=',')
 
-        # x = pd.read_excel(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\data\contabilidad\base\base_ene_jun_2025.xlsx")
-        # x.to_csv(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\data\contabilidad\base\base_ene_jun_2025.csv", sep=";", index=False, encoding='utf-8')
-        # Validar los centros de costo
         centros_no_re = df_base_merge[(df_base_merge['Nombre Cencosto'].isna())&
                     (~df_base_merge['Distribución analítica'].isna())
                     ][['Distribución analítica ori','Distribución analítica', 'Nombre Cencosto' ]].drop_duplicates()
         # Centros de costo mal clasificados
         cc_corregir = df_base_merge[df_base_merge['Distribución analítica ori'].fillna('').str.count(':')>1]
+
         # Genera el archivo de los casos sin centro de costos
         sin_cc = df_base_merge[df_base_merge['Distribución analítica'].isna()]
         sin_cc.to_excel(ruta_contabilidad / 'sin_cc.xlsx', index=False)
-        # Guarda las errores en un solo archivo
-
 
         # Genera el archivo con los errores
         with pd.ExcelWriter(ruta_contabilidad / 'correciones.xlsx', engine='openpyxl') as writer:
             sin_cc.to_excel(writer, index=False, sheet_name='Sin CC')
             cc_corregir.to_excel(writer, index=False, sheet_name='Corregir CC')
             centros_no_re.to_excel(writer, index=False, sheet_name='CC_no_registrados')
+
         df_base_consol =  self.consolidar_carpeta(extension='csv', encoding='utf-8', sep=';', decimal=',', ruta_carpeta= ruta_contabilidad / 'base')
         # pd.read_csv(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\data\contabilidad\base\base_ene_jun_2025.csv",encoding='utf-8', sep=';')
         df_base_consol.to_csv(ruta_contabilidad / 'base_consolidada.csv', encoding='utf-8', sep=';', decimal=',', index=False)
+
+        # return df_base_consol
 
         return df_base_consol
