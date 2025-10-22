@@ -1185,12 +1185,10 @@ class ReportClass():
 
     def contabilidad(self):
         """
-        Procese la información contable desde archivos Odoo, asigna niveles, centros de costo y conceptos,
-        y guarda la base procesada en un archivo CSV.    
+        Procese la información contable desde archivos Odoo, asigna niveles, centros de costo y conceptos,   
             Returns:   
                 None: El resultado se guarda en un archivo CSV en la carpeta de contabilidad.
         """
-        
         ruta = self.validar_ruta()
         ruta_contabilidad = ruta / 'data' / 'contabilidad'
         df_base = self.consolidar_carpeta(ruta_carpeta=ruta_contabilidad / 'odoo' )
@@ -1216,9 +1214,11 @@ class ReportClass():
         )
 
         df_niveles =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='niveles')
-        df_detalle =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='detalle')
-        df_concepto =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='concepto')
+        df_concepto_unico =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='cuentas_concepto_uni')
+        df_concepto =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='concepto_depende_cc')
         df_cc =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='CC')
+        df_concepto_doble =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='doble concepto')
+
         df_base['N3'] = df_base['N3'].astype(int)
         df_base['N3'] = df_base['N3'].astype(int)
         df_base['Cuenta'] = df_base['Cuenta'].astype(int)
@@ -1238,38 +1238,31 @@ class ReportClass():
 
         df_base_merge['Distribución analítica'] = df_base_merge['Distribución analítica ori'].apply(extraer_clave)
 
-
         # Ajustes manuales de asignación de centro de costo y concepto
         df_base_merge['N1'] = df_base_merge['N1'].astype(str)
         df_base_merge['N2'] = df_base_merge['N2'].astype(str)
         df_base_merge['N3'] = df_base_merge['N3'].astype(str)
-        
+
         df_base_merge.loc[
-            (df_base_merge['N3'] == '4135')&  (df_base_merge['Distribución analítica ori'].isna()),
+            (df_base_merge['N3'] == '4135'),
             'Distribución analítica', 
         ] = '6'
-
-
 
         df_base_merge.loc[
             (df_base_merge['N1'] == '6') & (df_base_merge['Distribución analítica ori'].isna()),
             'Distribución analítica'
         ] =  '6'
 
-
         df_base_merge.loc[
             (df_base_merge['N2'] == '42') & (df_base_merge['Distribución analítica ori'].isna()),
             'Distribución analítica'
         ] = '6'
-
-
 
         df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
                     (df_base_merge['Número'].str.startswith('BNK')) &
                         (df_base_merge['Cuenta Origen'].isin(['530515001 COMISIONES','530505002 GRAVAMEN CUATRO POR MIL', '530505001 CUOTA DE MANEJO']))
                     , 'Distribución analítica'
                     ] = '7'
-
 
         df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
                     (df_base_merge['Número'].str.startswith('BNK')) &
@@ -1285,11 +1278,55 @@ class ReportClass():
 
         df_base_merge = df_base_merge.merge(df_cc[['cc','Nombre Cencosto', 'ADM/VTAS','Origen' ]],
                                             left_on='Distribución analítica', right_on='cc', how='left').drop(columns='cc')
-        df_concepto['CC'] = df_concepto['CC'].str.upper().str.strip()
+
+
+        df_base_merge = df_base_merge.merge(df_concepto_unico, on='Cuenta', how='left')
+
+        df_concepto['Nombre Cencosto'] = df_concepto['Nombre Cencosto'].str.upper().str.strip()
 
         df_base_merge['Nombre Cencosto'] = df_base_merge['Nombre Cencosto'].str.upper().str.strip()
 
-        df_base_merge = df_base_merge.merge(df_concepto, left_on=['Cuenta','Nombre Cencosto' ], right_on=['Cuenta','CC'], how='left')
+        df_base_merge = df_base_merge.merge(df_concepto, on=['Cuenta','Nombre Cencosto' ], how='left')
+        # Crea la columna conceto con base la los coceptos unicos y los que necesitan cc
+        df_base_merge['Concepto'] = np.where(df_base_merge['Concepto_uni'].isna(), df_base_merge['Concepto_cc'], df_base_merge['Concepto_uni'])
+        df_concepto_doble['id'] = df_concepto_doble['Nombre Cencosto'] + df_concepto_doble['Cuenta'].astype(str)
+        df_concepto_doble = df_concepto_doble.drop_duplicates(subset=['id'], keep='first')
+        df_base_merge = df_base_merge.merge(df_concepto_doble, on=['Cuenta','Nombre Cencosto'],  how='left')
+        # Verifica las cuentas que no tienen concepto
+        df_cuentas = df_base_merge[df_base_merge['Concepto'].isna()][['Cuenta','Nombre Cencosto']]
+        df_cuentas = df_cuentas.drop_duplicates(subset=['Cuenta', 'Nombre Cencosto',], keep='first')
+        df_concepto = df_concepto.drop_duplicates(subset='Cuenta')
+        df_concepto_doble = df_concepto_doble.drop_duplicates(subset='Cuenta')
+        df_cuentas= df_cuentas.merge(df_concepto, on='Cuenta', how='left').merge(df_concepto_doble, on='Cuenta', how='left')
+        df_cuentas = df_cuentas.fillna('Sin datos')
+        df_cuentas['Estado Cuenta'] = np.where(
+            (df_cuentas['Concepto_cc']=="Sin datos") & (df_cuentas['Concepto_doble']== 'Sin datos'),
+            'Cuenta Nueva',
+            np.where(
+                df_cuentas['Concepto_doble'].notna(),
+                'Cuenta Doble Concepto',
+                'Revisar'
+            )
+        )
+
+        df_cuentas = df_cuentas[['Cuenta', 'Nombre Cencosto_x','Estado Cuenta']]
+
+        # Elimina las columnas que no son necesarias
+        df_base_merge = df_base_merge.drop(columns=['Concepto_uni', 'Concepto_cc'])
+
+        return df_base_merge, df_cuentas
+
+
+    def archivos_contabilidad(self):
+        """
+        Crea y consolida los archivos procesados por odoo
+
+        """
+        ruta = self.validar_ruta()
+        ruta_contabilidad = ruta / 'data' / 'contabilidad'
+
+        df_base_merge, df_cuentas = self.contabilidad()
+
 
         max_date = df_base_merge['Fecha'].max()
         min_date = df_base_merge['Fecha'].min()
@@ -1305,18 +1342,26 @@ class ReportClass():
 
         # Genera el archivo de los casos sin centro de costos
         sin_cc = df_base_merge[df_base_merge['Distribución analítica'].isna()]
-        sin_cc.to_excel(ruta_contabilidad / 'sin_cc.xlsx', index=False)
+
 
         # Genera el archivo con los errores
         with pd.ExcelWriter(ruta_contabilidad / 'correciones.xlsx', engine='openpyxl') as writer:
             sin_cc.to_excel(writer, index=False, sheet_name='Sin CC')
             cc_corregir.to_excel(writer, index=False, sheet_name='Corregir CC')
             centros_no_re.to_excel(writer, index=False, sheet_name='CC_no_registrados')
+            df_cuentas.to_excel(writer, index=False, sheet_name='Cuentas sin concep')
 
+
+        # Crea un archivo para cada persona de contabilidad
+        digitadores = sin_cc['Creado por'].unique()
+        ruta_errores = ruta_contabilidad / 'correcciones'
+        dicc = {}
+        for i in digitadores:
+            base = sin_cc[sin_cc['Creado por']==i]
+            base.to_csv(ruta_errores / f'{i}.csv', index=False, sep=';', decimal=',', encoding='utf-8')
+            dicc[i] = f'{i}.csv'
         df_base_consol =  self.consolidar_carpeta(extension='csv', encoding='utf-8', sep=';', decimal=',', ruta_carpeta= ruta_contabilidad / 'base')
         # pd.read_csv(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\data\contabilidad\base\base_ene_jun_2025.csv",encoding='utf-8', sep=';')
         df_base_consol.to_csv(ruta_contabilidad / 'base_consolidada.csv', encoding='utf-8', sep=';', decimal=',', index=False)
 
-        # return df_base_consol
-
-        return df_base_consol
+        return df_base_consol, dicc
