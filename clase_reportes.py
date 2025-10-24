@@ -1256,7 +1256,7 @@ class ReportClass():
         df_base_merge.loc[
             (df_base_merge['N2'] == '42') & (df_base_merge['Distribución analítica ori'].isna()),
             'Distribución analítica'
-        ] = '6'
+        ] = '6'## validar cc
 
         df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
                     (df_base_merge['Número'].str.startswith('BNK')) &
@@ -1272,7 +1272,9 @@ class ReportClass():
         df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
                     (df_base_merge['Número'].str.startswith('STJ')) 
                     , 'Distribución analítica'
-                    ] = '6'
+                    ] = '6' # validar si es clientre cc ==comercial  o infulerce cc== marketing ==
+        
+
 
         df_cc['cc'] = df_cc['cc'].astype(str)
 
@@ -1293,7 +1295,7 @@ class ReportClass():
         df_concepto_doble = df_concepto_doble.drop_duplicates(subset=['id'], keep='first')
         df_base_merge = df_base_merge.merge(df_concepto_doble, on=['Cuenta','Nombre Cencosto'],  how='left')
         # Verifica las cuentas que no tienen concepto
-        df_cuentas = df_base_merge[df_base_merge['Concepto'].isna()][['Cuenta','Nombre Cencosto']]
+        df_cuentas = df_base_merge[df_base_merge['Concepto'].isna()][['Cuenta','Cuenta Origen','Nombre Cencosto']]
         df_cuentas = df_cuentas.drop_duplicates(subset=['Cuenta', 'Nombre Cencosto',], keep='first')
         df_concepto = df_concepto.drop_duplicates(subset='Cuenta')
         df_concepto_doble = df_concepto_doble.drop_duplicates(subset='Cuenta')
@@ -1309,7 +1311,8 @@ class ReportClass():
             )
         )
 
-        df_cuentas = df_cuentas[['Cuenta', 'Nombre Cencosto_x','Estado Cuenta']]
+
+        df_cuentas = df_cuentas[['Cuenta', 'Cuenta Origen','Nombre Cencosto_x','Estado Cuenta']] # Agregafr el nombre de la cuenta
 
         # Elimina las columnas que no son necesarias
         df_base_merge = df_base_merge.drop(columns=['Concepto_uni', 'Concepto_cc'])
