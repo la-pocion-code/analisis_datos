@@ -197,6 +197,9 @@ class ReportClass():
         # Paso 6: Convertir las cantidades y totales de las notas crédito a valores negativos
         df_notas_credito['Líneas de factura/Cantidad'] = -df_notas_credito['Líneas de factura/Cantidad']
         df_notas_credito['Líneas de factura/Total'] = -df_notas_credito['Líneas de factura/Total']
+
+
+
         # Paso 8: Crear una columna temporal que combine NUMERO_FACTURA y PRODUCTO
         df_ventas['NUMERO_FACTURA-PRODUCTO'] = df_ventas['Líneas de factura/Número'] + '-' + df_ventas['Líneas de factura/Producto']
         df_notas_credito['NUMERO_FACTURA-PRODUCTO'] = df_notas_credito['Líneas de factura/Número'] + '-' + df_notas_credito['Líneas de factura/Producto']
@@ -361,45 +364,9 @@ class ReportClass():
         # Crear la columna 'total' con la lógica especificada
         df['Líneas de factura/Asociado/Ciudad'] = df['Líneas de factura/Asociado/Ciudad'].astype(str).fillna("Desconocido")
 
-
-        # # Paso 4: Eliminar registros que no corresponden a ventas de la poción
-        # productos_a_eliminar = [
-        #     '[FLETEGRAV19] FLETE GRAVADO IVA 19% (en ventas)',
-        #     '[ALOJAMIENTO] SERV. ALOJAMIENTO',
-        #     '[reintegro] Reintegro de costos y gastos',
-        #     '[BKRAFT4] Bolsa de Papel Kraft Boutique 4',
-        #     '[PLEGP] CAJAS PLEGADIZAS POCION',
-        #     '[SCHT05] SACHET MSC ANCESTRAL 15 ML',
-        #     '[MAE20] Laminado Sachet Shampoo La Pocion 60ml',
-        #     '[SERVICIO ALOJAMIENTO EXTERIOR] SERVICIO ALOJAMIENTO EXTERIOR',
-        #     '[ACTIVOF] VENTA ACTIVO FIJO',
-        #     '[EXP01] FLETE INTERNACIONAL EXP',
-        #     '[EXP02] SEGURO INTERNACIONAL EXP',
-        #     '[MPE02] ENVASE PET MILK X 440 ML',
-        #     '[FLETE NG] FLETE NG',
-        #     '[EXP02] SEGURO INTERNACIONAL EXP',
-        #     '[EXP01] FLETE INTERNACIONAL EXP',
-        #     '[EXP01] Flete Internacional EXP',
-        #     '[EXP02] Seguro Internacional EXP',
-        #     '[MPE02] ENVASE PET MILK X 440 ML',
-        #     '[ARRENDAMIENTO INMUEBLE GRAVADO 19%] ARRENDAMIENTO INMUEBLE GRAVADO 19%' ## preguntar si se elimina
-            
-        # ]
-
-
-        # df_filtrado = df[~df['Líneas de factura/Producto'].isin(productos_a_eliminar)]
-
-
-        # Esta linea mantiene solo los pruductos comerciales
         df_filtrado = df.copy()
-        # Paso 6: Mostrar resumen
       
-        # '''# Paso 1: Agrupar por 'Líneas de factura/Número' y propagar el valor de 'Equipo de Ventas' hacia abajo
-        # df_filtrado['Equipo de Ventas'] = df_filtrado.groupby('Líneas de factura/Número')['Equipo de Ventas'].transform(lambda x: x.ffill())
-        # # Crear una copia explícita del DataFrame
-        # df_filtrado = df_filtrado.copy()
-
-                # Guarda en la variables las ventas sin tipo de cliente y con etiqueta mayorista
+        # Guarda en la variables las ventas sin tipo de cliente y con etiqueta mayorista
         etiqueta_mayorista = df_filtrado[(df_filtrado['Tipo de cliente'].isna())&
                     (df_filtrado['Etiqueta contacto']=='MAYORISTA NV')
                     ] 
@@ -1203,7 +1170,7 @@ class ReportClass():
         # Define la columna nivel
         df_base['Nivel']  =np.where(df_base['N2']=='41', 'Ingreso Operativo',
                 np.where(df_base['N2']=='42', 'Otros ingresos',
-                        np.where(df_base['N2']=='52', 'Gastos operacionales',
+                        np.where(df_base['N2']=='52', 'Gastos5 operacionales',
                                 np.where(df_base['N2']=='53', 'Gastos No Operacionales',
                                             np.where(df_base['N2']=='61', 'Costo directo de ventas', 
                                                     'Revisar'
@@ -1213,11 +1180,14 @@ class ReportClass():
                 )
         )
 
+
         df_niveles =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='niveles')
         df_concepto_unico =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='cuentas_concepto_uni')
         df_concepto =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='concepto_depende_cc')
         df_cc =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='CC')
         df_concepto_doble =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='doble concepto')
+
+        influencer =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='INFLUENCER')
 
         df_base['N3'] = df_base['N3'].astype(int)
         df_base['N3'] = df_base['N3'].astype(int)
@@ -1238,6 +1208,7 @@ class ReportClass():
 
         df_base_merge['Distribución analítica'] = df_base_merge['Distribución analítica ori'].apply(extraer_clave)
 
+
         # Ajustes manuales de asignación de centro de costo y concepto
         df_base_merge['N1'] = df_base_merge['N1'].astype(str)
         df_base_merge['N2'] = df_base_merge['N2'].astype(str)
@@ -1248,15 +1219,26 @@ class ReportClass():
             'Distribución analítica', 
         ] = '6'
 
+
+        df_base_merge.loc[
+            (df_base_merge['N3'] == '4175') & 
+            (df_base_merge['Diario']!="Facturas de cliente Cali"),
+            'Distribución analítica', 
+        ] = '6'
+
+
         df_base_merge.loc[
             (df_base_merge['N1'] == '6') & (df_base_merge['Distribución analítica ori'].isna()),
             'Distribución analítica'
         ] =  '6'
 
+
         df_base_merge.loc[
             (df_base_merge['N2'] == '42') & (df_base_merge['Distribución analítica ori'].isna()),
             'Distribución analítica'
-        ] = '6'## validar cc
+        ] = '6'
+
+
 
         df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
                     (df_base_merge['Número'].str.startswith('BNK')) &
@@ -1264,17 +1246,36 @@ class ReportClass():
                     , 'Distribución analítica'
                     ] = '7'
 
+
         df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
                     (df_base_merge['Número'].str.startswith('BNK')) &
                         (df_base_merge['Cuenta Origen'].isin(['539595001 AJUSTE A MILES']))
                     , 'Distribución analítica'
                     ] = '6' 
-        df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
-                    (df_base_merge['Número'].str.startswith('STJ')) 
-                    , 'Distribución analítica'
-                    ] = '6' # validar si es clientre cc ==comercial  o infulerce cc== marketing ==
-        
 
+        df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
+                    (df_base_merge['Número'].str.startswith('STJ')) &
+                    (~df_base_merge['Contacto'].isin(influencer['Contacto'].unique().tolist()))
+                    , 'Distribución analítica'
+                    ] = '6'  # validar si es clientre cc ==comercial  o infulerce cc== marketing ==
+
+        df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
+                    (df_base_merge['Número'].str.startswith('STJ')) &
+                    (df_base_merge['Contacto'].isin(influencer['Contacto'].unique().tolist()))
+                    , 'Distribución analítica'
+                    ] = '4'  # validar si es clientre cc ==comercial  o infulerce cc== marketing ==
+
+
+        mask = df_base_merge['Distribución analítica'].fillna('').str.contains('5,')
+
+        df_base_merge.loc[mask, 'Distribución analítica'] = (
+            df_base_merge.loc[mask, 'Distribución analítica']
+            .apply(lambda x: x.split(',')[1].strip())
+        )
+
+
+            # df_base_merge[df_base_merge['Distribución analítica']
+            # .fillna('0').str.contains('5,')]
 
         df_cc['cc'] = df_cc['cc'].astype(str)
 
@@ -1282,25 +1283,49 @@ class ReportClass():
                                             left_on='Distribución analítica', right_on='cc', how='left').drop(columns='cc')
 
 
+
         df_base_merge = df_base_merge.merge(df_concepto_unico, on='Cuenta', how='left')
+
 
         df_concepto['Nombre Cencosto'] = df_concepto['Nombre Cencosto'].str.upper().str.strip()
 
         df_base_merge['Nombre Cencosto'] = df_base_merge['Nombre Cencosto'].str.upper().str.strip()
 
+
         df_base_merge = df_base_merge.merge(df_concepto, on=['Cuenta','Nombre Cencosto' ], how='left')
         # Crea la columna conceto con base la los coceptos unicos y los que necesitan cc
-        df_base_merge['Concepto'] = np.where(df_base_merge['Concepto_uni'].isna(), df_base_merge['Concepto_cc'], df_base_merge['Concepto_uni'])
+
+
+        df_base_merge['Concepto_uni'] = df_base_merge['Concepto_uni'].fillna('Sin datos')
+        df_base_merge['Concepto_cc'] = df_base_merge['Concepto_cc'].fillna('Sin datos')
+
+        # df_base_merge['Concepto'] = np.where(df_base_merge['Concepto_uni'].isna(), df_base_merge['Concepto_cc'], df_base_merge['Concepto_uni'])
+        df_base_merge = df_base_merge.reset_index(drop=True)
+        df_base_merge['Concepto'] = np.where(
+            df_base_merge['Concepto_uni']=='Sin datos',
+            df_base_merge['Concepto_cc'],
+            df_base_merge['Concepto_uni']
+        )
+
+        df_base_merge.columns
+
         df_concepto_doble['id'] = df_concepto_doble['Nombre Cencosto'] + df_concepto_doble['Cuenta'].astype(str)
         df_concepto_doble = df_concepto_doble.drop_duplicates(subset=['id'], keep='first')
         df_base_merge = df_base_merge.merge(df_concepto_doble, on=['Cuenta','Nombre Cencosto'],  how='left')
+
+
         # Verifica las cuentas que no tienen concepto
-        df_cuentas = df_base_merge[df_base_merge['Concepto'].isna()][['Cuenta','Cuenta Origen','Nombre Cencosto']]
+        df_cuentas = df_base_merge[df_base_merge['Concepto'].isna()][['Cuenta','Nombre Cencosto', 'Distribución analítica']]
         df_cuentas = df_cuentas.drop_duplicates(subset=['Cuenta', 'Nombre Cencosto',], keep='first')
-        df_concepto = df_concepto.drop_duplicates(subset='Cuenta')
-        df_concepto_doble = df_concepto_doble.drop_duplicates(subset='Cuenta')
-        df_cuentas= df_cuentas.merge(df_concepto, on='Cuenta', how='left').merge(df_concepto_doble, on='Cuenta', how='left')
+        df_concepto = df_concepto.drop_duplicates(subset=['Cuenta', 'Nombre Cencosto'])
+
+
+        df_concepto_doble = df_concepto_doble.drop_duplicates(subset=['Cuenta'])
+
+        df_cuentas= df_cuentas.merge(df_concepto, on=['Cuenta','Nombre Cencosto'], how='left').merge(df_concepto_doble, on=['Cuenta','Nombre Cencosto'], how='left')
         df_cuentas = df_cuentas.fillna('Sin datos')
+
+
         df_cuentas['Estado Cuenta'] = np.where(
             (df_cuentas['Concepto_cc']=="Sin datos") & (df_cuentas['Concepto_doble']== 'Sin datos'),
             'Cuenta Nueva',
@@ -1312,7 +1337,7 @@ class ReportClass():
         )
 
 
-        df_cuentas = df_cuentas[['Cuenta', 'Cuenta Origen','Nombre Cencosto_x','Estado Cuenta']] # Agregafr el nombre de la cuenta
+        df_cuentas = df_cuentas[['Cuenta', 'Nombre Cencosto','Estado Cuenta', 'Distribución analítica']]
 
         # Elimina las columnas que no son necesarias
         df_base_merge = df_base_merge.drop(columns=['Concepto_uni', 'Concepto_cc'])
@@ -1330,7 +1355,6 @@ class ReportClass():
 
         df_base_merge, df_cuentas = self.contabilidad()
 
-
         max_date = df_base_merge['Fecha'].max()
         min_date = df_base_merge['Fecha'].min()
         min_date.strftime('%d-%m-%Y')
@@ -1345,7 +1369,7 @@ class ReportClass():
 
         # Genera el archivo de los casos sin centro de costos
         sin_cc = df_base_merge[df_base_merge['Distribución analítica'].isna()]
-
+        sin_cc.to_excel(ruta_contabilidad / 'sin_cc.xlsx', index=False)
 
         # Genera el archivo con los errores
         with pd.ExcelWriter(ruta_contabilidad / 'correciones.xlsx', engine='openpyxl') as writer:
@@ -1363,8 +1387,14 @@ class ReportClass():
             base = sin_cc[sin_cc['Creado por']==i]
             base.to_csv(ruta_errores / f'{i}.csv', index=False, sep=';', decimal=',', encoding='utf-8')
             dicc[i] = f'{i}.csv'
+
         df_base_consol =  self.consolidar_carpeta(extension='csv', encoding='utf-8', sep=';', decimal=',', ruta_carpeta= ruta_contabilidad / 'base')
         # pd.read_csv(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\data\contabilidad\base\base_ene_jun_2025.csv",encoding='utf-8', sep=';')
+        df_base_consol = df_base_consol.loc[:, ~df_base_consol.columns.str.contains('^Unnamed')]
+
         df_base_consol.to_csv(ruta_contabilidad / 'base_consolidada.csv', encoding='utf-8', sep=';', decimal=',', index=False)
+
+
+        # df_base_consol.to_excel(ruta_contabilidad / 'base_consolidada.xlsx',  index=False)
 
         return df_base_consol, dicc
