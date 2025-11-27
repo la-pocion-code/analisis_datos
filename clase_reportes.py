@@ -20,8 +20,6 @@ class ReportClass():
 
 
 
-
-
     def consolidar_carpeta(self, extension='xlsx', sep=None, encoding=None, decimal=',',sheet_name=None, ruta_carpeta=None):
         """
         Consolida todos los archivos de una carpeta en un único DataFrame de pandas.
@@ -184,14 +182,50 @@ class ReportClass():
             print(f"Error al cargar el archivo de notas crédito: {e}")
             exit()
 
-        # Paso 5: Extraer el número de factura de la columna "Referencia" en las notas crédito
-        # Paso 5: Extraer el número de factura o código relevante de la columna "Referencia"
         df_notas_credito['NUMERO_FACTURA'] = df_notas_credito['Líneas de factura/Referencia'].apply(
             lambda x: re.search(r'(?:FEVY|FVE|FYEX|[234]YPO|YPOS|PSYA|PSYB)\d*', x).group(0) if pd.notna(x) and re.search(r'(?:FEVY|FVE|FYEX|[234]YPO|YPOS|PSYA|PSYB)\d*', x) else None
         )
-        # df_notas_credito['NUMERO_FACTURA'] = df_notas_credito['Líneas de factura/Referencia'].apply(
-        #     lambda x: re.search(r'(FEVY\d+)', x).group(1) if pd.notna(x) and re.search(r'(FEVY\d+)', x) else None
-        # )
+  
+        # Guarda en la variables las ventas sin tipo de cliente y con etiqueta mayorista
+        # Esta variables se guarda en el archivo de errores
+
+        etiqueta_mayorista = df_ventas[(df_ventas['Tipo de cliente'].isna())&
+                    (df_ventas['Etiqueta contacto']=='MAYORISTA NV')
+                    ] 
+        # Copia de la etiqueta los clientes mayoristas que aparecen en blanco
+        df_ventas.loc[(df_ventas['Tipo de cliente'].isna())&
+                    (df_ventas['Etiqueta contacto']=='MAYORISTA NV'), 'Tipo de cliente'
+                    ] = 'MAYORISTA NV'
+
+        equipo_por_factura = (
+            df_ventas
+            .groupby('Líneas de factura/Número')['Equipo de ventas']
+            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+            .to_dict()
+        )
+
+        df_ventas['Equipo de ventas'] = df_ventas['Líneas de factura/Número'].map(equipo_por_factura)
+
+
+        asesor_por_factura = (
+            df_ventas
+            .groupby('Líneas de factura/Número')['Asesor Comercial']
+            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+            .to_dict()
+        )
+        df_ventas['Asesor Comercial'] = df_ventas['Líneas de factura/Número'].map(asesor_por_factura)
+
+        tipo_por_factura = (
+            df_ventas
+            .groupby('Líneas de factura/Número')['Tipo de cliente']
+            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+            .to_dict()
+        )
+        df_ventas['Tipo de cliente'] = df_ventas['Líneas de factura/Número'].map(tipo_por_factura)
+        ####
+
+
+
         df_notas_credito = df_notas_credito.drop(columns=['Líneas de factura/Número'])
         df_notas_credito = df_notas_credito.rename(columns={'NUMERO_FACTURA': 'Líneas de factura/Número'})
         # Paso 6: Convertir las cantidades y totales de las notas crédito a valores negativos
@@ -272,9 +306,7 @@ class ReportClass():
         print("Facturas afectadas por notas crédito:")
         print(facturas_afectadas.shape)
 
-        # ruta = self.validar_ruta()
-        # Paso 18: Guardar el listado de facturas afectadas en un archivo Excel (opcional)
-       
+
         try:
             nombre_archivo_facturas_afectadas = ruta / 'RAW DATA' / 'FACTURAS AFECTADAS' / f'{nombre_archivo}_facturas_afectadas.xlsx' 
             facturas_afectadas.to_excel(nombre_archivo_facturas_afectadas, index=False)
@@ -284,7 +316,8 @@ class ReportClass():
 
         return {'archivo_salida': df_consolidado,
                 'nombre_archivo':ruta_salida,
-                'facturas_afectadas' :facturas_afectadas}
+                'facturas_afectadas' :facturas_afectadas,
+                'etiqueta_mayorista': etiqueta_mayorista}
     
     @staticmethod
     def limpiar_documento(valor):
@@ -358,6 +391,9 @@ class ReportClass():
                 print(f"Error al cargar el archivo: {e}")
                 exit()
 
+        etiqueta_mayorista = notas_creditos['etiqueta_mayorista']
+
+
         # Extraer el código de país y reemplazar NaN con "Desconocido" en un solo paso
         df['pais'] = df['Líneas de factura/Asociado/Estado'].str.extract(r'\(([A-Z]{2})\)').fillna("Desconocido")
 
@@ -366,64 +402,41 @@ class ReportClass():
 
         df_filtrado = df.copy()
       
-        # Guarda en la variables las ventas sin tipo de cliente y con etiqueta mayorista
-        etiqueta_mayorista = df_filtrado[(df_filtrado['Tipo de cliente'].isna())&
-                    (df_filtrado['Etiqueta contacto']=='MAYORISTA NV')
-                    ] 
-        # Copia de la etiqueta los clientes mayoristas que aparecen en blanco
-        df_filtrado.loc[(df_filtrado['Tipo de cliente'].isna())&
-                    (df_filtrado['Etiqueta contacto']=='MAYORISTA NV'), 'Tipo de cliente'
-                    ] = 'MAYORISTA NV'
+        # # Guarda en la variables las ventas sin tipo de cliente y con etiqueta mayorista
+        # etiqueta_mayorista = df_filtrado[(df_filtrado['Tipo de cliente'].isna())&
+        #             (df_filtrado['Etiqueta contacto']=='MAYORISTA NV')
+        #             ] 
+        # # Copia de la etiqueta los clientes mayoristas que aparecen en blanco
+        # df_filtrado.loc[(df_filtrado['Tipo de cliente'].isna())&
+        #             (df_filtrado['Etiqueta contacto']=='MAYORISTA NV'), 'Tipo de cliente'
+        #             ] = 'MAYORISTA NV'
 
-        equipo_por_factura = (
-            df_filtrado
-            .groupby('Líneas de factura/Número')['Equipo de Ventas']
-            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
-            .to_dict()
-        )
+        # equipo_por_factura = (
+        #     df_filtrado
+        #     .groupby('Líneas de factura/Número')['Equipo de Ventas']
+        #     .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+        #     .to_dict()
+        # )
 
-        df_filtrado['Equipo de Ventas'] = df_filtrado['Líneas de factura/Número'].map(equipo_por_factura)
-
-
-
-        asesor_por_factura = (
-            df_filtrado
-            .groupby('Líneas de factura/Número')['Asesor Comercial']
-            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
-            .to_dict()
-        )
-        df_filtrado['Asesor Comercial'] = df_filtrado['Líneas de factura/Número'].map(asesor_por_factura)
-
-        tipo_por_factura = (
-            df_filtrado
-            .groupby('Líneas de factura/Número')['Tipo de cliente']
-            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
-            .to_dict()
-        )
-        df_filtrado['Tipo de cliente'] = df_filtrado['Líneas de factura/Número'].map(tipo_por_factura)
+        # df_filtrado['Equipo de Ventas'] = df_filtrado['Líneas de factura/Número'].map(equipo_por_factura)
 
 
 
+        # asesor_por_factura = (
+        #     df_filtrado
+        #     .groupby('Líneas de factura/Número')['Asesor Comercial']
+        #     .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+        #     .to_dict()
+        # )
+        # df_filtrado['Asesor Comercial'] = df_filtrado['Líneas de factura/Número'].map(asesor_por_factura)
 
-
-        # # # Paso 2: Verificar el resultado
-        # # print(df_filtrado[['Líneas de factura/Número', 'Equipo de Ventas']].head(20))  # Mostrar las primeras 20 filas para verificar'''
-        # equipo_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Equipo de Ventas'].first().to_dict()
-
-        # # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
-        # df_filtrado.loc[:,'Equipo de Ventas'] = df['Líneas de factura/Número'].map(equipo_por_factura)
-
-        # asesora_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Asesor Comercial'].first().to_dict()
-
-        # # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
-        # # df_filtrado['Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
-        # df_filtrado.loc[:, 'Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
-
-        # asesora_por_factura = df_filtrado.groupby('Líneas de factura/Número')['Tipo de cliente'].first().to_dict()
-
-        # # Ahora, rellenamos los valores en la columna EQUIPO_VENTAS
-        # # df_filtrado['Asesor Comercial'] = df['Líneas de factura/Número'].map(asesora_por_factura)
-        # df_filtrado.loc[:, 'Tipo de cliente'] = df['Líneas de factura/Número'].map(asesora_por_factura)
+        # tipo_por_factura = (
+        #     df_filtrado
+        #     .groupby('Líneas de factura/Número')['Tipo de cliente']
+        #     .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+        #     .to_dict()
+        # )
+        # df_filtrado['Tipo de cliente'] = df_filtrado['Líneas de factura/Número'].map(tipo_por_factura)
 
 
         df_filtrado = df_filtrado[df_filtrado['Líneas de factura/Producto'].str.startswith(('[PCN','[KD','[TNG','[B8'))].copy()   ###### linea modificada
@@ -461,8 +474,6 @@ class ReportClass():
         today = pd.to_datetime('now')
         df_TRM = df_TRM[df_TRM['Año'] == today.year]
         df_TRM['TRM'] = df_TRM['valor']
-
-        # df_TRM = pd.read_excel(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\TRM.xlsx")
 
         # Crear una lista para almacenar las filas expandidas
         expanded_rows = []
@@ -509,20 +520,7 @@ class ReportClass():
             print(f"Error al realizar el merge: {str(e)}")
             import traceback
             traceback.print_exc()
-            
-   
 
-        # # Limpiar y convertir la columna 'TRM'
-        # df_resultado['TRM'] = (
-        #     df_resultado['TRM']
-        #     .str.replace('.', '', regex=False)  # Eliminar puntos (separadores de miles)
-        #     .str.replace(',', '.', regex=False)  # Reemplazar comas por puntos (separadores decimales)
-        #     .astype(float)  # Convertir a tipo numérico
-        # )
-
-        # Verificar los valores únicos después de la conversión
- 
-        # Crear la columna `total`
         df_resultado['total'] = df_resultado.apply(
             lambda row: row['Líneas de factura/Total'] if row['pais'] in ['CO', 'Desconocido'] else row['Líneas de factura/Total'] * row['TRM'],
             axis=1
@@ -616,9 +614,6 @@ class ReportClass():
         df_resultado.columns = df_resultado.columns.str.upper()
 
 
-        # # 1. Cargar el dataset BD_CLIENTES
-        # BD_CLIENTES = pd.read_excel(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\BD_CLIENTES.xlsx")
-
         # 2. Limpieza de la columna de identificación en ambos DataFrames
         # Limpieza en tu DataFrame actual
         df_resultado['IDENTIFICACION_CLIENTE'] = (
@@ -628,39 +623,7 @@ class ReportClass():
             .str.replace(r'\s+', '', regex=True)  # Eliminar espacios adicionales entre caracteres
         )
 
-        df_resultado['IDENTIFICACION_CLIENTE'] = df_resultado['IDENTIFICACION_CLIENTE'].apply(self.limpiar_documento)
 
-        # # Limpieza en BD_CLIENTES
-        # BD_CLIENTES['Número de Identificación'] = (
-        #     BD_CLIENTES['Número de Identificación']
-        #     .astype(str)  # Convertir a string
-        #     .str.strip()  # Eliminar espacios al principio y al final
-        #     .str.replace(r'\s+', '', regex=True)  # Eliminar espacios adicionales entre caracteres
-        # )
-        # print(f"- Registros originales: {len(df_resultado)}")
-        # duplicados = BD_CLIENTES['Número de Identificación'].duplicated(keep=False)
-        # print(BD_CLIENTES[duplicados])
-        # BD_CLIENTES = BD_CLIENTES.drop_duplicates(subset=['Número de Identificación'], keep='first')
-        # print(f"Registros originales: {len(df_resultado)}")
-
-
-
-        # df_resultado = pd.merge(
-        #     df_resultado,
-        #     BD_CLIENTES[['Número de Identificación', 'Etiquetas']],
-        #     left_on='IDENTIFICACION_CLIENTE',
-        #     right_on='Número de Identificación',
-        #     how='left'
-        # )
-        # print(f"Registros después del merge: {len(df_resultado)}")
-
-    
-
-        # # 3. Renombrar la columna "Etiquetas" a "Categoría"
-        # df_resultado.rename(columns={'Etiquetas': 'CATEGORÍA'}, inplace=True)
-
-        # 4. Ubicar la columna "Categoría" antes de "Producto"
-        # Primero, obtenemos la lista de columnas
         columnas = df_resultado.columns.tolist()
 
         # Encontramos la posición de la columna "Producto"
@@ -684,30 +647,10 @@ class ReportClass():
 
         df_resultado.loc[~df_resultado['PAIS'].isin(['CO', 'Desconocido']), 'TIPO DE CLIENTE'] = df_resultado['PAIS']
 
-        
-        # Agrgrer varificacion de vendedores mayoristas como asesor comercial
-        # asesores_moyorista = df_resultado[df_resultado['TIPO DE CLIENTE'] == 'MAYORISTA NV']['ASESOR COMERCIAL'].drop_duplicates().tolist()
-        # asesores_moyorista = [a for a in asesores_moyorista if a is not None]
-        # asesores_sin_categoria = df_resultado[(df_resultado['TIPO DE CLIENTE'].isna())&(df_resultado['ASESOR COMERCIAL'].isin(asesores_moyorista))]
-        # df_resultado.loc[(df_resultado['TIPO DE CLIENTE'].isna())&(df_resultado['ASESOR COMERCIAL'].isin(asesores_moyorista)), 'TIPO DE CLIENTE'] = 'MAYORISTA NV'
-
-
-
-
-        # Mostrar las primeras filas para verificar los cambios
     
         # Rellenar los valores vacíos en "Categoría" con "Call center"
         df_resultado['TIPO DE CLIENTE'] =df_resultado['TIPO DE CLIENTE'].fillna('CALL CENTER')   ### REVISAR
     
-
-        # 9. Eliminar las columnas "REFERENCIA" y "Número de Identificación"
-        # df_resultado.drop(columns=['Número de Identificación'], inplace=True)
-        # print(f"- Registros originales: {len(df_resultado)}")
-
-        # df_final = df_resultado[df_resultado["PRODUCTO"] != "[MPE02] ENVASE PET MILK X 440 ML"]
-
-        # # Guardar el DataFrame en un archivo Excel
-        # df_final.to_excel(f"VENTAS_{nombre_archivo}", index=False)
 
         df_resultado= df_resultado.rename(columns={'TIPO DE CLIENTE':'CATEGORÍA'})
 
@@ -1044,12 +987,16 @@ class ReportClass():
         
         ruta_bgta= ruta / 'data' / 'Base_bogota.xlsx'
         ruta_zonas= ruta / 'data' / 'zonas.xlsx'
+        ruta_zonas_cundi = ruta / 'data' / 'zonas_cundinamarca.xlsx'
         df_bogota= pd.read_excel(ruta_bgta)
         df_bogota = df_bogota.drop_duplicates(subset='DOCUMENTO')
         df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(int)
         zonas = pd.read_excel(ruta_zonas)
+        cundinamarca = pd.read_excel(ruta_zonas_cundi)
+        
+        ventas_procesadas['Base'] =  ventas_procesadas['Base'].merge(zonas, on=['DEPARTAMENTO', 'CATEGORÍA'], how='left')\
+                                .merge(cundinamarca,  on=['DEPARTAMENTO','CIUDAD', 'CATEGORÍA'], how='left')
 
-        ventas_procesadas['Base'] = ventas_procesadas['Base'].merge(zonas, on=['DEPARTAMENTO', 'CATEGORÍA'], how='left')
         
         ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'] = pd.to_numeric(
             ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'], errors='coerce'
@@ -1060,6 +1007,14 @@ class ReportClass():
         ).astype('float')
 
 
+        ventas_procesadas['Base'].loc[
+            (ventas_procesadas['Base']['DEPARTAMENTO'] == 'Cundinamarca (CO)') &
+            (ventas_procesadas['Base']['CATEGORÍA'] == 'MAYORISTA NV') &
+            (ventas_procesadas['Base']['zona'] == 'sin zona') &
+            (ventas_procesadas['Base']['ZONA_CUNDINAMARCA'].notna()),
+            'zona'
+        ] = ventas_procesadas['Base']['ZONA_CUNDINAMARCA']
+
         # df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(str)
         # ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'] = ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'].str.strip()
 
@@ -1068,7 +1023,7 @@ class ReportClass():
 
         ventas_procesadas['Base']['ZONA'] = ventas_procesadas['Base']['ZONA'].fillna(ventas_procesadas['Base']['zona'])
 
-        ventas_procesadas['Base'] = ventas_procesadas['Base'].drop(columns=['CLIENTES NUEVOS',	'zona',	'DOCUMENTO'])
+        ventas_procesadas['Base'] = ventas_procesadas['Base'].drop(columns=['CLIENTES NUEVOS',	'zona',	'DOCUMENTO', 'ZONA_CUNDINAMARCA'])
 
         try:
             ruta_clean.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
