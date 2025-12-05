@@ -80,7 +80,7 @@ class ReportClass():
                             lista_dataframes.append(df_o_dict)
                             
                     elif extension == 'csv':
-                        df = pd.read_csv(ruta_completa, sep=sep, encoding=encoding, decimal=decimal)
+                        df = pd.read_csv(ruta_completa, sep=sep, encoding=encoding, decimal=decimal, engine='python')
                         lista_dataframes.append(df)
 
                     print(f"  - Archivo '{archivo}' leído correctamente.")
@@ -983,17 +983,16 @@ class ReportClass():
         ruta2 = Path(ventas_procesadas['nombre_archivo'])
         ruta_carpeta = ruta_clean / f'VENTAS_{ruta2.stem}.xlsx'
         ruta_errores = ruta / 'file' / 'ventas_sin_categoria.xlsx'
-
-        
+        ruta_padres = ruta / 'data' / 'clientes_padres.xlsx'
         ruta_bgta= ruta / 'data' / 'Base_bogota.xlsx'
         ruta_zonas= ruta / 'data' / 'zonas.xlsx'
         ruta_zonas_cundi = ruta / 'data' / 'zonas_cundinamarca.xlsx'
+        df_padres = pd.read_excel(ruta_padres)
         df_bogota= pd.read_excel(ruta_bgta)
         df_bogota = df_bogota.drop_duplicates(subset='DOCUMENTO')
         df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(int)
         zonas = pd.read_excel(ruta_zonas)
         cundinamarca = pd.read_excel(ruta_zonas_cundi)
-        
         ventas_procesadas['Base'] =  ventas_procesadas['Base'].merge(zonas, on=['DEPARTAMENTO', 'CATEGORÍA'], how='left')\
                                 .merge(cundinamarca,  on=['DEPARTAMENTO','CIUDAD', 'CATEGORÍA'], how='left')
 
@@ -1024,7 +1023,13 @@ class ReportClass():
         ventas_procesadas['Base']['ZONA'] = ventas_procesadas['Base']['ZONA'].fillna(ventas_procesadas['Base']['zona'])
 
         ventas_procesadas['Base'] = ventas_procesadas['Base'].drop(columns=['CLIENTES NUEVOS',	'zona',	'DOCUMENTO', 'ZONA_CUNDINAMARCA'])
-
+        df_padres.drop_duplicates(subset='CLIENTE', inplace=True)
+        ventas_procesadas['Base']['CLIENTE_ORI'] = ventas_procesadas['Base']['CLIENTE'] 
+        df_padres = df_padres[['CLIENTE', 'CLIENTE PADRE']]
+        ventas_procesadas['Base'] = ventas_procesadas['Base'].merge(df_padres, on='CLIENTE', how='left')
+        ventas_procesadas['Base']['CLIENTE PADRE'] = ventas_procesadas['Base']['CLIENTE PADRE'].fillna(ventas_procesadas['Base']['CLIENTE'])
+        ventas_procesadas['Base']['CLIENTE'] = ventas_procesadas['Base']['CLIENTE PADRE'] 
+        ventas_procesadas['Base'].drop(columns=['CLIENTE PADRE'], inplace=True)
         try:
             ruta_clean.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
             print(f"Carpeta '{ruta_clean}' creada o ya existe.")
@@ -1050,7 +1055,7 @@ class ReportClass():
                 "Source.Name", "NUMERO_FACTURA", "FECHA_FACTURA", "AÑO", "MES", "DIA",
                 "CLIENTE", "IDENTIFICACION_CLIENTE", "CATEGORÍA", "PRODUCTO", "CANTIDAD",
                 "TOTAL", "TASA_CAMBIO", "TRM", "TOTAL($)", "TELEFONO", "EMAIL", "PAIS",
-                "CIUDAD", "CIUDAD_CORREGIDA", "DEPARTAMENTO", "EQUIPO_VENTAS", "REFERENCIA", "ZONA"
+                "CIUDAD", "CIUDAD_CORREGIDA", "DEPARTAMENTO", "EQUIPO_VENTAS", "REFERENCIA", "ZONA" , "CLIENTE_ORI"
             ]
             
         # Manejo defensivo por si la columna 'ASESOR COMERCIAL' no siempre existe
@@ -1063,29 +1068,7 @@ class ReportClass():
         base_clean = base_clean[columnas_existentes]
 
         # Esta linea mantiene solo los pruductos comerciales
-        base_clean = base_clean[base_clean['PRODUCTO'].str.startswith(('[PCN','[KD','[TNG','[B8'))]   ###### linea modificada
-
-        # ruta_bgta= ruta / 'data' / 'Base_bogota.xlsx'
-        # ruta_zonas= ruta / 'data' / 'zonas.xlsx'
-        # df_bogota= pd.read_excel(ruta_bgta)
-        # zonas = pd.read_excel(ruta_zonas)
-
-        # base_clean = base_clean.merge(zonas, on=['DEPARTAMENTO', 'CATEGORÍA'], how='left')
-        # df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(str)
-        # base_clean['IDENTIFICACION_CLIENTE'] = base_clean['IDENTIFICACION_CLIENTE'].str.strip()
-        # base_clean = base_clean.merge(df_bogota[['DOCUMENTO', 'CATEGORÍA', 'ZONA']], 
-        #                               left_on=['IDENTIFICACION_CLIENTE','CATEGORÍA'], right_on=['DOCUMENTO', 'CATEGORÍA'], how='left')
-
-        # base_clean['ZONA'] = base_clean['ZONA'].fillna(base_clean['zona'])
-
-
-        # base_clean = base_clean[['NUMERO_FACTURA', 'FECHA_FACTURA', 'AÑO', 'MES', 'DIA', 'CLIENTE',
-        #     'IDENTIFICACION_CLIENTE', 'CATEGORÍA', 'PRODUCTO', 'CANTIDAD', 'TOTAL',
-        #     'TASA_CAMBIO', 'TRM', 'TOTAL($)', 'TELEFONO', 'EMAIL', 'PAIS', 'CIUDAD',
-        #     'CIUDAD_CORREGIDA', 'DEPARTAMENTO', 'EQUIPO_VENTAS', 'REFERENCIA',
-        #     'ASESOR COMERCIAL', 'ZONA']]
-        
-     
+        base_clean = base_clean[base_clean['PRODUCTO'].str.startswith(('[PCN','[KD','[TNG','[B8'))]   ###### linea modificada 
 
         try:
             ruta_file = ruta / 'file' 
@@ -1095,11 +1078,7 @@ class ReportClass():
             
         except Exception as e:
             print(f"Error al crear la carpeta o guardar los archivos: {e}")
-
-       
         explosion = self.explosion_ventas()
-     
-
         return {'ventas_procesadas':ventas_procesadas,
                 'base_clean':base_clean,
                 'explosion':explosion
