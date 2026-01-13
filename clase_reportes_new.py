@@ -2,6 +2,7 @@ import pandas as pd
 from pathlib import Path
 import os 
 from thefuzz import process
+from rapidfuzz import process
 import pandas as pd
 import os
 import re
@@ -9,11 +10,11 @@ import tkinter as tk
 from tkinter import filedialog
 import numpy as np
 import json
+import unicodedata
+from typing import Optional
 
 
-
-
-class ReportClass():
+class ReportClassNew():
     """
     Esta clase contiene las funciones que su utilizan para actulizar el bi
     y las ventas procesadas.    
@@ -123,201 +124,6 @@ class ReportClass():
 
         return ruta
 
-
-
-
-    def notas_creditos(self):
-
-        """
-        Procesa las ventas descargadas de Odoo y descuenta las notas crédito.
-
-        Permite seleccionar los archivos de ventas y notas crédito, realiza el cruce
-        por número de factura y producto, descuenta las cantidades y totales afectados,
-        y genera archivos procesados y un listado de facturas afectadas.
-
-        Returns:
-            dict: Diccionario con el DataFrame consolidado, nombre del archivo de salida,
-                  y listado de facturas afectadas por notas crédito.
-        """
-
-        # Ocultar la ventana principal de tkinter
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes('-topmost', True)
-
-        # Paso 1: Seleccionar el archivo de ventas
-        nombre_archivo_ventas = filedialog.askopenfilename(
-            title="Selecciona el archivo de ventas (.xlsx)",
-            filetypes=[("Archivos de Excel", "*.xlsx")]
-        )
-
-        # Verificar si se seleccionó un archivo
-        if not nombre_archivo_ventas:
-            print("No se seleccionó el archivo de ventas.")
-            exit()
-
-        # Paso 2: Cargar el archivo de ventas
-        try:
-            df_ventas = pd.read_excel(nombre_archivo_ventas)
-            print(f"Archivo de ventas '{os.path.basename(nombre_archivo_ventas)}' cargado correctamente.")
-        except Exception as e:
-            print(f"Error al cargar el archivo de ventas: {e}")
-            exit()
-
-        # Paso 3: Seleccionar el archivo de notas crédito
-        nombre_archivo_notas_credito = filedialog.askopenfilename(
-            title="Selecciona el archivo de notas crédito (.xlsx)",
-            filetypes=[("Archivos de Excel", "*.xlsx")]
-        )
-
-        # Verificar si se seleccionó un archivo
-        if not nombre_archivo_notas_credito:
-            print("No se seleccionó el archivo de notas crédito.")
-            exit()
-
-        # Paso 4: Cargar el archivo de notas crédito
-        try:
-            df_notas_credito = pd.read_excel(nombre_archivo_notas_credito)
-            print(f"Archivo de notas crédito '{os.path.basename(nombre_archivo_notas_credito)}' cargado correctamente.")
-        except Exception as e:
-            print(f"Error al cargar el archivo de notas crédito: {e}")
-            exit()
-
-        df_notas_credito['NUMERO_FACTURA'] = df_notas_credito['Líneas de factura/Referencia'].apply(
-            lambda x: re.search(r'(?:FEVY|FVE|FYEX|[234]YPO|YPOS|PSYA|PSYB)\d*', x).group(0) if pd.notna(x) and re.search(r'(?:FEVY|FVE|FYEX|[234]YPO|YPOS|PSYA|PSYB)\d*', x) else None
-        )
-  
-        # Guarda en la variables las ventas sin tipo de cliente y con etiqueta mayorista
-        # Esta variables se guarda en el archivo de errores
-
-        etiqueta_mayorista = df_ventas[(df_ventas['Tipo de cliente'].isna())&
-                    (df_ventas['Etiqueta contacto']=='MAYORISTA NV')
-                    ] 
-        # Copia de la etiqueta los clientes mayoristas que aparecen en blanco
-        df_ventas.loc[(df_ventas['Tipo de cliente'].isna())&
-                    (df_ventas['Etiqueta contacto']=='MAYORISTA NV'), 'Tipo de cliente'
-                    ] = 'MAYORISTA NV'
-
-        equipo_por_factura = (
-            df_ventas
-            .groupby('Líneas de factura/Número')['Equipo de ventas']
-            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
-            .to_dict()
-        )
-
-        df_ventas['Equipo de ventas'] = df_ventas['Líneas de factura/Número'].map(equipo_por_factura)
-
-
-        asesor_por_factura = (
-            df_ventas
-            .groupby('Líneas de factura/Número')['Asesor Comercial']
-            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
-            .to_dict()
-        )
-        df_ventas['Asesor Comercial'] = df_ventas['Líneas de factura/Número'].map(asesor_por_factura)
-
-        tipo_por_factura = (
-            df_ventas
-            .groupby('Líneas de factura/Número')['Tipo de cliente']
-            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
-            .to_dict()
-        )
-        df_ventas['Tipo de cliente'] = df_ventas['Líneas de factura/Número'].map(tipo_por_factura)
-        ####
-
-
-
-        df_notas_credito = df_notas_credito.drop(columns=['Líneas de factura/Número'])
-        df_notas_credito = df_notas_credito.rename(columns={'NUMERO_FACTURA': 'Líneas de factura/Número'})
-        # Paso 6: Convertir las cantidades y totales de las notas crédito a valores negativos
-        df_notas_credito['Líneas de factura/Cantidad'] = -df_notas_credito['Líneas de factura/Cantidad']
-        df_notas_credito['Líneas de factura/Total'] = -df_notas_credito['Líneas de factura/Total']
-
-
-
-        # Paso 8: Crear una columna temporal que combine NUMERO_FACTURA y PRODUCTO
-        df_ventas['NUMERO_FACTURA-PRODUCTO'] = df_ventas['Líneas de factura/Número'] + '-' + df_ventas['Líneas de factura/Producto']
-        df_notas_credito['NUMERO_FACTURA-PRODUCTO'] = df_notas_credito['Líneas de factura/Número'] + '-' + df_notas_credito['Líneas de factura/Producto']
-        # Paso 9: Filtrar las notas crédito para incluir solo las que coinciden con ventas existentes
-        notas_credito_validas = df_notas_credito['NUMERO_FACTURA-PRODUCTO'].isin(df_ventas['NUMERO_FACTURA-PRODUCTO'])
-        df_notas_credito_filtrado = df_notas_credito[notas_credito_validas]
-        # Paso 8: Combinar ambos datasets (ventas y notas crédito)
-        df_consolidado = pd.concat([df_ventas, df_notas_credito_filtrado], ignore_index=True)
-        # Renombrar columnas para estandarizar nombres
-        df_consolidado= df_consolidado.rename(columns={
-            'Equipo de ventas': 'Equipo de Ventas',
-            'Líneas de factura/Contacto':'Líneas de factura/Asociado',
-            'Líneas de factura/Contacto/Ciudad':'Líneas de factura/Asociado/Ciudad',
-            'Líneas de factura/Contacto/Correo electrónico':'Líneas de factura/Asociado/Correo electrónico',
-            'Líneas de factura/Contacto/Estado':'Líneas de factura/Asociado/Estado',
-            'Líneas de factura/Contacto/NIF':'Líneas de factura/Asociado/Número de Identificación',
-            'Líneas de factura/Contacto/Teléfono':'Líneas de factura/Asociado/Teléfono',
-            'Origen/Nombre de la fuente':'Origen/Nombre de la Fuente'
-
-        })
-
-        # Paso 10: Agrupar por la columna temporal NUMERO_FACTURA-PRODUCTO
-        df_consolidado = df_consolidado.groupby(
-            'NUMERO_FACTURA-PRODUCTO',  # Agrupar por la combinación de factura y producto
-            as_index=False
-        ).agg({
-            'Líneas de factura/Fecha de factura': 'first',
-            'Líneas de factura/Asociado': 'first',
-            'Líneas de factura/Número': 'first',
-            'Líneas de factura/Producto': 'first',
-            'Líneas de factura/Cantidad': 'sum',  # Sumar las cantidades
-            'Líneas de factura/Total': 'sum',     # Sumar los totales
-            'Líneas de factura/Asociado/Número de Identificación': 'first',
-            'Líneas de factura/Asociado/Teléfono': 'first',
-            'Líneas de factura/Asociado/Correo electrónico': 'first',
-            'Líneas de factura/Asociado/Ciudad': 'first',
-            'Líneas de factura/Asociado/Estado': 'first',
-            'Equipo de Ventas': 'first',
-            'Líneas de factura/Referencia': 'first',
-            'Asesor Comercial': 'first',
-            'Origen': 'first',
-            'Origen/Nombre de la Fuente': 'first',
-            'Tipo de cliente': 'first',
-            'Etiqueta contacto': 'first'
-
-        })
-        # Paso 12: Eliminar la columna temporal NUMERO_FACTURA-PRODUCTO
-        df_consolidado.drop(columns=['NUMERO_FACTURA-PRODUCTO'], inplace=True)
-        # Paso 13: Filtrar solo las filas donde la cantidad sea mayor que 0 (eliminar ventas canceladas)
-        df_consolidado = df_consolidado[df_consolidado['Líneas de factura/Cantidad'] > 0]
-        # Paso 14: Generar el nombre del archivo de salida
-        nombre_archivo= os.path.splitext(os.path.split(nombre_archivo_ventas)[-1])[0]
-
-        # Paso 15: Guardar el archivo consolidado
-        try:
-            ruta = self.validar_ruta()
-            ruta_salida = ruta / 'RAW DATA' / 'PROCESADO' / f'{nombre_archivo}_procesado.xlsx'
-            if not ruta_salida.parent.exists():
-                ruta_salida.parent.mkdir(parents=True, exist_ok=True)
-            df_consolidado.to_excel(ruta_salida, index=False)
-            print(f"Archivo consolidado guardado como '{ruta_salida}'.")
-        except Exception as e:
-            print(f"Error al guardar el archivo consolidado: {e}")
-
-        # Paso 16: Obtener el listado de facturas afectadas por notas crédito
-        facturas_afectadas = df_notas_credito_filtrado[['Líneas de factura/Número', 'Líneas de factura/Producto', 'Líneas de factura/Cantidad', 'Líneas de factura/Total']].dropna(subset=['Líneas de factura/Número'])
-
-        # Paso 17: Mostrar el listado de facturas afectadas
-        print("Facturas afectadas por notas crédito:")
-        print(facturas_afectadas.shape)
-
-
-        try:
-            nombre_archivo_facturas_afectadas = ruta / 'RAW DATA' / 'FACTURAS AFECTADAS' / f'{nombre_archivo}_facturas_afectadas.xlsx' 
-            facturas_afectadas.to_excel(nombre_archivo_facturas_afectadas, index=False)
-            print(f"Listado de facturas afectadas guardado como '{nombre_archivo_facturas_afectadas}'.")
-        except Exception as e:
-            print(f"Error al guardar el listado de facturas afectadas: {e}")
-
-        return {'archivo_salida': df_consolidado,
-                'nombre_archivo':ruta_salida,
-                'facturas_afectadas' :facturas_afectadas,
-                'etiqueta_mayorista': etiqueta_mayorista}
     
     @staticmethod
     def limpiar_documento(valor):
@@ -343,10 +149,43 @@ class ReportClass():
             return match.group(1)
         return pd.NA    
 
+    # Función para cargar archivo Excel o CSV
+    def cargar_archivo(self, titulo: str = "Selecciona un archivo (.xlsx o .csv)"):
+        root = tk.Tk()
 
+        root.withdraw() 
+        root.attributes('-topmost', True)  
+        nombre_archivo = filedialog.askopenfilename(
+            title=titulo,
+            filetypes=[
+                ("Archivos Excel", "*.xlsx"),
+                ("Archivos CSV", "*.csv"),
+                ("Todos los archivos", "*.*"),
+            ]
+        )
 
+        if not nombre_archivo:
+            print("No se seleccionó archivo.")
+            return None
 
-    def transformar_base(self, origen=False):
+        try:
+            ext = os.path.splitext(nombre_archivo)[1].lower()
+
+            if ext == ".xlsx":
+                df = pd.read_excel(nombre_archivo)
+            elif ext == ".csv":
+                df = pd.read_csv(nombre_archivo)
+            else:
+                raise ValueError("Formato no soportado")
+
+            print(f"Archivo '{os.path.basename(nombre_archivo)}' cargado correctamente.")
+            return df
+
+        except Exception as e:
+            print(f"Error al cargar el archivo: {e}")
+            return None
+
+    def transformar_base(self): 
         """
         Transforma la base de ventas y genera un archivo limpio y enriquecido.
 
@@ -358,94 +197,178 @@ class ReportClass():
 
         Returns:
             dict: Diccionario con la base transformada, nombre del archivo, facturas afectadas,
-                  y registros con errores de categorización.
+                    y registros con errores de categorización.
         """
+    
 
-     
-        if origen:
-            notas_creditos = self.notas_creditos()
-            nombre_archivo = notas_creditos['nombre_archivo']
-            df = notas_creditos['archivo_salida']
-        else:
-            # Ocultar la ventana principal de tkinter
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes('-topmost', True)
-            # Paso 1: Seleccionar el archivo de ventas
-            nombre_archivo_ventas = filedialog.askopenfilename(
-                title="Por favor, ingresa el nombre del archivo de ventas (incluye la extensión .xlsx): ",
-                filetypes=[("Archivos de Excel", "*.xlsx")]
-            )
+        # ---- Cargar ventas ----
+        df_ventas = self.cargar_archivo("Selecciona el archivo de ventas (.xlsx o .csv)")
 
-            # Verificar si se seleccionó un archivo
-            if not nombre_archivo_ventas:
-                print("No se seleccionó el archivo.")
-                exit()
+        # ---- Cargar notas crédito ----
+        df_notas_credito = self.cargar_archivo("Selecciona el archivo de notas crédito (.xlsx o .csv)")
 
-            # Paso 2: Cargar el archivo de ventas
-            try:
-                df = pd.read_excel(nombre_archivo_ventas)
-                nombre_archivo = os.path.basename(nombre_archivo_ventas)
-                print(f"Archivo  '{nombre_archivo}' cargado correctamente.")
-            except Exception as e:
-                print(f"Error al cargar el archivo: {e}")
-                exit()
 
-        etiqueta_mayorista = notas_creditos['etiqueta_mayorista']
+        # Extraer el número de factura usando una expresión regular
+        pattern = re.compile(r":\s*([^\s,]+)")
 
+        df_notas_credito['NUMERO_FACTURA'] = df_notas_credito['Líneas de factura/Referencia'].apply(
+            lambda x: pattern.search(x).group(1) if pd.notna(x) and pattern.search(x) else None
+        )
+
+        # Guarda en la variables las ventas sin tipo de cliente y con etiqueta mayorista
+        # Esta variables se guarda en el archivo de errores
+
+        etiqueta_mayorista = df_ventas[(df_ventas['Tipo de cliente'].isna())&
+                    (df_ventas['Etiqueta contacto']=='MAYORISTA NV')
+                    ] 
+        # Copia de la etiqueta los clientes mayoristas que aparecen en blanco
+        df_ventas.loc[(df_ventas['Tipo de cliente'].isna())&
+                    (df_ventas['Etiqueta contacto']=='MAYORISTA NV'), 'Tipo de cliente'
+                    ] = 'MAYORISTA NV'
+
+        # Mapear los valores de 'Equipo de ventas', 'Asesor Comercial' y 'Tipo de cliente' desde las facturas para ponerlo en cada línea de la factura
+        equipo_por_factura = (
+            df_ventas
+            .groupby('Líneas de factura/Número')['Equipo de ventas']
+            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+            .to_dict()
+        )
+
+        df_ventas['Equipo de ventas'] = df_ventas['Líneas de factura/Número'].map(equipo_por_factura)
+
+        asesor_por_factura = (
+            df_ventas
+            .groupby('Líneas de factura/Número')['Asesor Comercial']
+            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+            .to_dict()
+        )
+        df_ventas['Asesor Comercial'] = df_ventas['Líneas de factura/Número'].map(asesor_por_factura)
+
+        tipo_por_factura = (
+            df_ventas
+            .groupby('Líneas de factura/Número')['Tipo de cliente']
+            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+            .to_dict()
+        )
+        df_ventas['Tipo de cliente'] = df_ventas['Líneas de factura/Número'].map(tipo_por_factura)
+
+        # Mapear el valor de 'Total firmado' desde las facturas para ponerlo en cada línea de la factura
+        total_por_factura = (
+            df_ventas
+            .groupby('Líneas de factura/Número')['Total firmado']
+            .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
+            .to_dict()
+        )
+        df_ventas['Total firmado'] = df_ventas['Líneas de factura/Número'].map(total_por_factura)
+
+
+        # Calcula la TRM para cada línea de factura
+        df_ventas['TRM'] = df_ventas['Total firmado'] / df_ventas.groupby(
+            'Líneas de factura/Número'
+        )['Líneas de factura/Total'].transform('sum')
+
+        # Eliminar la columna original y renombrar la nueva columna
+        df_notas_credito = df_notas_credito.drop(columns=['Líneas de factura/Número'])
+        df_notas_credito = df_notas_credito.rename(columns={'NUMERO_FACTURA': 'Líneas de factura/Número'})
+
+        # Convertir las cantidades y totales de las notas crédito a valores negativos
+        df_notas_credito['Líneas de factura/Cantidad'] = -df_notas_credito['Líneas de factura/Cantidad']
+        df_notas_credito['Líneas de factura/Total'] = -df_notas_credito['Líneas de factura/Total']
+        df_notas_credito['Líneas de factura/Subtotal'] = -df_notas_credito['Líneas de factura/Subtotal'] # Sin impuestos
+
+        # Crear una columna temporal que combine NUMERO_FACTURA y PRODUCTO
+        df_ventas['NUMERO_FACTURA-PRODUCTO'] = df_ventas['Líneas de factura/Número'] + '-' + df_ventas['Líneas de factura/Producto']
+        df_notas_credito['NUMERO_FACTURA-PRODUCTO'] = df_notas_credito['Líneas de factura/Número'] + '-' + df_notas_credito['Líneas de factura/Producto']
+        # Filtrar las notas crédito para incluir solo las que coinciden con ventas existentes
+        notas_credito_validas = df_notas_credito['NUMERO_FACTURA-PRODUCTO'].isin(df_ventas['NUMERO_FACTURA-PRODUCTO'])
+        df_notas_credito_filtrado = df_notas_credito[notas_credito_validas]
+        # Combinar ambos datasets (ventas y notas crédito)
+        df_consolidado = pd.concat([df_ventas, df_notas_credito_filtrado], ignore_index=True)
+
+
+        # Renombrar columnas para estandarizar nombres
+        df_consolidado= df_consolidado.rename(columns={
+            'Equipo de ventas': 'Equipo de Ventas',
+            'Líneas de factura/Contacto':'Líneas de factura/Asociado',
+            'Líneas de factura/Contacto/Ciudad':'Líneas de factura/Asociado/Ciudad',
+            'Líneas de factura/Contacto/Correo electrónico':'Líneas de factura/Asociado/Correo electrónico',
+            'Líneas de factura/Contacto/Estado':'Líneas de factura/Asociado/Estado',
+            'Líneas de factura/Contacto/NIF':'Líneas de factura/Asociado/Número de Identificación',
+            'Líneas de factura/Contacto/Teléfono':'Líneas de factura/Asociado/Teléfono',
+            'Origen/Nombre de la fuente':'Origen/Nombre de la Fuente'
+
+        })
+
+
+
+        #  Agrupar por la columna temporal NUMERO_FACTURA-PRODUCTO
+        df_consolidado = df_consolidado.groupby(
+            'NUMERO_FACTURA-PRODUCTO',  # Agrupar por la combinación de factura y producto
+            as_index=False
+        ).agg({
+            'Líneas de factura/Fecha de factura': 'first',
+            'Líneas de factura/Asociado': 'first',
+            'Líneas de factura/Número': 'first',
+            'Líneas de factura/Producto': 'first',
+            'Líneas de factura/Cantidad': 'sum',  # Sumar las cantidades
+            'Líneas de factura/Subtotal': 'sum',  # Sumar los subtotales
+            'Líneas de factura/Total': 'sum',     # Sumar los totales
+            'Líneas de factura/Asociado/Número de Identificación': 'first',
+            'Líneas de factura/Asociado/Teléfono': 'first',
+            'Líneas de factura/Asociado/Correo electrónico': 'first',
+            'Líneas de factura/Asociado/Ciudad': 'first',
+            'Líneas de factura/Asociado/Estado': 'first',
+            'Equipo de Ventas': 'first',
+            'Líneas de factura/Referencia': 'first',
+            'Asesor Comercial': 'first',
+            'Origen': 'first',
+            'Origen/Nombre de la Fuente': 'first',
+            'Tipo de cliente': 'first',
+            'Etiqueta contacto': 'first',
+            'TRM': 'first',
+            'Total firmado': 'first'
+        })
+
+
+        #  Eliminar la columna temporal NUMERO_FACTURA-PRODUCTO
+        df_consolidado.drop(columns=['NUMERO_FACTURA-PRODUCTO'], inplace=True)
+        #  Filtrar solo las filas donde la cantidad sea mayor que 0 (eliminar ventas canceladas)
+        df_consolidado['Líneas de factura/Cantidad'] = pd.to_numeric(df_consolidado['Líneas de factura/Cantidad'], errors='coerce')
+        df_consolidado = df_consolidado[df_consolidado['Líneas de factura/Cantidad'] > 0]
+
+        df_consolidado['Líneas de factura/Fecha de factura'] = pd.to_datetime(df_consolidado['Líneas de factura/Fecha de factura'])
+        fecha_min = df_consolidado['Líneas de factura/Fecha de factura'].min()
+        fecha_max = df_consolidado['Líneas de factura/Fecha de factura'].max()
+
+        # Obtiene el nombre del archivo de ventas según el rango de fechas
+        mes_min = fecha_min.strftime('%m')
+        anio_min = fecha_min.strftime('%Y')
+        mes_max = fecha_max.strftime('%m')
+        anio_max = fecha_max.strftime('%Y') 
+        mes_min = fecha_min.month_name(locale='es_ES')
+        mes_max = fecha_max.month_name(locale='es_ES')
+
+        mes = f"{mes_min}_{anio_min}" if mes_min == mes_max else f"{mes_min}_{anio_min}_{mes_max}_{anio_max}"
+        nombre_archivo = f'Ventas_{mes}.csv'
+
+        # Obtener el listado de facturas afectadas por notas crédito
+        print("Facturas afectadas por notas crédito:")
+        facturas_afectadas = df_notas_credito_filtrado[['Líneas de factura/Número', 'Líneas de factura/Producto', 'Líneas de factura/Cantidad', 'Líneas de factura/Total']].dropna(subset=['Líneas de factura/Número'])
+        facturas_afectadas.shape
 
         # Extraer el código de país y reemplazar NaN con "Desconocido" en un solo paso
-        df['pais'] = df['Líneas de factura/Asociado/Estado'].str.extract(r'\(([A-Z]{2})\)').fillna("Desconocido")
+        df_consolidado['pais'] = df_consolidado['Líneas de factura/Asociado/Estado'].str.extract(r'\(([A-Z]{2})\)').fillna("Desconocido")
 
-        # Crear la columna 'total' con la lógica especificada
-        df['Líneas de factura/Asociado/Ciudad'] = df['Líneas de factura/Asociado/Ciudad'].astype(str).fillna("Desconocido")
+        df_consolidado['Líneas de factura/Asociado/Ciudad'] = df_consolidado['Líneas de factura/Asociado/Ciudad'].astype(str).fillna("Desconocido")
 
-        df_filtrado = df.copy()
-      
-        # # Guarda en la variables las ventas sin tipo de cliente y con etiqueta mayorista
-        # etiqueta_mayorista = df_filtrado[(df_filtrado['Tipo de cliente'].isna())&
-        #             (df_filtrado['Etiqueta contacto']=='MAYORISTA NV')
-        #             ] 
-        # # Copia de la etiqueta los clientes mayoristas que aparecen en blanco
-        # df_filtrado.loc[(df_filtrado['Tipo de cliente'].isna())&
-        #             (df_filtrado['Etiqueta contacto']=='MAYORISTA NV'), 'Tipo de cliente'
-        #             ] = 'MAYORISTA NV'
-
-        # equipo_por_factura = (
-        #     df_filtrado
-        #     .groupby('Líneas de factura/Número')['Equipo de Ventas']
-        #     .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
-        #     .to_dict()
-        # )
-
-        # df_filtrado['Equipo de Ventas'] = df_filtrado['Líneas de factura/Número'].map(equipo_por_factura)
+        # linea modificada y sujeta a modificaciones en caso de nueva Linea de productos
+        df_filtrado = df_consolidado[df_consolidado['Líneas de factura/Producto'].str.startswith(('[PCN','[KD','[TNG','[B8'))].copy()  
 
 
-
-        # asesor_por_factura = (
-        #     df_filtrado
-        #     .groupby('Líneas de factura/Número')['Asesor Comercial']
-        #     .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
-        #     .to_dict()
-        # )
-        # df_filtrado['Asesor Comercial'] = df_filtrado['Líneas de factura/Número'].map(asesor_por_factura)
-
-        # tipo_por_factura = (
-        #     df_filtrado
-        #     .groupby('Líneas de factura/Número')['Tipo de cliente']
-        #     .agg(lambda x: x.dropna().iloc[0] if not x.dropna().empty else None)
-        #     .to_dict()
-        # )
-        # df_filtrado['Tipo de cliente'] = df_filtrado['Líneas de factura/Número'].map(tipo_por_factura)
-
-
-        df_filtrado = df_filtrado[df_filtrado['Líneas de factura/Producto'].str.startswith(('[PCN','[KD','[TNG','[B8'))].copy()   ###### linea modificada
-        print("FILAS CATALOGO:", df_filtrado[df_filtrado['Líneas de factura/Asociado']=='NOVAVENTA S.A.S']['Tipo de cliente'].value_counts())
-   
         # Ahora puedes modificar df_filtrado sin preocuparte por el warning
         df_filtrado.loc[:, 'Líneas de factura/Fecha de factura'] = pd.to_datetime(df_filtrado['Líneas de factura/Fecha de factura'])
         # df_filtrado['Líneas de factura/Fecha de factura'] = pd.to_datetime(df_filtrado['Líneas de factura/Fecha de factura'])
-    
+
         df_filtrado = df_filtrado.reset_index(drop=True)
         # Convertir la columna 'Líneas de factura/Total' a tipo numérico
         df_filtrado['Líneas de factura/Total'] = pd.to_numeric(df_filtrado['Líneas de factura/Total'], errors='coerce')
@@ -455,110 +378,93 @@ class ReportClass():
         # Paso 1: Verificar valores nulos en la columna de fecha
         print("Valores nulos en 'Líneas de factura/Fecha de factura':", df_filtrado['Líneas de factura/Fecha de factura'].isnull().sum())
         df_filtrado = df_filtrado.dropna(subset=['Líneas de factura/Fecha de factura'])
-     
 
-        #  Leer el CSV desde la URL
-        url = "https://www.datos.gov.co/resource/32sa-8pi3.csv"
-        df_TRM = pd.read_csv(url)
 
-        #  Cambiar tipos de datos
-        df_TRM['valor'] = pd.to_numeric(df_TRM['valor'], errors='coerce')
-        df_TRM['unidad'] = df_TRM['unidad'].astype(str)
-        df_TRM['vigenciadesde'] = pd.to_datetime(df_TRM['vigenciadesde'], errors='coerce')
-        df_TRM['vigenciahasta'] = pd.to_datetime(df_TRM['vigenciahasta'], errors='coerce')
+        # Calcular la columna 'TOTAL' como el producto de 'Líneas de factura/Subtotal' y 'TRM'
+        df_filtrado['TOTAL'] = df_filtrado['Líneas de factura/Subtotal'] * df_filtrado['TRM']
 
-        #  Crear una nueva columna con el año de 'vigenciadesde'
-        df_TRM['Año'] = df_TRM['vigenciadesde'].dt.year
-
-        #  Filtrar por el año 2025
-        today = pd.to_datetime('now')
-        df_TRM = df_TRM[df_TRM['Año'] == today.year]
-        df_TRM['TRM'] = df_TRM['valor']
-
-        # Crear una lista para almacenar las filas expandidas
-        expanded_rows = []
-
-        # Iterar sobre cada fila de df_TRM y generar las fechas dentro del rango de vigencia
-        for _, row in df_TRM.iterrows():
-            date_range = pd.date_range(start=row['vigenciadesde'], end=row['vigenciahasta'], freq='D')
-            for date in date_range:
-                expanded_rows.append({'Fecha': date, 'TRM': row['TRM']})
-
-        # Crear un nuevo DataFrame a partir de la lista
-        df_TRM_expandido = pd.DataFrame(expanded_rows)
-
-        # Eliminar duplicados (si los hay)
-        df_TRM_expandido = df_TRM_expandido.drop_duplicates(subset=['Fecha'])
-
-        # Ordenar por fecha
-        df_TRM_expandido = df_TRM_expandido.sort_values('Fecha')
-
-        # Verificar el nuevo DataFrame
-     
-    
-        df_filtrado['Líneas de factura/Fecha de factura'] = pd.to_datetime(df_filtrado['Líneas de factura/Fecha de factura'])
-        df_TRM_expandido['Fecha'] = pd.to_datetime(df_TRM_expandido['Fecha'])
-        df_filtrado = df_filtrado.sort_values(by='Líneas de factura/Fecha de factura')
-        df_TRM_expandido = df_TRM_expandido.sort_values(by='Fecha')
-    
-        # Intentar el merge_asof
-        try:
-            df_resultado = pd.merge_asof(
-                df_filtrado,
-                df_TRM_expandido[['Fecha', 'TRM']],  # Mantener solo las columnas necesarias
-                left_on='Líneas de factura/Fecha de factura',
-                right_on='Fecha',
-                direction='backward'  # Tomar la TRM vigente más reciente anterior o igual a la fecha
-            )
-            
-            # Verificar si la columna TRM está vacía
-            if df_resultado['TRM'].isnull().all():
-                print("Advertencia: La columna TRM está vacía después del merge. Verifica las fechas y los datos.")
-            else:
-                print("Merge completado correctamente.")
-        except Exception as e:
-            print(f"Error al realizar el merge: {str(e)}")
-            import traceback
-            traceback.print_exc()
-
-        df_resultado['total'] = df_resultado.apply(
-            lambda row: row['Líneas de factura/Total'] if row['pais'] in ['CO', 'Desconocido'] else row['Líneas de factura/Total'] * row['TRM'],
-            axis=1
+        df_filtrado['TOTAL CON IMP'] = df_filtrado['Líneas de factura/Total'] * df_filtrado['TRM']
+        df_filtrado['Líneas de factura/Asociado/Ciudad'] = (
+            df_filtrado['Líneas de factura/Asociado/Ciudad']
+                .astype(str)
+                .str.replace(r'[^A-Za-z\s]', '', regex=True)   # deja solo letras y espacios
+                .str.replace(r'\s+', ' ', regex=True)                       # colapsa espacios múltiples
+                .str.strip()                                                 # elimina espacios extremos
         )
-        
 
+
+
+        # Cargar catálogo Colombia
         ciudad_url = "https://www.datos.gov.co/resource/gdxc-w37w.csv?$limit=5000"
         DF_CIUDADES = pd.read_csv(ciudad_url)
         # DF_CIUDADES = pd.read_excel(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\CIUDAD.xlsx") # Dataset con nombres correctos
         DF_CIUDADES = DF_CIUDADES.rename(columns= {'nom_mpio':'Ciudad_Correcta'})
-        df_resultado = df_resultado.rename(columns= {'Líneas de factura/Asociado/Ciudad':'Ciudad'})
-       
-        # 2️⃣ Definir los nombres de columnas
-        col_ciudad_correcta = "Ciudad_Correcta"  # Nombre en DF_CIUDADES
-        col_ciudad_ventas = "Ciudad"  # Nombre en DF_VENTAS
+        df_resultado = df_filtrado.rename(columns= {'Líneas de factura/Asociado/Ciudad':'Ciudad'})
 
-        # 3️⃣ Convertir todas las ciudades a string y manejar NaN
-        df_resultado[col_ciudad_ventas] = df_resultado[col_ciudad_ventas].astype(str).fillna("Desconocido")
+        # Normalización
+        def normalizar(texto):
+            if pd.isna(texto):
+                return ""
+            texto = str(texto).strip().lower()
+            texto = ''.join(
+                c for c in unicodedata.normalize('NFD', texto)
+                if unicodedata.category(c) != 'Mn'
+            )
+            return texto
+
+        DF_CIUDADES['Ciudad_norm'] = DF_CIUDADES['Ciudad_Correcta'].apply(normalizar)
+        lista_ciudades_norm = DF_CIUDADES['Ciudad_norm'].unique()
 
 
-        # 4️⃣ Lista de ciudades correctas (convertidas a string)
-        lista_ciudades_correctas = DF_CIUDADES[col_ciudad_correcta].astype(str).unique()
-       
-        # 5️⃣ Función para encontrar la mejor coincidencia
+
+        #  Diccionario de alias
+        ALIASES = {
+            "cali": "Cali",
+        }
+
+        #  Validación de entrada
+        def es_valido(texto):
+            texto = normalizar(texto)
+            return (
+                len(texto) >= 3 and
+                re.search(r"[a-z]", texto)
+            )
+
+
+
+        #  Fuzzy matcher con alias + umbral
         def corregir_ciudad(ciudad_mal):
-            if ciudad_mal.lower() == "nan" or ciudad_mal.strip() == "":
-                return "Desconocido"  # Manejar valores vacíos o NaN
-            mejor_match, score = process.extractOne(ciudad_mal, lista_ciudades_correctas)
-            return mejor_match if score >= 60 else ciudad_mal  # Si el match es bajo, dejar el original
+            if not es_valido(ciudad_mal):
+                return "DESCONOCIDO"
 
-        # 5️⃣ Aplicar la función a la columna de ciudades en ventas
-        df_resultado["Ciudad_Corregida"] = df_resultado[col_ciudad_ventas].apply(corregir_ciudad)
-       
-   
-      
-        # 6️⃣ Convertir la columna "Ciudad_Corregida" a mayúsculas
-        df_resultado["Ciudad_Corregida"] = df_resultado["Ciudad_Corregida"].str.upper()
-       
+            ciudad_norm = normalizar(ciudad_mal)
+
+            # ---- Alias primero ----
+            if ciudad_norm in ALIASES:
+                return ALIASES[ciudad_norm]
+
+            # ---- Fuzzy matching ----
+            mejor_match, score, idx = process.extractOne(
+                ciudad_norm,
+                lista_ciudades_norm
+            )
+
+            # subir el umbral
+            if score >= 82:
+                return DF_CIUDADES.iloc[idx]['Ciudad_Correcta'].upper()
+
+            return str(ciudad_mal).upper()
+
+
+        #  Aplicación
+        df_resultado = df_filtrado.rename(columns={
+            'Líneas de factura/Asociado/Ciudad': 'Ciudad'
+        })
+
+        df_resultado["Ciudad_Corregida"] = df_resultado["Ciudad"].apply(corregir_ciudad)
+
+
+
         # Diccionario para renombrar las columnas
         nuevos_nombres = {
             'Líneas de factura/Fecha de factura': 'Fecha_Factura',
@@ -577,29 +483,31 @@ class ReportClass():
             'pais': 'Pais',
             'Fecha': 'Fecha_TRM',
             'TRM': 'TRM',
-            'total': 'Total($)',
-            'Ciudad_Corregida': 'Ciudad_Corregida'
+            'TOTAL': 'Total($)',
+            'Ciudad_Corregida': 'Ciudad_Corregida',
+            'TOTAL CON IMP': 'Total_Con_Impuestos'
         }
+
 
         # Renombrar las columnas
         df_resultado = df_resultado.rename(columns=nuevos_nombres)
 
+
         # Verificar el resultado
-    
+
         # Extraer el día, mes y año en nuevas columnas
         df_resultado['Dia'] = df_resultado['Fecha_Factura'].dt.day
         df_resultado['Mes'] = df_resultado['Fecha_Factura'].dt.month
         df_resultado['Año'] = df_resultado['Fecha_Factura'].dt.year
 
-
         # Reorganizar las columnas si es necesario
         column_order = ['Numero_Factura','Fecha_Factura', 'Dia', 'Mes', 'Año', 'Cliente','Identificacion_Cliente','Producto', 'Cantidad', 
-                        'Total', 'TRM', 'Total($)','Telefono', 'Email','Pais','Ciudad', 'Ciudad_Corregida', 'Departamento', 
+                        'Total', 'TRM', 'Total($)','Total_Con_Impuestos','Telefono', 'Email','Pais','Ciudad', 'Ciudad_Corregida', 'Departamento', 
                         'Equipo_Ventas', 'Referencia', 'Asesor Comercial', 'Tipo de cliente'] ## aqui se agregregan las nuevas columnas
+
+
         df_resultado = df_resultado[column_order]
 
-  
-     
         # Convertir la columna "Cliente" a mayúsculas
         df_resultado['Cliente'] = df_resultado['Cliente'].str.upper()
 
@@ -613,15 +521,13 @@ class ReportClass():
         df_resultado.columns = df_resultado.columns.str.upper()
 
 
-        # 2. Limpieza de la columna de identificación en ambos DataFrames
-        # Limpieza en tu DataFrame actual
+        #  Limpieza de la columna de identificación en ambos DataFrames
         df_resultado['IDENTIFICACION_CLIENTE'] = (
             df_resultado['IDENTIFICACION_CLIENTE']
             .astype(str)  # Convertir a string
             .str.strip()  # Eliminar espacios al principio y al final
             .str.replace(r'\s+', '', regex=True)  # Eliminar espacios adicionales entre caracteres
         )
-
 
         columnas = df_resultado.columns.tolist()
 
@@ -633,7 +539,7 @@ class ReportClass():
 
         # Reorganizamos el DataFrame
         df_resultado = df_resultado[columnas]
-    
+
         # Rellenar los valores NaN en "Categoría" cuando EQUIPO_VENTAS sea "Shopify"
         df_resultado.loc[df_resultado['EQUIPO_VENTAS'] == 'Shopify', 'TIPO DE CLIENTE'] = 'SHOPIFY'
         # Rellenar los valores NaN en "Categoría" cuando EQUIPO_VENTAS sea "Shopify"
@@ -646,13 +552,12 @@ class ReportClass():
 
         df_resultado.loc[~df_resultado['PAIS'].isin(['CO', 'Desconocido']), 'TIPO DE CLIENTE'] = df_resultado['PAIS']
 
-    
+
         # Rellenar los valores vacíos en "Categoría" con "Call center"
         df_resultado['TIPO DE CLIENTE'] =df_resultado['TIPO DE CLIENTE'].fillna('CALL CENTER')   ### REVISAR
-    
+
 
         df_resultado= df_resultado.rename(columns={'TIPO DE CLIENTE':'CATEGORÍA'})
-
 
         # Renombra las categorías
 
@@ -667,75 +572,35 @@ class ReportClass():
 
         df_resultado['CATEGORÍA'] = df_resultado['CATEGORÍA'].replace(categorias_renombrar)
 
-        # validar clientes nuevos, pendiente por terminar
-        try:
-            ruta = self.validar_ruta()
-            ruta_historoica = ruta / 'file' / f'ventas_historicas.xlsx'
-
-            
-
-            ventas_historicas_agru=pd.read_excel(ruta_historoica)
-            ventas_historicas_agru['FECHA_FACTURA'] = pd.to_datetime(ventas_historicas_agru['FECHA_FACTURA'])
-
-            ventas_historicas_agru['IDENTIFICACION_CLIENTE'] =  ventas_historicas_agru['IDENTIFICACION_CLIENTE'].apply(self.limpiar_documento)
-            ventas_historicas_agru['IDENTIFICACION_CLIENTE'].astype(str)
-
-
-
-            df_resultado = df_resultado.merge(ventas_historicas_agru, on='IDENTIFICACION_CLIENTE', how='left', suffixes=('', '_FECHA_MIN'))
-
-            now = pd.to_datetime('now')
-
-            df_resultado['CLIENTES NUEVOS'] = np.where(
-                ((df_resultado['FECHA_FACTURA_FECHA_MIN'].dt.month == now.month) & 
-                (df_resultado['FECHA_FACTURA_FECHA_MIN'].dt.year == now.year))|((df_resultado['FECHA_FACTURA_FECHA_MIN'].isna())&(df_resultado['CATEGORÍA']=='MAYORISTA NV')),
-                "Cliente sin historico",
-                ""
-            )
-
-            df_resultado = df_resultado.drop(columns=['FECHA_FACTURA_FECHA_MIN'])
-        except Exception as e:
-            print(f"Error al validar clientes nuevos: {e}")
-
         return  {'Base':df_resultado,
-                'nombre_archivo':notas_creditos['nombre_archivo'],
-                'facturas_afectadas':notas_creditos['facturas_afectadas'],
-                'errores':etiqueta_mayorista,
-                # 'asesores_sin_categoria':asesores_sin_categoria,
-                'cliente_call_center':cliente_call_center
-                 }
+            'nombre_archivo':nombre_archivo,
+            'facturas_afectadas':facturas_afectadas,
+            'errores':etiqueta_mayorista,
+            # 'asesores_sin_categoria':asesores_sin_categoria,
+            'cliente_call_center':cliente_call_center
+            }
 
 
-
-
-    def explosion_ventas(self, ruta=None, sheet_name=None,):
+    def explosion_ventas(self,ventas: Optional[bool] = None, kits: Optional[bool] = None, df_ventas=None, df_kits=None, iva: Optional[bool] = None):
         """
         Realiza la explosión de ventas para actualizar el BI.
 
         Descompone los kits en productos individuales, calcula cantidades e ingresos,
         y genera tablas dinámicas por producto, mes y origen (kit/individual).
 
-        Args:
-            ruta (str, optional): Ruta del archivo de ventas. Por defecto usa la carpeta compartida.
-            sheet_name (str, optional): Nombre de la hoja de Excel con las ventas.
-
-        Returns:
-            None: El resultado se utiliza para actualizar reportes y BI.
+    
         """
-        if ruta: # Si se proporciona una ruta, úsala
-            ruta = Path(ruta)
-            ruta_kits = ruta / 'data' / 'kits.xlsx'
-            df_kits = pd.read_excel(ruta_kits)
+        if ventas:
+            df_ventas = self.cargar_archivo()
         else:
-            ruta = self.validar_ruta()
-            ruta_kits = ruta / 'data' / 'kits.xlsx'
-            df_kits = pd.read_excel(ruta_kits)
-
-        ruta_base =ruta / 'file' / 'BASE VENTAS 2025.xlsx'
-
-        # Cargar el archivo de Excel
-        df_ventas = pd.read_excel(ruta_base)  # Reemplaza con la ruta de tu archivo
-
+            if df_ventas is None:
+                raise ValueError("Debe proporcionar el DataFrame de ventas si 'ventas' es False.")
+        if kits:
+            df_kits = self.cargar_archivo()
+        else:
+            if df_kits is None:
+                raise ValueError("Debe proporcionar el DataFrame de kits si 'kits' es False.")
+    
         # Verifica si falta incluir kit en el archivo kits.xlsx
         df_explosion_prueba = pd.merge(df_ventas, df_kits, left_on="PRODUCTO", right_on="KIT", indicator=True, how='left')
 
@@ -744,6 +609,7 @@ class ReportClass():
             if 'KIT' in str(producto)
         ]
         print(f"Productos con 'KIT' sin correspondencia en df_kits: {productos_con_kit}")
+
 
         # Unir df_ventas con df_kits para explotar los kits
         df_explosion = pd.merge(df_ventas, df_kits, left_on="PRODUCTO", right_on="KIT")
@@ -754,238 +620,85 @@ class ReportClass():
         # Calcular las cantidades de productos
         df_explosion["CANTIDAD_PRODUCTO"] = df_explosion["CANTIDAD"]
 
+
         # Calcular el valor por producto en los kits
         # df_explosion["VALOR_POR_PRODUCTO"] = df_explosion["TOTAL($)"] / df_explosion.groupby("KIT")["PRODUCTO_x"].transform("count")
         conteo_facturas = df_explosion.groupby(['PRODUCTO_x','NUMERO_FACTURA'])['NUMERO_FACTURA'].transform('count')
-        df_explosion["VALOR_POR_PRODUCTO"] = df_explosion['TOTAL($)'] / conteo_facturas
-
-
-
-        # Agrupar y sumar las cantidades de productos de kits
-        df_resultado_kits = df_explosion.groupby(["PRODUCTO_y", "MES", "ORIGEN", 'CATEGORÍA'])["CANTIDAD_PRODUCTO"].sum().reset_index()
-        df_resultado_kits.columns = ["PRODUCTO", "MES","ORIGEN",'CATEGORÍA', "CANTIDAD_TOTAL"]
-
-        # # Agrupar por categorias
-        # df_resultado_kits_cat = df_explosion.groupby(["PRODUCTO_y", "MES", "ORIGEN",'CATEGORÍA'])["CANTIDAD_PRODUCTO"].sum().reset_index()
-        # df_resultado_kits.columns = ["PRODUCTO", "MES","ORIGEN",'CATEGORÍA', "CANTIDAD_TOTAL"]
-
+        if iva:
+            df_explosion["VALOR_POR_PRODUCTO"] = df_explosion['TOTAL_CON_IMPUESTOS'] / conteo_facturas
+        else:
+            df_explosion["VALOR_POR_PRODUCTO"] = df_explosion['TOTAL($)'] / conteo_facturas
 
         # Filtrar productos individuales
         df_ventas_individuales = df_ventas[~df_ventas["PRODUCTO"].str.startswith(("[PCNKIT","[TNGKIT","[B8KIT"))].reset_index(drop=True)
         df_ventas_individuales["ORIGEN"] = "INDIVIDUAL"
 
+        # Calcular las cantidades de productos
+        df_ventas_individuales["CANTIDAD_PRODUCTO"] = df_ventas_individuales["CANTIDAD"]
+        if iva:
+            df_ventas_individuales["VALOR_POR_PRODUCTO"] = df_ventas_individuales['TOTAL_CON_IMPUESTOS'] 
+        else:
+            df_ventas_individuales["VALOR_POR_PRODUCTO"] = df_ventas_individuales['TOTAL($)']   # Suponiendo que el IVA es del 19%
 
+        df_ventas_individuales['PRODUCTO_y'] = df_ventas_individuales['PRODUCTO'] 
 
-        # Seleccionar y renombrar columnas para que coincidan con df_resultado_kits
-        df_ventas_individuales = df_ventas_individuales[["PRODUCTO", "MES","ORIGEN" , 'CATEGORÍA', "CANTIDAD", "TOTAL($)"]]
-        df_ventas_individuales.columns = ["PRODUCTO", "MES", "ORIGEN", 'CATEGORÍA',"CANTIDAD_TOTAL", "INGRESO_TOTAL"]
-        
+        df_final_completo = pd.concat([df_explosion, df_ventas_individuales], ignore_index=True)
 
-        # Combinar los resultados de kits y productos individuales
-        df_final = pd.concat([df_resultado_kits, df_ventas_individuales], ignore_index=True)
-
-
-        ## Categoria producto ingresos
-
-        df_ingresos_kits_cate = df_explosion.groupby(["PRODUCTO_y", "MES", "CATEGORÍA"]).agg({
-            "CANTIDAD_PRODUCTO": "sum",
-            "VALOR_POR_PRODUCTO": "sum"
-        }).reset_index()
-        df_ingresos_kits_cate.columns = ["PRODUCTO", "MES", "CATEGORÍA", "CANTIDAD_TOTAL", "INGRESO_TOTAL"]
-        df_ingresos_cate= pd.concat([df_ingresos_kits_cate, df_ventas_individuales], ignore_index=True)
-
-
-        ## ingresos
-
-        # Agrupar y sumar las cantidades de productos de kits
-        df_ingresos_kits = df_explosion.groupby(["PRODUCTO_y", "MES"]).agg({
-            "CANTIDAD_PRODUCTO": "sum",
-            "VALOR_POR_PRODUCTO": "sum"
-        }).reset_index()
-        df_ingresos_kits.columns = ["PRODUCTO", "MES", "CANTIDAD_TOTAL", "INGRESO_TOTAL"]
-        df_ingresos= pd.concat([df_ingresos_kits, df_ventas_individuales], ignore_index=True)
-
-
-        # Lista con el orden correcto de los meses en español
-        orden_meses = [
-            'ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO',
-            'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'
-        ]
-
-        # Convertir la columna MES a tipo categoría con orden explícito
-        df_final['MES'] = pd.Categorical(df_final['MES'], categories=orden_meses, ordered=True)
-
-        # Ahora ordenar por MES
-        df_final = df_final.sort_values(by='MES')
-
-        # Categorias pivot table
-        pivot_table_por_mes_categoria = df_final.pivot_table(
-            index=["PRODUCTO", "CATEGORÍA"],  # Filas: productos
-            columns="MES",     # Columnas: meses
-            values="CANTIDAD_TOTAL",  # Valores: cantidades
-            aggfunc="sum",     # Función de agregación: suma
-            fill_value=0,
-            observed=True 
-                    # Rellenar valores faltantes con 0
+        compras_producto_cliente = (
+            df_final_completo[['CLIENTE', 'PRODUCTO_y', 'NUMERO_FACTURA']]
+            .drop_duplicates()
+            .groupby(['CLIENTE', 'PRODUCTO_y'])
+            .agg(Veces_Compra=('NUMERO_FACTURA', 'count'))
+            .sort_values(by='Veces_Compra', ascending=False)
         ).reset_index()
 
 
 
-        # Crear la pivot table
-        pivot_table_por_mes = df_final.pivot_table(
-            index="PRODUCTO",  # Filas: productos
-            columns="MES",     # Columnas: meses
-            values="CANTIDAD_TOTAL",  # Valores: cantidades
-            aggfunc="sum",     # Función de agregación: suma
-            fill_value=0,
-            observed=True 
-                    # Rellenar valores faltantes con 0
+        ventas_final = df_final_completo.groupby(['CLIENTE', 'PRODUCTO_y','ORIGEN']).agg(
+            PRODUCTO=('PRODUCTO_y', 'first'),
+            PRIMERA_COMPRA=('FECHA_FACTURA', 'min'),
+            TOTAL_COMPRAS=('NUMERO_FACTURA', 'nunique'),
+            ULTIMA_COMPRA=('FECHA_FACTURA', 'max'),
+            TELEFONO=('TELEFONO', 'first'),
+            TOTAL_CANTIDAD=('CANTIDAD', 'sum')
         ).reset_index()
+        ventas_final = ventas_final.merge(compras_producto_cliente, how='left', on=['CLIENTE', 'PRODUCTO_y'])
 
 
-        # Crear la pivot table
-        pivot_table_mes_origen = df_final.pivot_table(
-            index="PRODUCTO",  # Filas: productos
-            columns=["MES", "ORIGEN"],  # Columnas: meses y origen (kit o individual)
-            values="CANTIDAD_TOTAL",  # Valores: cantidades
-            aggfunc="sum",     # Función de agregación: suma
-            fill_value=0,
-            observed=True      # Rellenar valores faltantes con 0
-        ).reset_index()
+        df_final_completo['PRODUCTO_x'] = df_final_completo['PRODUCTO_x'].fillna(df_final_completo['PRODUCTO_y'])
 
+        df_final_completo = df_final_completo.rename(columns={'TOTAL($)':'TOTAL($)_ORI', 'VALOR_POR_PRODUCTO':'TOTAL($)',
+                                                              'CANTIDAD':'CANTIDAD_ORI','CANTIDAD_PRODUCTO':'CANTIDAD',
+                                                              'PRODUCTO':'PRODUCTO_Z', 'PRODUCTO_y':'PRODUCTO'
+                                                              })
 
-        # Crear la pivot table con el nuevo formato
-        pivot_table_resumida = df_final.pivot_table(
-            index=["PRODUCTO", "ORIGEN"],  # Filas: Producto y tipo (Kit o Individual)
-            columns="MES",                 # Columnas: Meses
-            values="CANTIDAD_TOTAL",        # Valores: Cantidad total
-            aggfunc="sum",                  # Sumar cantidades
-            fill_value=0,
-            observed=True                    # Reemplazar NaN con 0
-        ).reset_index()
-
-
-        # Convertir la columna MES a tipo categoría con orden explícito
-        df_ingresos['MES'] = pd.Categorical(df_ingresos['MES'], categories=orden_meses, ordered=True)
-
-        # Ahora ordenar por MES
-        df_ingresos = df_ingresos.sort_values(by='MES')
-
-
-        # Crear la pivot table para las cantidades
-        pivot_ingresos_cantidades = df_ingresos.pivot_table(
-            index="PRODUCTO",  # Filas: productos
-            columns="MES",     # Columnas: meses
-            values="CANTIDAD_TOTAL",  # Valores: cantidades
-            aggfunc="sum",     # Función de agregación: suma
-            fill_value=0,
-            observed=True       # Rellenar valores faltantes con 0
-        ).reset_index()
-
-        # Crear la pivot table para los ingresos
-        pivot_table_ingresos = df_ingresos.pivot_table(
-            index="PRODUCTO",  # Filas: productos
-            columns="MES",     # Columnas: meses
-            values="INGRESO_TOTAL",  # Valores: ingresos
-            aggfunc="sum",     # Función de agregación: suma
-            fill_value=0, 
-            observed=True       # Rellenar valores faltantes con 0
-        ).reset_index()
-
-
-        # Crear la pivot table categorias
-        pivot_table_ingresos_cate = df_ingresos.pivot_table(
-            index=["PRODUCTO", "CATEGORÍA"],  # Filas: productos
-            columns="MES",     # Columnas: meses
-            values="INGRESO_TOTAL",  # Valores: cantidades
-            aggfunc="sum",     # Función de agregación: suma
-            fill_value=0,
-            observed=True        # Rellenar valores faltantes con 0
-        ).reset_index()
-
-        ruta_file = ruta / 'file' 
-        cant_ing_cate = pivot_table_por_mes_categoria.melt(
-            id_vars=["PRODUCTO", "CATEGORÍA"],
-            var_name="MES", 
-            value_name="CANTIDAD_TOTAL"
-        )
-        ingre_cate=pivot_table_ingresos_cate.melt(
-        id_vars=["PRODUCTO", "CATEGORÍA"],
-        var_name="MES",
-        value_name="INGRESO_TOTAL"
-        )
-        df_categorias= cant_ing_cate.merge(ingre_cate, on=["PRODUCTO", "CATEGORÍA", "MES"], how="left")
-
-
-        # Diccionario de meses en español
-        meses_es = {
-            'enero': 1, 'febrero': 2, 'marzo': 3,
-            'abril': 4, 'mayo': 5, 'junio': 6,
-            'julio': 7, 'agosto': 8, 'septiembre': 9,
-            'octubre': 10, 'noviembre': 11, 'diciembre': 12
-        }
-
-        # Convertir los nombres de mes en mayúsculas a minúsculas antes de mapear
-        df_categorias['Mes_num'] = df_categorias['MES'].str.lower().map(meses_es)
-
-        # Crear columna de fecha con el día 1 y año 2025
-        df_categorias['Fecha'] = pd.to_datetime({
-            'year': 2025,
-            'month': df_categorias['Mes_num'],
-            'day': 1
-        })
-
-
-        try:
-            ruta_file.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
-            print(f"Carpeta '{ruta_file}' creada o ya existe.")
-            # Guardar la pivot table en un archivo de Excel
-            pivot_table_por_mes.to_excel(ruta_file / 'pivot_table_por_mes.xlsx', index=False) ## Es igual a "pivot_table_cantidades_por_mes.xlsx"
-            # Guardar la pivot table en un archivo de Excel
-            pivot_table_mes_origen.to_excel(ruta_file / "pivot_table_por_mes_y_origen.xlsx")
-            # Guardar la pivot table en un archivo de Excel
-            pivot_table_resumida.to_excel(ruta_file / "pivot_table_resumida.xlsx", index=False)
-
-            pivot_ingresos_cantidades.to_excel(ruta_file /"pivot_table_cantidades_por_mes.xlsx", index=False)
-
-            pivot_table_ingresos.to_excel(ruta_file / "pivot_table_ingresos_por_mes.xlsx", index=False)
-
-            df_categorias.to_excel(ruta_file / "categorias_df.xlsx", index=False)
-            print("Archivos guardados correctamente.")
-        except Exception as e:
-            print(f"Error al crear la carpeta o guardar los archivos: {e}")
-
-
-        return {'pivot_table_por_mes':pivot_table_por_mes,
-                'pivot_table_mes_origen':pivot_table_mes_origen,
-                'pivot_table_resumida':pivot_table_resumida,
-                'pivot_ingresos_cantidades':pivot_ingresos_cantidades,
-                'pivot_table_ingresos':pivot_table_ingresos,
-                }
+        return {'base':df_final_completo,
+                'Agrupado_cliente':ventas_final}
     
-    def pipeline_bi(self):
+    def pipeline_bi(self, iva: Optional[bool] = None):
         """
         Ejecuta el pipeline completo para procesar y transformar la base de ventas,
         consolidar datos, y realizar la explosión de ventas para el BI.
 
         Returns:
             dict: Diccionario con las bases procesadas, base limpia y explosión de ventas.
-
-
         """
         # porcesar base de ventas y notas credito
-        ventas_procesadas = self.transformar_base(origen=True)
+        ventas_procesadas = self.transformar_base()
         ruta = self.validar_ruta()
 
         ruta_clean = ruta / 'CLEAN DATA' 
 
+
         ruta2 = Path(ventas_procesadas['nombre_archivo'])
-        ruta_carpeta = ruta_clean / f'VENTAS_{ruta2.stem}.xlsx'
-        ruta_errores = ruta / 'file' / 'ventas_sin_categoria.xlsx'
+        ruta_carpeta = ruta_clean / ruta2
+        ruta_errores = ruta / 'file' / 'ventas_sin_categoria.csv'
         ruta_padres = ruta / 'data' / 'clientes_padres.xlsx'
         ruta_bgta= ruta / 'data' / 'Base_bogota.xlsx'
         ruta_zonas= ruta / 'data' / 'zonas.xlsx'
         ruta_zonas_cundi = ruta / 'data' / 'zonas_cundinamarca.xlsx'
+        ruta_kits = ruta / 'data' / 'kits.xlsx'
+        df_kits = pd.read_excel(ruta_kits)
         df_padres = pd.read_excel(ruta_padres)
         df_bogota= pd.read_excel(ruta_bgta)
         df_bogota = df_bogota.drop_duplicates(subset='DOCUMENTO')
@@ -995,7 +708,7 @@ class ReportClass():
         ventas_procesadas['Base'] =  ventas_procesadas['Base'].merge(zonas, on=['DEPARTAMENTO', 'CATEGORÍA'], how='left')\
                                 .merge(cundinamarca,  on=['DEPARTAMENTO','CIUDAD', 'CATEGORÍA'], how='left')
 
-        
+
         ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'] = pd.to_numeric(
             ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'], errors='coerce'
         ).astype('float')
@@ -1013,15 +726,12 @@ class ReportClass():
             'zona'
         ] = ventas_procesadas['Base']['ZONA_CUNDINAMARCA']
 
-        # df_bogota['DOCUMENTO'] = df_bogota['DOCUMENTO'].astype(str)
-        # ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'] = ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'].str.strip()
-
         ventas_procesadas['Base'] = ventas_procesadas['Base'].merge(df_bogota[['DOCUMENTO', 'CATEGORÍA', 'ZONA']], 
-                                      left_on=['IDENTIFICACION_CLIENTE','CATEGORÍA'], right_on=['DOCUMENTO', 'CATEGORÍA'], how='left')
+                                        left_on=['IDENTIFICACION_CLIENTE','CATEGORÍA'], right_on=['DOCUMENTO', 'CATEGORÍA'], how='left')
 
         ventas_procesadas['Base']['ZONA'] = ventas_procesadas['Base']['ZONA'].fillna(ventas_procesadas['Base']['zona'])
 
-        ventas_procesadas['Base'] = ventas_procesadas['Base'].drop(columns=['CLIENTES NUEVOS',	'zona',	'DOCUMENTO', 'ZONA_CUNDINAMARCA'])
+        ventas_procesadas['Base'] = ventas_procesadas['Base'].drop(columns=['zona', 'DOCUMENTO', 'ZONA_CUNDINAMARCA'])
         df_padres.drop_duplicates(subset='CLIENTE', inplace=True)
         ventas_procesadas['Base']['CLIENTE_ORI'] = ventas_procesadas['Base']['CLIENTE'] 
         df_padres = df_padres[['CLIENTE', 'CLIENTE PADRE']]
@@ -1029,19 +739,28 @@ class ReportClass():
         ventas_procesadas['Base']['CLIENTE PADRE'] = ventas_procesadas['Base']['CLIENTE PADRE'].fillna(ventas_procesadas['Base']['CLIENTE'])
         ventas_procesadas['Base']['CLIENTE'] = ventas_procesadas['Base']['CLIENTE PADRE'] 
         ventas_procesadas['Base'].drop(columns=['CLIENTE PADRE'], inplace=True)
+
         try:
             ruta_clean.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
             print(f"Carpeta '{ruta_clean}' creada o ya existe.")
-            ventas_procesadas['Base'].to_excel(ruta_carpeta, index=False)
+            ventas_procesadas['Base'].to_csv(ruta_carpeta, index=False, sep=';', encoding='utf-8-sig', decimal=',')
+            ruta_exploded = ruta / 'exploded_data'
+            base_exploded = self.explosion_ventas(df_ventas=ventas_procesadas['Base'], df_kits=df_kits, iva=iva)
+            ruta_exploded.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
+            print(f"Carpeta '{ruta_clean}' creada o ya existe.")
+            base_exploded['base'].to_csv(ruta_exploded / f"exploded_{ruta2.name}", index=False, sep=';', encoding='utf-8-sig', decimal=',')
             with pd.ExcelWriter(ruta_errores, engine='openpyxl') as writer:
                 ventas_procesadas['errores'].to_excel(writer, sheet_name='etiqueta a tipo', index=False)
                 ventas_procesadas['cliente_call_center'].to_excel(writer, sheet_name='CLIENTE a CALL', index=False)
                 # ventas_procesadas['asesores_sin_categoria'].to_excel(writer, sheet_name='Mayoristas sin categoria', index=False)
         except Exception as e:
             print(f"Error al crear la carpeta o guardar los archivos: {e}")
+            
+
+
         # Consolidar ventas
-        base_clean = self.consolidar_carpeta(ruta_carpeta=ruta_clean)
-        ruta_base = ruta / 'file' / 'BASE VENTAS 2025.xlsx'
+        base_clean = self.consolidar_carpeta(ruta_carpeta=ruta_clean, extension='csv')
+        ruta_base = ruta / 'file' / 'base_ventas.csv'
         import locale
         try:         
             # Intentamos usar el locale en español para obtener "ENERO", "FEBRERO", etc.
@@ -1049,11 +768,12 @@ class ReportClass():
         except locale.Error:
             print("   - Advertencia: Locale 'es_ES.UTF-8' no disponible. Se usarán nombres de mes en inglés.")
             
+        base_clean['FECHA_FACTURA'] = pd.to_datetime(base_clean['FECHA_FACTURA'])
         base_clean['MES'] = base_clean['FECHA_FACTURA'].dt.strftime('%B').str.upper()
         columnas_finales = [
                 "Source.Name", "NUMERO_FACTURA", "FECHA_FACTURA", "AÑO", "MES", "DIA",
                 "CLIENTE", "IDENTIFICACION_CLIENTE", "CATEGORÍA", "PRODUCTO", "CANTIDAD",
-                "TOTAL", "TASA_CAMBIO", "TRM", "TOTAL($)", "TELEFONO", "EMAIL", "PAIS",
+                "TOTAL", "TASA_CAMBIO", "TRM", "TOTAL($)", "TOTAL_CON_IMPUESTOS" "TELEFONO", "EMAIL", "PAIS",
                 "CIUDAD", "CIUDAD_CORREGIDA", "DEPARTAMENTO", "EQUIPO_VENTAS", "REFERENCIA", "ZONA" , "CLIENTE_ORI"
             ]
             
@@ -1069,18 +789,41 @@ class ReportClass():
         # Esta linea mantiene solo los pruductos comerciales
         base_clean = base_clean[base_clean['PRODUCTO'].str.startswith(('[PCN','[KD','[TNG','[B8'))]   ###### linea modificada 
 
+
         try:
             ruta_file = ruta / 'file' 
             ruta_file.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
             print(f"Carpeta '{ruta_file}' creada o ya existe.")
-            base_clean.to_excel(ruta_base, index=False)
+            base_clean.to_csv(ruta_base, index=False, sep=';', encoding='utf-8-sig', decimal=',')
             
         except Exception as e:
             print(f"Error al crear la carpeta o guardar los archivos: {e}")
-        explosion = self.explosion_ventas()
+
+            
+        # Consolidar ventas
+        base_exploded = self.consolidar_carpeta(ruta_carpeta=ruta_exploded, extension='csv')
+        ruta_base = ruta / 'file' / 'base_ventas_exploded.csv'
+        import locale
+        try:         
+            # Intentamos usar el locale en español para obtener "ENERO", "FEBRERO", etc.
+            locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
+        except locale.Error:
+            print("   - Advertencia: Locale 'es_ES.UTF-8' no disponible. Se usarán nombres de mes en inglés.")
+
+
+        try:
+            ruta_file = ruta / 'file' 
+            ruta_file.mkdir(parents=True, exist_ok=True)  # Crear la carpeta si no existe
+            print(f"Carpeta '{ruta_file}' creada o ya existe.")
+            base_exploded.to_csv(ruta_base, index=False, sep=';', encoding='utf-8-sig', decimal=',')
+            
+        except Exception as e:
+            print(f"Error al crear la carpeta o guardar los archivos: {e}")
+
+            
         return {'ventas_procesadas':ventas_procesadas,
                 'base_clean':base_clean,
-                'explosion':explosion
+                'explosion':base_exploded
                 }
 
     def contabilidad(self):
@@ -1112,7 +855,6 @@ class ReportClass():
                         )
                 )
         )
-
 
         df_niveles =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='niveles')
         df_concepto_unico =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='cuentas_concepto_uni')
@@ -1152,33 +894,27 @@ class ReportClass():
             'Distribución analítica', 
         ] = '6'
 
-
         df_base_merge.loc[
             (df_base_merge['N3'] == '4175') & 
             (df_base_merge['Diario']!="Facturas de cliente Cali"),
             'Distribución analítica', 
         ] = '6'
 
-
         df_base_merge.loc[
             (df_base_merge['N1'] == '6') & (df_base_merge['Distribución analítica ori'].isna()),
             'Distribución analítica'
         ] =  '6'
-
 
         df_base_merge.loc[
             (df_base_merge['N2'] == '42') & (df_base_merge['Distribución analítica ori'].isna()),
             'Distribución analítica'
         ] = '6'
 
-
-
         df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
                     (df_base_merge['Número'].str.startswith('BNK')) &
                         (df_base_merge['Cuenta Origen'].isin(['530515001 COMISIONES','530505002 GRAVAMEN CUATRO POR MIL', '530505001 CUOTA DE MANEJO']))
                     , 'Distribución analítica'
                     ] = '7'
-
 
         df_base_merge.loc[(df_base_merge['Distribución analítica'].isna()) & 
                     (df_base_merge['Número'].str.startswith('BNK')) &
@@ -1198,14 +934,12 @@ class ReportClass():
                     , 'Distribución analítica'
                     ] = '4'  # validar si es clientre cc ==comercial  o infulerce cc== marketing ==
 
-
         mask = df_base_merge['Distribución analítica'].fillna('').str.contains('5,')
 
         df_base_merge.loc[mask, 'Distribución analítica'] = (
             df_base_merge.loc[mask, 'Distribución analítica']
             .apply(lambda x: x.split(',')[1].strip())
         )
-
 
             # df_base_merge[df_base_merge['Distribución analítica']
             # .fillna('0').str.contains('5,')]
@@ -1214,8 +948,6 @@ class ReportClass():
 
         df_base_merge = df_base_merge.merge(df_cc[['cc','Nombre Cencosto', 'ADM/VTAS','Origen' ]],
                                             left_on='Distribución analítica', right_on='cc', how='left').drop(columns='cc')
-
-
 
         df_base_merge = df_base_merge.merge(df_concepto_unico, on='Cuenta', how='left')
 
@@ -1268,7 +1000,6 @@ class ReportClass():
                 'Revisar'
             )
         )
-
 
         df_cuentas = df_cuentas[['Cuenta', 'Nombre Cencosto','Estado Cuenta', 'Distribución analítica']]
 
