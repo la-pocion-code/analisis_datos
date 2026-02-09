@@ -11,7 +11,7 @@ from typing import List, Optional, Union
 load_dotenv()
 
 
-class MailSender:
+class  MailSender:
     """
     Clase genérica para enviar correos con distintos tipos de adjuntos, cuerpo en texto o HTML,
     y posibilidad de copiar a otros destinatarios (CC/BCC).

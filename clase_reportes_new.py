@@ -1,9 +1,9 @@
 import pandas as pd
+import holidays
 from pathlib import Path
 import os 
 from thefuzz import process
 from rapidfuzz import process
-import pandas as pd
 import os
 import re
 import tkinter as tk
@@ -11,7 +11,13 @@ from tkinter import filedialog
 import numpy as np
 import json
 import unicodedata
-from typing import Optional
+from typing import Dict, Optional, List
+from io import StringIO
+import requests
+from difflib import get_close_matches
+import unicodedata
+from collections import defaultdict
+
 
 
 class ReportClassNew():
@@ -392,14 +398,31 @@ class ReportClassNew():
                 .str.strip()                                                 # elimina espacios extremos
         )
 
+        ###
 
+        
 
         # Cargar catálogo Colombia
-        ciudad_url = "https://www.datos.gov.co/resource/gdxc-w37w.csv?$limit=5000"
-        DF_CIUDADES = pd.read_csv(ciudad_url)
+        # ciudad_url = "https://www.datos.gov.co/resource/gdxc-w37w.csv?$limit=5000"
+        # DF_CIUDADES = pd.read_csv(ciudad_url)
+        # ruta = self.validar_ruta()
+        ruta = r'G:\Otros ordenadores\Mi portátil\VENTA MENSUAL\data\ciudad.xlsx' # linea temporal
+        # ciudad_url = "https://www.datos.gov.co/resource/gdxc-w37w.csv?$limit=5000"
+
+        # response = requests.get(ciudad_url, verify=True)
+        # response.raise_for_status()
+
+        # DF_CIUDADES = pd.read_csv(StringIO(response.text))
+
+
+        DF_CIUDADES = pd.read_excel(ruta)
+
+
+
         # DF_CIUDADES = pd.read_excel(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\CIUDAD.xlsx") # Dataset con nombres correctos
         DF_CIUDADES = DF_CIUDADES.rename(columns= {'nom_mpio':'Ciudad_Correcta'})
         df_resultado = df_filtrado.rename(columns= {'Líneas de factura/Asociado/Ciudad':'Ciudad'})
+
 
         # Normalización
         def normalizar(texto):
@@ -413,55 +436,77 @@ class ReportClassNew():
             return texto
 
         DF_CIUDADES['Ciudad_norm'] = DF_CIUDADES['Ciudad_Correcta'].apply(normalizar)
+
+        df_resultado['Ciudad'] = df_resultado['Ciudad'].apply(normalizar)
         lista_ciudades_norm = DF_CIUDADES['Ciudad_norm'].unique()
 
+
+        df_resultado['validar_ciudad'] = np.where(
+            df_resultado['Ciudad'].isin(lista_ciudades_norm),
+            df_resultado['Ciudad'],
+            ""
+        )
 
 
         #  Diccionario de alias
         ALIASES = {
-            "cali": "Cali",
+            'cali': 'CALI',
+            'buga':'GUADALAJARA DE BUGA',
+            'bogot': 'BOGOTA D.C.',
+            'bogota':'BOGOTA D.C.'
         }
 
-        #  Validación de entrada
-        def es_valido(texto):
-            texto = normalizar(texto)
-            return (
-                len(texto) >= 3 and
-                re.search(r"[a-z]", texto)
-            )
+        df_resultado['departamento']  = df_resultado['Líneas de factura/Asociado/Estado'].str.split(' ').str[0].apply(normalizar)
+        DF_CIUDADES['departamento'] = DF_CIUDADES['NOM_DEPTO'].apply(normalizar)
 
+        def corregir_ciudad_avanzada(row, df_ciudades, columna_ciudad='Ciudad', columna_depto='departamento'):
+            """
+            Versión avanzada con múltiples estrategias de corrección.
+            """
+            ciudad = row[columna_ciudad]
+            departamento = row[columna_depto] if columna_depto in row.index else None
+            
+            # 1. Coincidencia exacta (ya validada)
+            if row.get('validar_ciudad', '') != "":
+                match = df_ciudades[df_ciudades['Ciudad_norm'] == ciudad]
+                if not match.empty:
+                    return match.iloc[0]['Ciudad_Correcta']
+            
+            # 2. Verificar aliases primero
+            if ciudad in ALIASES:
+                return ALIASES[ciudad]
+            
+            # 3. Filtrar por departamento
+            if departamento and departamento != "":
+                ciudades_filtradas = df_ciudades[df_ciudades['departamento'] == departamento]
+            else:
+                ciudades_filtradas = df_ciudades
+            
+            if ciudades_filtradas.empty:
+                ciudades_filtradas = df_ciudades
+            
+            lista_ciudades = ciudades_filtradas['Ciudad_norm'].tolist()
+            
+            # 4. Coincidencia aproximada con diferentes niveles
+            for cutoff in [0.9, 0.85, 0.8]:  # Probar diferentes niveles de similitud
+                coincidencias = get_close_matches(ciudad, lista_ciudades, n=1, cutoff=cutoff)
+                if coincidencias:
+                    match = ciudades_filtradas[ciudades_filtradas['Ciudad_norm'] == coincidencias[0]]
+                    if not match.empty:
+                        return match.iloc[0]['Ciudad_Correcta']
+            
+            # 5. Si no se encuentra, retornar original
+            return ciudad
 
-
-        #  Fuzzy matcher con alias + umbral
-        def corregir_ciudad(ciudad_mal):
-            if not es_valido(ciudad_mal):
-                return "DESCONOCIDO"
-
-            ciudad_norm = normalizar(ciudad_mal)
-
-            # ---- Alias primero ----
-            if ciudad_norm in ALIASES:
-                return ALIASES[ciudad_norm]
-
-            # ---- Fuzzy matching ----
-            mejor_match, score, idx = process.extractOne(
-                ciudad_norm,
-                lista_ciudades_norm
-            )
-
-            # subir el umbral
-            if score >= 82:
-                return DF_CIUDADES.iloc[idx]['Ciudad_Correcta'].upper()
-
-            return str(ciudad_mal).upper()
-
-
+        # Aplicar versión avanzada
+        df_resultado['Ciudad_Corregida'] = df_resultado.apply(
+            lambda row: corregir_ciudad_avanzada(row, DF_CIUDADES), 
+            axis=1
+        )
         #  Aplicación
-        df_resultado = df_filtrado.rename(columns={
-            'Líneas de factura/Asociado/Ciudad': 'Ciudad'
-        })
-
-        df_resultado["Ciudad_Corregida"] = df_resultado["Ciudad"].apply(corregir_ciudad)
+        # df_resultado = df_filtrado.rename(columns={
+        #     'Líneas de factura/Asociado/Ciudad': 'Ciudad'
+        # })
 
 
 
@@ -476,7 +521,7 @@ class ReportClassNew():
             'Líneas de factura/Asociado/Número de Identificación': 'Identificacion_Cliente',
             'Líneas de factura/Asociado/Teléfono': 'Telefono',
             'Líneas de factura/Asociado/Correo electrónico': 'Email',
-            'Ciudad': 'Ciudad',
+            'Líneas de factura/Asociado/Ciudad': 'Ciudad',
             'Líneas de factura/Asociado/Estado': 'Departamento',
             'Equipo de Ventas': 'Equipo_Ventas',
             'Líneas de factura/Referencia': 'Referencia',
@@ -484,14 +529,13 @@ class ReportClassNew():
             'Fecha': 'Fecha_TRM',
             'TRM': 'TRM',
             'TOTAL': 'Total($)',
-            'Ciudad_Corregida': 'Ciudad_Corregida',
             'TOTAL CON IMP': 'Total_Con_Impuestos'
         }
 
 
         # Renombrar las columnas
         df_resultado = df_resultado.rename(columns=nuevos_nombres)
-
+        
 
         # Verificar el resultado
 
@@ -706,7 +750,7 @@ class ReportClassNew():
         zonas = pd.read_excel(ruta_zonas)
         cundinamarca = pd.read_excel(ruta_zonas_cundi)
         ventas_procesadas['Base'] =  ventas_procesadas['Base'].merge(zonas, on=['DEPARTAMENTO', 'CATEGORÍA'], how='left')\
-                                .merge(cundinamarca,  on=['DEPARTAMENTO','CIUDAD', 'CATEGORÍA'], how='left')
+                        .merge(cundinamarca, left_on=['DEPARTAMENTO','CIUDAD_CORREGIDA', 'CATEGORÍA'], right_on=['DEPARTAMENTO','CIUDAD', 'CATEGORÍA'], how='left')
 
 
         ventas_procesadas['Base']['IDENTIFICACION_CLIENTE'] = pd.to_numeric(
@@ -865,7 +909,7 @@ class ReportClassNew():
         influencer =pd.read_excel(ruta_contabilidad / 'base_cuentas.xlsx', sheet_name='INFLUENCER')
 
         df_base['N3'] = df_base['N3'].astype(int)
-        df_base['N3'] = df_base['N3'].astype(int)
+   
         df_base['Cuenta'] = df_base['Cuenta'].astype(int)
 
         df_base_merge = df_base.merge(df_niveles, left_on='N3', right_on='cuenta', how='left').drop(columns='cuenta')
@@ -1054,6 +1098,7 @@ class ReportClassNew():
 
         df_base_consol =  self.consolidar_carpeta(extension='csv', encoding='utf-8', sep=';', decimal=',', ruta_carpeta= ruta_contabilidad / 'base')
         # pd.read_csv(r"C:\Users\Dataa\Desktop\VENTAS\VENTA MENSUAL\data\contabilidad\base\base_ene_jun_2025.csv",encoding='utf-8', sep=';')
+     
         df_base_consol = df_base_consol.loc[:, ~df_base_consol.columns.str.contains('^Unnamed')]
 
         df_base_consol.to_csv(ruta_contabilidad / 'base_consolidada.csv', encoding='utf-8', sep=';', decimal=',', index=False)
@@ -1062,3 +1107,723 @@ class ReportClassNew():
         # df_base_consol.to_excel(ruta_contabilidad / 'base_consolidada.xlsx',  index=False)
 
         return df_base_consol, dicc
+        
+    def informe_diario_mayoristas(
+            self,
+            ruta_carpeta: Optional[str] = None,
+            extension: str = 'csv',
+            producto_pen: Optional[List[str]] = None,
+            ruta_presupuesto: Optional[str] = None,
+            clientes: Optional[Dict[str, List[Dict[str, str]]]] = None,
+        ):
+
+ 
+
+        if ruta_carpeta:
+            ruta = Path(ruta_carpeta)
+        else:
+            ruta = self.validar_ruta() / 'CLEAN DATA'
+
+        df_ventas = self.consolidar_carpeta(
+            ruta_carpeta=ruta,
+            extension=extension
+        )
+
+        df_ventas['FECHA_FACTURA']=pd.to_datetime(df_ventas['FECHA_FACTURA'])
+
+        # Asignamos zona Distribuidor
+        df_ventas.loc[df_ventas['CATEGORÍA']=='DISTRIBUIDOR', 'ZONA'] = 'DISTRIBUIDOR'
+        # revisar logica de ultimos 6 meses
+
+      
+        # Flatten dict
+        map_cliente_zona = {
+            cliente: zona
+            for lista in clientes.values()
+            for d in lista
+            for cliente, zona in d.items()
+        }
+
+        # Asignar zona vectorizado
+        df_ventas['ZONA'] = (
+            df_ventas['CLIENTE']
+            .map(map_cliente_zona)
+            .fillna(df_ventas['ZONA'])
+        )
+
+        ventas_filtradas = df_ventas[(df_ventas['ZONA'].notna())&(df_ventas['ZONA']!="sin zona")]
+
+        productos_sin_kit = df_ventas.loc[
+            ~df_ventas['PRODUCTO'].str.contains('KIT|COSMETIQUERA|GORRITO|BAG', case=False, na=False),
+            'PRODUCTO'
+        ].unique().tolist()
+
+        co_holidays = holidays.Colombia()
+        hoy = pd.Timestamp.now().normalize()
+
+        mes_actual = hoy.replace(day=1)
+        ayer = hoy - pd.Timedelta(days=2)
+
+        mes_anterior = mes_actual - pd.DateOffset(days=1)
+        meses_prev = (mes_anterior - pd.DateOffset(months=5)).replace(day=1)
+
+        # Ventas meses anteriores
+        df_meses_anteriores = ventas_filtradas.loc[
+            ventas_filtradas['FECHA_FACTURA'].between(meses_prev, mes_anterior)
+        ]
+        # Clientes activos últimos 5 meses
+        clientes_activos = (
+            df_meses_anteriores[['CLIENTE', 'CATEGORÍA', 'ZONA',]]
+            .drop_duplicates(ignore_index=True)
+        )
+
+
+        # Ventas del mes actual
+        df_mes_actual = df_ventas.loc[(df_ventas['FECHA_FACTURA'] >= mes_actual)&(df_ventas['ZONA']!='sin zona')&(df_ventas['ZONA'].notna())]
+        mes_actual_df = df_mes_actual.copy()
+
+        # Ajustar "ayer" si cae en fin de semana
+        while ayer.dayofweek >= 5 or ayer.date() in co_holidays:
+            ayer -= pd.Timedelta(days=1)
+        # Datos agrupados por zona
+        clientes_mes_actual = df_mes_actual.groupby(['CLIENTE', 'ZONA', 'CATEGORÍA'	])['TOTAL($)'].sum().reset_index()
+        clientes_mes_actual_ayer = df_mes_actual[df_mes_actual['FECHA_FACTURA']<=ayer].groupby(['CLIENTE', 'ZONA','CATEGORÍA'])['TOTAL($)'].sum().reset_index()
+
+
+
+        clientes_activos = clientes_activos.merge(clientes_mes_actual, on=['CLIENTE', 'ZONA'], how='left', indicator=True)
+
+
+        df_ventas['TOTAL($)'] = df_ventas['TOTAL($)'].astype(int)
+
+
+        cobertura_hoy = (
+            clientes_activos.assign(compro=lambda x: x['_merge'] == 'both')
+            .groupby('ZONA')
+            .agg(
+                total_clientes=('CLIENTE', 'nunique'),
+                clientes_compraron=('compro', 'sum'),
+                ventas=('TOTAL($)', 'sum')
+            )
+            .assign(
+                porcentaje_cobertura=lambda x: (x['clientes_compraron'] / x['total_clientes'])*100
+            )
+        ).reset_index()
+
+        clientes_activos.rename(columns={'_merge': 'hoy'}, inplace=True)
+        clientes_activos = clientes_activos.merge(clientes_mes_actual_ayer, on=['CLIENTE', 'ZONA'], how='left', indicator=True)
+
+
+        cobertura_ayer = (
+            clientes_activos.assign(compro=lambda x: x['_merge'] == 'both')
+            .groupby('ZONA')
+            .agg(
+                total_clientes=('CLIENTE', 'nunique'),
+                clientes_compraron=('compro', 'sum'),
+                ventas=('TOTAL($)_y', 'sum')
+            )
+            .assign(
+                porcentaje_cobertura=lambda x: (x['clientes_compraron'] / x['total_clientes'])*100
+            )
+        ).reset_index()
+        cobertura_hoy['sin compra'] = cobertura_hoy['total_clientes'] - cobertura_hoy['clientes_compraron']
+        cobertura_ayer['sin compra'] = cobertura_ayer['total_clientes'] - cobertura_ayer['clientes_compraron']
+
+        df_pareto = (
+            df_meses_anteriores
+            .groupby(['ZONA', 'CLIENTE'])['TOTAL($)']
+            .sum()
+            .reset_index()
+        )
+
+        df_pareto = df_pareto.sort_values(['ZONA', 'TOTAL($)'], ascending=[True, False])
+
+        # 2. Generar Ranking
+        df_pareto['rank_zona'] = df_pareto.groupby('ZONA')['TOTAL($)'].rank(ascending=False, method='min').astype(int)
+
+        df_pareto['venta_acum_zona'] = df_pareto.groupby('ZONA')['TOTAL($)'].cumsum()
+        df_pareto['total_zona'] = df_pareto.groupby('ZONA')['TOTAL($)'].transform('sum')
+
+        df_pareto['pct_acum_zona'] = df_pareto['venta_acum_zona'] / df_pareto['total_zona']
+
+        df_pareto['categoria_pareto_zona'] = df_pareto['pct_acum_zona'].apply(
+            lambda x: 'A' if x <= 0.8 else 'B'
+        )
+
+        df_pareto = df_pareto.merge(clientes_mes_actual, on=['CLIENTE','ZONA'], indicator=True, how='left', suffixes=('_hist', '_actual'))
+        # Ordenamos por importancia histórica y tomamos los 5 mejores por zona
+        top_5_fugados_por_zona = (
+            df_pareto[df_pareto['_merge']=='left_only']
+            .sort_values(['ZONA', 'TOTAL($)_hist'], ascending=[True, False])
+            .groupby('ZONA')
+            .head(5)
+        )
+
+        # Limpiamos las columnas para que el reporte sea legible
+        reporte_critico = top_5_fugados_por_zona[['ZONA', 'CLIENTE', 'TOTAL($)_hist', 'rank_zona']]
+
+
+        # Penetracion por productos especificos
+        if producto_pen:
+            productos_analisis = producto_pen
+        else:
+            productos_analisis = [ '[PCN32] SHAMPOO CONTROL CASPA',
+            '[PCN33] TONICO CONTROL CASPA']
+
+        clientes_producto_analisis = df_mes_actual[df_mes_actual['PRODUCTO'].isin(productos_analisis)][['CLIENTE', 'ZONA']].drop_duplicates().reset_index(drop=True)
+        resultado = clientes_mes_actual.merge(
+            clientes_producto_analisis[['CLIENTE', 'ZONA']],
+            on=['CLIENTE', 'ZONA'],
+            how='left',
+            indicator=True
+        )
+
+        no_estan = resultado[resultado['_merge'] == 'left_only']
+
+
+        no_estan = no_estan.shape[0]
+        resultado_agru = resultado.groupby( 'ZONA')['CLIENTE'].count().reset_index()
+        no_esta_agru = resultado[resultado['_merge'] == 'left_only'].groupby( 'ZONA')['CLIENTE'].count().reset_index()
+
+
+        penetracion_producto = resultado_agru.merge(no_esta_agru, on='ZONA', how='left', suffixes=('_compraron', '_sin_compra'))
+
+
+        penetracion_producto['CLIENTE COMPRARON PRODUCTO'] = penetracion_producto['CLIENTE_compraron'] - penetracion_producto['CLIENTE_sin_compra']
+        penetracion_producto['PENETRACION'] =( penetracion_producto['CLIENTE COMPRARON PRODUCTO']  /penetracion_producto['CLIENTE_compraron'])*100
+        penetracion_producto['PENETRACION'] = penetracion_producto['PENETRACION'].round(1)
+
+        zonas = penetracion_producto['ZONA']
+
+
+
+        penetracion_producto = penetracion_producto.merge(cobertura_hoy[['ZONA','total_clientes' ]], on='ZONA', how='left')
+
+        penetracion_producto['PENETRACION'] = ((penetracion_producto['CLIENTE COMPRARON PRODUCTO'] / penetracion_producto['total_clientes'])*100).round(1)
+
+        penetracion_producto['CLIENTE_sin_compra'] = penetracion_producto['total_clientes'] - penetracion_producto['CLIENTE COMPRARON PRODUCTO']
+        cobertura_hoy[cobertura_hoy['ZONA']=='ANTIOQUIA']['porcentaje_cobertura'].round(1).to_list()[0]
+
+
+        reporte_critico = reporte_critico.rename(columns={'rank_zona': 'Ranking'})
+
+
+        # Presupuesto
+
+        if ruta_presupuesto:
+            presupuesto = pd.read_excel(ruta_presupuesto)
+        else:
+            ruta = self.validar_ruta()
+            ruta_presu = ruta / 'data' / 'PRESUPUESTO GENERAL.xlsx' # modificar
+            presupuesto = pd.read_excel(ruta_presu)
+
+
+        # Asignar zona vectorizado
+        presupuesto['ZONA'] = (
+            presupuesto['CLIENTE']
+            .map(map_cliente_zona)
+            .fillna(presupuesto['ZONA'])
+        )
+
+
+        presupuesto['MES'] = presupuesto['FECHA'].dt.month
+        presupuesto = presupuesto[presupuesto['MES']==hoy.month]
+
+
+
+        # Ventas mes actual
+        filtro= mes_actual_df.groupby('ZONA')['TOTAL($)'].sum().reset_index()
+        cobertura_hoy = cobertura_hoy.merge(filtro, on='ZONA', how='left').fillna(0).rename(columns={'ventas': 'ventas clientes activos', 'TOTAL($)':'ventas'})
+        # Ventas mes actual
+        filtro= mes_actual_df[mes_actual_df['FECHA_FACTURA']<=ayer].groupby( 'ZONA')['TOTAL($)'].sum().reset_index()
+        cobertura_ayer = cobertura_ayer.merge(filtro, on='ZONA', how='left').fillna(0).rename(columns={'ventas': 'ventas clientes activos', 'TOTAL($)':'ventas'})
+
+        cobertura_ayer = cobertura_ayer.merge(presupuesto[['ZONA', 'PRESUPUESTO']], how='left')
+        cobertura_ayer['falta presu'] = cobertura_ayer['PRESUPUESTO'] - cobertura_ayer['ventas']
+        cobertura_ayer['cumplimiento%'] = ((cobertura_ayer['ventas'] / cobertura_ayer['PRESUPUESTO'])*100).round(1)
+        cobertura_hoy = cobertura_hoy.merge(presupuesto[['ZONA', 'PRESUPUESTO']], how='left')
+        cobertura_hoy['falta presu'] = cobertura_hoy['PRESUPUESTO'] - cobertura_hoy['ventas']
+        cobertura_hoy['cumplimiento%'] = ((cobertura_hoy['ventas'] / cobertura_hoy['PRESUPUESTO'])*100).round(1)
+
+
+        # Separa los clietes de las zonas
+        cobertura_clientes = cobertura_hoy[cobertura_hoy['ZONA'].isin(map_cliente_zona.values())].reset_index(drop=True)
+        cobertura_hoy = cobertura_hoy[~cobertura_hoy['ZONA'].isin(map_cliente_zona.values())].reset_index(drop=True)
+        cobertura_ayer = cobertura_ayer[~cobertura_ayer['ZONA'].isin(map_cliente_zona.values())].reset_index(drop=True)
+        penetracion_producto = penetracion_producto[~penetracion_producto['ZONA'].isin(map_cliente_zona.values())].reset_index(drop=True)
+        # Quita lo que no son zonas
+        zonas = (set(zonas) - set(map_cliente_zona.values()))
+        # Penetracion por clienta
+        productos_por_cliente = (
+            df_mes_actual
+            .groupby(['CLIENTE', 'ZONA'])['PRODUCTO']
+            .nunique()
+            .reset_index()
+            .rename(columns={'PRODUCTO': 'productos_comprados'})
+        )
+
+        total_portafolio = len(productos_sin_kit)
+        productos_por_cliente['penetracion'] = (
+            productos_por_cliente['productos_comprados'] / total_portafolio
+        )
+
+        cobertura_clientes = cobertura_clientes[['ZONA','PRESUPUESTO','ventas','cumplimiento%','falta presu']]
+
+
+        map_zona_clientes = defaultdict(list)
+
+        for cliente, zona in map_cliente_zona.items():
+            map_zona_clientes[zona].append(cliente)
+
+
+        # Asignar zona vectorizado
+        cobertura_clientes['CLIENTE'] = cobertura_clientes['ZONA'].map(
+            lambda z: map_zona_clientes.get(z, [''])[0])
+        
+
+        map_zona_correo = {}
+
+        for correo, lista in clientes.items():
+            for d in lista:
+                for _, zona in d.items():
+                    map_zona_correo[zona] = correo
+
+        cobertura_clientes['RESPONSABLE'] = cobertura_clientes['ZONA'].map(map_zona_correo)
+
+        cobertura_clientes = cobertura_clientes.merge(productos_por_cliente[['CLIENTE', 'productos_comprados', 'penetracion']], on='CLIENTE', how='left').fillna(0)
+        responsables = cobertura_clientes['RESPONSABLE'].drop_duplicates().to_list()
+        # Productos comercializados -2 por los pruductos de exportación
+        cobertura_clientes['productos_pocion'] = df_ventas[
+            ~df_ventas['PRODUCTO'].str.contains('KIT|COSMET', case=False, na=False)
+        ]['PRODUCTO'].unique().shape[0]-2
+        cobertura_clientes['RESPONSABLE'].unique()
+        # Agregar fila totales
+
+        totales = (
+            cobertura_clientes
+            .groupby('RESPONSABLE', as_index=False).agg({
+            'PRESUPUESTO': 'sum',
+            'ventas': 'sum',
+            'falta presu': 'sum',
+            'productos_comprados':'max',
+            'productos_pocion':'max'
+
+            })
+        
+        )
+        totales['ZONA'] = 'TOTAL'
+        totales['CLIENTE'] = 'TOTAL'
+        totales['cumplimiento%'] = (
+            totales['ventas'] / totales['PRESUPUESTO']
+        ).replace([float('inf'), -float('inf')], 0).fillna(0) * 100
+
+        totales['penetracion'] = (
+            totales['productos_comprados'] / totales['productos_pocion']
+        ).fillna(0)
+        cobertura_clientes = pd.concat([cobertura_clientes, totales], ignore_index=True)
+
+        # Agrega la fila final de Mayoristas
+
+        def agregar_mayoristas(df: pd.DataFrame) -> pd.DataFrame:
+            df = df.copy()
+
+
+            base = df[df['ZONA'] != 'DISTRIBUIDOR']
+
+
+            totales = base.drop(columns=['ZONA']).sum(numeric_only=True)
+
+            total_clientes = totales['total_clientes']
+            clientes_compraron = totales['clientes_compraron']
+
+        
+            porcentaje_cobertura = (clientes_compraron / total_clientes) * 100
+            sin_compra = total_clientes - clientes_compraron
+            cumplimiento = (totales['ventas'] / totales['PRESUPUESTO']) * 100
+
+
+            fila_mayoristas = pd.DataFrame([{
+                'ZONA': 'MAYORISTAS',
+                'total_clientes': total_clientes,
+                'clientes_compraron': clientes_compraron,
+                'ventas clientes activos': totales['ventas clientes activos'],
+                'porcentaje_cobertura': porcentaje_cobertura,
+                'sin compra': sin_compra,
+                'ventas': totales['ventas'],
+                'PRESUPUESTO': totales['PRESUPUESTO'],
+                'falta presu': totales['PRESUPUESTO'] - totales['ventas'],
+                'cumplimiento%': cumplimiento
+            }])
+
+
+            df = pd.concat([df, fila_mayoristas], ignore_index=True)
+
+            df['porcentaje_cobertura'] = df['porcentaje_cobertura'].round(1)
+            df['cumplimiento%'] = df['cumplimiento%'].round(1)
+
+            return df
+        cobertura_hoy = agregar_mayoristas(cobertura_hoy)
+        cobertura_ayer = agregar_mayoristas(cobertura_ayer)
+
+
+
+
+        base = penetracion_producto[penetracion_producto['ZONA'] != 'DISTRIBUIDOR']
+
+
+        total_clientes = base['total_clientes'].sum()
+        clientes_compraron = base['CLIENTE_compraron'].sum()
+        clientes_sin_compra = base['CLIENTE_sin_compra'].sum()
+        clientes_producto = base['CLIENTE COMPRARON PRODUCTO'].sum()
+
+
+        penetracion = (clientes_producto / total_clientes) * 100
+
+
+        fila_mayoristas = pd.DataFrame([{
+            'ZONA': 'MAYORISTAS',
+            'CLIENTE_compraron': clientes_compraron,
+            'CLIENTE_sin_compra': clientes_sin_compra,
+            'CLIENTE COMPRARON PRODUCTO': clientes_producto,
+            'PENETRACION': round(penetracion, 1),
+            'total_clientes': total_clientes
+        }])
+
+
+        penetracion_producto = pd.concat([penetracion_producto, fila_mayoristas], ignore_index=True)
+        
+        # Crear informes por zona
+        clientes_activos = clientes_activos[['CLIENTE', 'ZONA', 'CATEGORÍA_x', 'TOTAL($)_x']].rename(columns={'CATEGORÍA_x':'CATEGORÍA', 'TOTAL($)_x':'TOTAL($)'})
+        clientes_activos['ESTADO'] = 'ACTIVO'
+        clientes_mes_actual['ESTADO'] = 'MES ACTUAL'
+        base_vendedores = pd.concat([clientes_activos, clientes_mes_actual], ignore_index=True,)\
+        .drop_duplicates(subset=['CLIENTE', 'ZONA', 'CATEGORÍA', 'TOTAL($)'], keep='first')\
+        .merge(clientes_producto_analisis, on=['CLIENTE', 'ZONA'], how='left', indicator=True)
+
+        base_vendedores = base_vendedores.rename(columns={'_merge': 'PRODUCTO_ANALISIS'})
+        base_vendedores['PRODUCTO_ANALISIS'] = base_vendedores['PRODUCTO_ANALISIS'].astype(str)
+
+        base_vendedores.loc[
+            base_vendedores['PRODUCTO_ANALISIS'] == 'both',
+            'PRODUCTO_ANALISIS'
+        ] = 'COMPRO PRODUCTO ANALISIS'
+
+        base_vendedores.loc[
+            base_vendedores['PRODUCTO_ANALISIS'] == 'left_only',
+            'PRODUCTO_ANALISIS'
+        ] = 'NO COMPRO PRODUCTO ANALISIS'
+
+        informes_por_zona = {}
+
+        # Generar informe por zona
+        for zona in cobertura_hoy['ZONA'].to_list():
+            penetracion_valor = f"{penetracion_producto[penetracion_producto['ZONA']==zona]['PENETRACION'].to_list()[0]}%"
+            cobertura_valor = f"{cobertura_hoy[cobertura_hoy['ZONA']==zona]['porcentaje_cobertura'].round(1).to_list()[0]}"
+            cobertura_valor_ayer = f"{cobertura_ayer[cobertura_ayer['ZONA']==zona]['porcentaje_cobertura'].round(1).to_list()[0]}"
+            clientes_valor = f"{cobertura_hoy[cobertura_hoy['ZONA']==zona]['sin compra'].round(1).to_list()[0]}"
+            clientes_valor_ayer = f"{cobertura_ayer[cobertura_ayer['ZONA']==zona]['sin compra'].round(1).to_list()[0]}"
+            penetracion_valor_clientes = f"{int(penetracion_producto[penetracion_producto['ZONA']==zona]['CLIENTE_sin_compra'].to_list()[0])}"
+            cumplimiento_hoy =   f"{cobertura_hoy[cobertura_hoy['ZONA']==zona]['cumplimiento%'].round(1).to_list()[0]}"
+            cumplimiento_ayer =   f"{cobertura_ayer[cobertura_ayer['ZONA']==zona]['cumplimiento%'].round(1).to_list()[0]}"
+            falta_hoy_valor =   float(f"{cobertura_hoy[cobertura_hoy['ZONA']==zona]['falta presu'].round(1).to_list()[0]}")
+            falta_ayer_valor =   float(f"{cobertura_ayer[cobertura_ayer['ZONA']==zona]['falta presu'].round(1).to_list()[0]}")
+            presupuesto= int(cobertura_hoy[cobertura_hoy['ZONA']==zona]['PRESUPUESTO'].to_list()[0])
+            ventas = int(cobertura_hoy[cobertura_hoy['ZONA']==zona]['ventas'].to_list()[0])
+            clientes_activos = int(cobertura_hoy[cobertura_hoy['ZONA']==zona]['total_clientes'].to_list()[0])
+        
+            # --- GENERAR SECCIÓN DE TABLA TOP SOLO SI NO ES MAYORISTA ---
+            if zona != 'MAYORISTAS':
+                df_top = (
+                    reporte_critico[reporte_critico['ZONA'] == zona][['Ranking', 'CLIENTE']]
+                    .sort_values('Ranking')
+                )
+
+                # Generar filas HTML con estilos alternados
+                filas_html = ""
+                for idx, row in df_top.iterrows():
+                    # Alternar colores de fondo
+                    bg_color = "#f8f9fa" if row['Ranking'] % 2 == 0 else "#ffffff"
+                    
+                    # Badge para el ranking
+                    if row['Ranking'] <= 3:
+                        badge_color = "#e74c3c"  # Rojo para top 3
+                        badge_icon = "🔴"
+                    elif row['Ranking'] <= 5:
+                        badge_color = "#f39c12"  # Naranja para 4-5
+                        badge_icon = "🟠"
+                    else:
+                        badge_color = "#95a5a6"  # Gris para el resto
+                        badge_icon = "⚪"
+                    
+                    filas_html += f"""
+                    <tr style="background-color: {bg_color}; transition: background-color 0.2s;">
+                        <td style="padding: 14px 12px; border-bottom: 1px solid #e8e8e8; text-align: center; width: 80px;">
+                            <span style="background-color: {badge_color}; color: white; padding: 6px 12px; border-radius: 20px; font-weight: bold; font-size: 13px; display: inline-block; min-width: 35px;">
+                                {badge_icon} #{row['Ranking']}
+                            </span>
+                        </td>
+                        <td style="padding: 14px 16px; border-bottom: 1px solid #e8e8e8; color: #2c3e50; font-size: 14px; font-weight: 500;">
+                            {row['CLIENTE']}
+                        </td>
+                    </tr>
+                    """
+                
+                # Construir tabla completa 
+                tabla_html = f"""
+                <div style="background: linear-gradient(to bottom, #ffffff, #f8f9fa); border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+                    <table width="100%" style="border-collapse: collapse; font-family: 'Segoe UI', Arial, sans-serif;">
+                        <thead>
+                            <tr style="background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);">
+                                <th style="padding: 16px 12px; color: #ffffff; text-align: center; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; border-right: 1px solid rgba(255,255,255,0.1);">
+                                    Ranking
+                                </th>
+                                <th style="padding: 16px; color: #ffffff; text-align: left; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
+                                    Cliente
+                                </th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filas_html}
+                        </tbody>
+                    </table>
+                </div>
+                """
+                
+                # Sección completa de clientes críticos
+                seccion_clientes_criticos = f"""
+                    <tr>
+                        <td style="padding: 0 20px 30px 20px;">
+                            <div style="border-top: 1px solid #eee; padding-top: 20px;">
+                                <h3 style="color: #1a5276; font-size: 16px; margin-bottom: 15px; text-align: left; display: flex; align-items: center;">
+                                    <span style="background-color: #e74c3c; color: white; padding: 4px 8px; border-radius: 4px; margin-right: 10px; font-size: 12px;">CRÍTICO</span>
+                                    CLIENTES TOP SIN COMPRA
+                                </h3>
+                                {tabla_html}
+                            </div>
+                        </td>
+                    </tr>
+                """
+            else:
+                seccion_clientes_criticos = ""  # No mostrar nada para MAYORISTA
+
+            # HTML DEL CORREO COMPLETO
+            cuerpo_correo = f"""
+            <!DOCTYPE html>
+            <html>
+            <head><meta charset="UTF-8"></head>
+            <body style="margin:0; padding:0; font-family: 'Segoe UI', Arial, sans-serif; background-color: #f4f7f9;">
+                <table align="center" border="0" cellpadding="0" cellspacing="0" width="600" style="border-collapse: collapse; background-color: #ffffff; margin-top: 20px; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden;">
+                    <tr>
+                        <td bgcolor="#1a5276" style="padding: 25px; text-align: center; color: #ffffff;">
+                            <h1 style="margin: 0; font-size: 20px; letter-spacing: 1px;">INFORME DIARIO DE VENTAS {hoy.month_name(locale='es_ES').upper()}</h1>
+                            <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Resultado Acumulado al {hoy.date()} | <strong>ZONA {zona}</strong></p>
+                        </td>
+                    </tr>
+
+                    <tr>
+                        <td style="padding: 20px;">
+                            <table width="100%" border="0" cellspacing="0" cellpadding="5">
+                                <tr>
+                                    <td width="50%">
+                                        <div style="background-color: #f8f9fa; border-left: 4px solid #3498db; padding: 15px; border-radius: 4px;">
+                                            <span style="font-size: 11px; color: #7f8c8d; text-transform: uppercase; font-weight: bold;">Cobertura</span><br>
+                                            <span style="font-size: 18px; font-weight: bold; color: #2c3e50;">Hoy: {cobertura_valor}%</span><br>
+                                            <span style="font-size: 12px; color: #95a5a6;">{ayer.date()}: {cobertura_valor_ayer}%</span>
+                                        </div>
+                                    </td>
+                                    <td width="50%">
+                                        <div style="background-color: #f8f9fa; border-left: 4px solid #e67e22; padding: 15px; border-radius: 4px;">
+                                            <span style="font-size: 11px; color: #7f8c8d; text-transform: uppercase; font-weight: bold;">Activos sin Compra</span><br>
+                                            <span style="font-size: 18px; font-weight: bold; color: #2c3e50;">Hoy: {clientes_valor}</span><br>
+                                            <span style="font-size: 12px; color: #95a5a6;">{ayer.date()}: {clientes_valor_ayer}</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <tr><td colspan="2" style="height: 10px;"></td></tr>
+                                <tr>
+                                    <td width="50%">
+                                        <div style="background-color: #ebf5fb; border-left: 4px solid #2ecc71; padding: 15px; border-radius: 4px;">
+                                            <span style="font-size: 11px; color: #7f8c8d; text-transform: uppercase; font-weight: bold;">Penetración {productos_analisis}</span><br>
+                                            <span style="font-size: 22px; font-weight: bold; color: #27ae60;">{penetracion_valor}</span>
+                                        </div>
+                                    </td>
+                                    <td width="50%">
+                                        <div style="background-color: #ebf5fb; border-left: 4px solid #2ecc71; padding: 15px; border-radius: 4px;">
+                                            <span style="font-size: 11px; color: #7f8c8d; text-transform: uppercase; font-weight: bold;">Sin Compra ({productos_analisis})</span><br>
+                                            <span style="font-size: 22px; font-weight: bold; color: #27ae60;">{penetracion_valor_clientes}/{clientes_activos} </span>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <tr><td colspan="2" style="height: 10px;"></td></tr>
+                                <tr>
+                                    <td width="50%">
+                                        <div style="background-color: #f8f9fa; border-left: 4px solid #3498db; padding: 15px; border-radius: 4px;">
+                                            <span style="font-size: 11px; color: #7f8c8d; text-transform: uppercase; font-weight: bold;">Cumplimiento %</span><br>
+                                            <span style="font-size: 18px; font-weight: bold; color: #2c3e50;">Hoy: {cumplimiento_hoy}%</span><br>
+                                            <span style="font-size: 12px; color: #95a5a6;">{ayer.date()}: {cumplimiento_ayer}%</span>
+                                        </div>
+                                    </td>
+                                    <td width="50%">
+                                        <div style="background-color: #f8f9fa; border-left: 4px solid #e67e22; padding: 15px; border-radius: 4px;">
+                                            <span style="font-size: 11px; color: #7f8c8d; text-transform: uppercase; font-weight: bold;">Millones Faltantes</span><br>
+                                            <span style="font-size: 18px; font-weight: bold; color: #2c3e50;">Hoy: ${falta_hoy_valor:,.0f}</span><br>
+                                            <span style="font-size: 12px; color: #95a5a6;">{ayer.date()}: ${falta_ayer_valor:,.0f}</span>
+                                        </div>
+                                    </td>
+                                </tr>
+                                <tr><td colspan="2" style="height: 10px;"></td></tr>
+                                <tr>
+                                    <td width="50%">
+                                        <div style="background-color: #f8f9fa; border-left: 4px solid #3498db; padding: 15px; border-radius: 4px;">
+                                            <span style="font-size: 11px; color: #7f8c8d; text-transform: uppercase; font-weight: bold;">Ventas</span><br>
+                                            <span style="font-size: 18px; font-weight: bold; color: #2c3e50;">${ventas:,.0f}</span><br>
+                                        </div>
+                                    </td>
+                                    <td width="50%">
+                                        <div style="background-color: #f8f9fa; border-left: 4px solid #e67e22; padding: 15px; border-radius: 4px;">
+                                            <span style="font-size: 11px; color: #7f8c8d; text-transform: uppercase; font-weight: bold;">Presupuesto</span><br>
+                                            <span style="font-size: 18px; font-weight: bold; color: #2c3e50;">${presupuesto:,.0f}</span><br>
+                                        </div>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    {seccion_clientes_criticos}
+                    <tr>
+                        <td bgcolor="#f4f7f9" style="padding: 15px; text-align: center; font-size: 11px; color: #95a5a6; border-top: 1px solid #e0e0e0;">
+                            Este es un reporte automático generado por el área de Analisis de datos.
+                        </td>
+                    </tr>
+                </table>
+
+            </body>
+            </html>
+            """
+            # GUARDAR EL HTML EN EL DICCIONARIO
+            informes_por_zona[zona] = cuerpo_correo
+
+        # Informe cuentas clave por responsable    
+        for i in responsables:
+
+            filas_html = ""
+            df = cobertura_clientes[cobertura_clientes['RESPONSABLE'] == i]
+
+            for _, row in df.iterrows():
+
+                cumpl_color = (
+                    "#d5f5e3" if row['cumplimiento%'] >= 100
+                    else "#fcf3cf" if row['cumplimiento%'] >= 80
+                    else "#fadbd8"
+                )
+
+                falta_color = "#c0392b" if row['falta presu'] > 0 else "#1e8449"
+
+                filas_html += f"""
+                <tr style="transition: background-color 0.2s;">
+                    <td style="padding:12px 16px;border-bottom:1px solid #e8e8e8;
+                            font-weight:500;color:#2c3e50;font-size:13px;">
+                        {row['CLIENTE']}
+                    </td>
+
+                    <td style="padding:12px 16px;border-bottom:1px solid #e8e8e8;
+                            text-align:right;font-weight:600;color:#34495e;font-size:13px;">
+                        ${row['PRESUPUESTO']:,.0f}
+                    </td>
+
+                    <td style="padding:12px 16px;border-bottom:1px solid #e8e8e8;
+                            text-align:right;font-weight:600;color:#34495e;font-size:13px;">
+                        ${row['ventas']:,.0f}
+                    </td>
+
+                    <td style="padding:10px 14px;border-bottom:1px solid #e8e8e8;
+                            text-align:center;font-weight:700;
+                            background-color:{cumpl_color};
+                            color:#2c3e50;font-size:13px;
+                            border-radius:4px;">
+                        {row['cumplimiento%']:.1f}%
+                    </td>
+
+                    <td style="padding:12px 16px;border-bottom:1px solid #e8e8e8;
+                            text-align:right;font-weight:700;
+                            color:{falta_color};font-size:13px;">
+                        ${row['falta presu']:,.0f}
+                    </td>
+
+                    <td style="padding:12px 16px;border-bottom:1px solid #e8e8e8;
+                            text-align:center;font-weight:600;color:#34495e;font-size:13px;">
+                        {int(row['productos_comprados'])}/{int(row['productos_pocion'])}
+                    </td>
+                </tr>
+                """
+
+            tabla_html = f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+            </head>
+
+            <body style="margin:0;padding:20px 0;background-color:#f4f6f7;font-family:'Segoe UI', -apple-system, system-ui, sans-serif;">
+
+            <div style="
+                max-width:900px;
+                margin:0 auto;
+                background:#ffffff;
+                border-radius:8px;
+                overflow:hidden;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            ">
+
+                <table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+
+                    <thead>
+                        <tr>
+                            <td colspan="6" bgcolor="#1a5276" style="padding: 25px; text-align: center; color: #ffffff;">
+                                <h1 style="margin: 0; font-size: 20px; letter-spacing: 1px;">INFORME DIARIO DE VENTAS {hoy.month_name(locale='es_ES').upper()}</h1>
+                                <p style="margin: 5px 0 0 0; font-size: 13px; opacity: 0.9;">Resultado Acumulado al {hoy.date()} | <strong>ZONA {i}</strong></p>
+                            </td>
+                        </tr>
+                        <tr style="background: linear-gradient(135deg, #1a5276 0%, #2471a3 100%);">
+                            <th style="padding:16px;color:#ffffff;text-align:left;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;width:28%;">
+                                Cliente
+                            </th>
+                            <th style="padding:16px;color:#ffffff;text-align:right;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;width:16%;">
+                                Presupuesto
+                            </th>
+                            <th style="padding:16px;color:#ffffff;text-align:right;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;width:16%;">
+                                Ventas
+                            </th>
+                            <th style="padding:16px;color:#ffffff;text-align:center;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;width:13%;">
+                                Cumpl. %
+                            </th>
+                            <th style="padding:16px;color:#ffffff;text-align:right;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;width:15%;">
+                                Falta $
+                            </th>
+                            <th style="padding:16px;color:#ffffff;text-align:center;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;width:12%;">
+                                Penetración
+                            </th>
+                        </tr>
+                    </thead>
+
+                    <tbody style="background-color:#ffffff;">
+                        {filas_html}
+                    </tbody>
+                </table>
+
+                <div style="background-color:#f8f9fa;padding:16px;text-align:center;border-top:1px solid #e0e0e0;">
+                    <p style="margin:0;font-size:11px;color:#7f8c8d;line-height:1.6;">
+                        Reporte automático generado por el Área de Análisis de Datos
+                    </p>
+                </div>
+            </div>
+
+            </body>
+            </html>
+            """
+            informes_por_zona[i] = tabla_html   
+
+
+   
+
+        return {'Cuerpo_HTML':informes_por_zona, 'Base_Vendedores': base_vendedores}
