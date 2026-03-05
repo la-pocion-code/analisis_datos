@@ -966,7 +966,7 @@ class ReportClassNew():
         ] = '6'
 
         df_base_merge.loc[
-            (df_base_merge['N1'] == '6') & (df_base_merge['Distribución analítica ori'].isna()),
+            (df_base_merge['N1'] == '6') & (df_base_merge['Distribución analítica ori'].isna()),# revisar ##########
             'Centro de costos'
         ] =  '6'
 
@@ -1828,3 +1828,424 @@ class ReportClassNew():
    
 
         return {'Cuerpo_HTML':informes_por_zona, 'Base_Vendedores': base_vendedores}
+    
+    def informe_cartera(self, categorias: list) -> pd.DataFrame:
+        """
+        """
+        # Base Cartera
+        
+        # Archivo CSV de Google Sheets
+        url = "https://docs.google.com/spreadsheets/d/1uqGx-MkrUQR3znLq6HE2xiPts1RMv7P5GUQK4IJWdRQ/export?format=csv&gid=2087536586"
+
+        df = pd.read_csv(url)
+
+        ruta = self.validar_ruta()
+        ruta_archivo = ruta / 'cartera' / 'Asiento contable (account.move).xlsx'
+        # Archivo Odoo
+        df_cartera = pd.read_excel(ruta_archivo)
+
+
+        # Archivo base cartera
+        df_cartera = df_cartera[df_cartera['Tipo de cliente'].isin(categorias)]
+
+        ruta_base = ruta / 'data' / 'base_cartera.xlsx'
+
+        df_base_responsable = pd.read_excel(ruta_base, sheet_name='Responsables')
+
+        df_cartera = df_cartera.merge(df_base_responsable, left_on='Tipo de cliente', right_on='TIPO CLIENTE', how='left' )
+
+
+        responsable_default =df_base_responsable[df_base_responsable['TIPO CLIENTE'] == 'Default']['RESPONSABLE'].values[0]
+
+        df_cartera['RESPONSABLE'] = df_cartera['RESPONSABLE'].fillna(responsable_default)
+
+
+        df_cartera = df_cartera[
+                (df_cartera['Fecha de factura'] >= '2025-01-01')&
+                (df_cartera['Número'].str.startswith('F'))]
+
+
+
+        responsables = df_base_responsable['RESPONSABLE'].unique().tolist()
+
+
+        df_cartera = df_cartera[['Número', 'Nombre del contacto a mostrar en la factura', 'Fecha de factura', 'Fecha de vencimiento', 'Importe pendiente firmado', 'RESPONSABLE', 'TIPO CLIENTE']]
+        df_cartera['Dias de credito'] = (pd.to_datetime(df_cartera['Fecha de vencimiento']) - pd.to_datetime(df_cartera['Fecha de factura'])).dt.days    
+        # df_cartera = df_cartera[df_cartera['Dias de credito'] != 0]
+        df_cartera['Dias de atraso'] = (pd.to_datetime('now') - pd.to_datetime(df_cartera['Fecha de vencimiento'])  ).dt.days    
+        dias = df_cartera['Dias de atraso']
+
+        conditions = [
+            dias < -7,                         # Más de 7 días antes de vencer
+            dias.between(-7, 0, inclusive='both'),  # Próximo a vencer
+            dias.between(1, 10, inclusive='both'),  # Hasta 10 días vencido
+            dias.between(11, 30, inclusive='both'),
+            dias.between(31, 60, inclusive='both'),
+            dias.between(61, 90, inclusive='both'),
+            dias > 90
+        ]
+
+        choices = [
+            'Corriente',
+            'Proximo',
+            'Corriente',
+            '11_30',
+            '31_60',
+            '61_90',
+            '90+'
+        ]
+
+        df_cartera['Rango Mora'] = np.select(conditions, choices, default='Sin clasificar')
+        # Impervinculo a formulario de Google Forms para cada Factura
+        df_cartera['Link_forms'] = df_cartera.apply( 
+            lambda row: (f'=HIPERVINCULO("https://docs.google.com/forms/d/e/1FAIpQLSfGupw7MUupqTAZr61Qgk6UcEPuJfZsKci9yBaahwOTVfGQ-Q/viewform?usp=pp_url&entry.1478832904={row['Nombre del contacto a mostrar en la factura']}&entry.1421149375={row['Número']}";"Link")'
+            if row['Rango Mora'] not in ['Corriente', 'Proximo'] else ''), 
+            axis=1
+        )
+
+        df_cartera.sort_values(by=['Nombre del contacto a mostrar en la factura', 'Fecha de vencimiento'], ascending=True, inplace=True)
+
+        df_cartera.rename(columns={'Nombre del contacto a mostrar en la factura': 'CLIENTE', 
+                                'Fecha de factura': 'FECHA FACTURA', 'Fecha de vencimiento': 'FECHA VENCIMIENTO',
+                                    'Importe pendiente firmado': 'IMPORTE PENDIENTE', 'RESPONSABLE': 'RESPONSABLE', 
+                                    'Dias de credito': 'DIAS CREDITO', 'Dias de atraso': 'DIAS ATRASO', 
+                                    'Rango Mora': 'RANGO MORA', 'Link_forms': 'LINK FORMS'}, inplace=True)
+
+
+        # Genera los archivos CSV para cada responsable
+        for i in responsables:
+            if df_cartera['RESPONSABLE'].shape[0] > 1:
+                df_cartera[df_cartera['RESPONSABLE'] == i].to_csv(ruta / 'cartera' / f'CARTERA_{i}.csv', index=False, encoding='utf-8-sig', sep=';', decimal=',')
+            
+        df_cartera['IMPORTE PENDIENTE'] = df_cartera['IMPORTE PENDIENTE'].fillna(0).astype(int)
+        df_cartera_pivot = df_cartera.pivot_table(index=['TIPO CLIENTE','CLIENTE','RESPONSABLE'], columns='RANGO MORA', values='IMPORTE PENDIENTE', aggfunc='sum', fill_value=0).reset_index()
+        df_cartera_pivot = df_cartera_pivot[['TIPO CLIENTE','RESPONSABLE','CLIENTE', 'Corriente', 'Proximo', '11_30', '31_60', '61_90', '90+' ]]
+        df_cartera_pivot = df_cartera_pivot.copy()
+
+        df_cartera_pivot['TOTAL'] = df_cartera_pivot[
+            ['Corriente', 'Proximo', '11_30', '31_60', '61_90', '90+']
+        ].sum(axis=1)
+        df_cartera_pivot.columns = df_cartera_pivot.columns.str.upper()
+        df_cartera_pivot_grouped = df_cartera_pivot.groupby(['TIPO CLIENTE','RESPONSABLE']).agg({
+            'CLIENTE':'count',
+            'CORRIENTE': 'sum',
+            'PROXIMO': 'sum',
+            '11_30': 'sum',
+            '31_60': 'sum',
+            '61_90': 'sum',
+            '90+': 'sum',
+            'TOTAL': 'sum'
+        }).reset_index()
+        df_cartera_pivot_grouped.sort_values(by='TOTAL', ascending=False, inplace=True)
+
+        from IPython.display import display, HTML
+        from datetime import datetime
+        import locale
+
+        # Configurar locale en español
+        locale.setlocale(locale.LC_TIME, 'es_ES.UTF-8')
+
+        fecha = datetime.today().strftime('%d de %B de %Y')
+
+
+        # ── HELPERS ───────────────────────────────────────────────────────────────────
+        def get_status_class(row):
+            critico = row['90+'] + row['61_90']
+            medio   = row['31_60'] + row['11_30']
+            if critico > 0:
+                return "background:#fff0f0;color:#c0392b;"
+            elif medio > 0:
+                return "background:#fffbeb;color:#b45309;"
+            else:
+                return "background:#f0faf4;color:#15803d;"
+
+        def fmt(v):
+            return f"${v:,.0f}"
+
+
+        # ── INFORME POR RESPONSABLE ───────────────────────────────────────────────────
+        def build_email_html(responsable, df):
+            t = df[['CORRIENTE','PROXIMO','11_30','31_60','61_90','90+','TOTAL']].sum()
+
+            filas = ""
+            for _, row in df.iterrows():
+                total_style = get_status_class(row)
+                filas += f"""
+                <tr>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;font-weight:600;color:#1a1f2e;white-space:nowrap;">{row['TIPO CLIENTE'].upper()}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;color:#2e7d32;white-space:nowrap;">{fmt(row['CORRIENTE'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;color:#0077b6;white-space:nowrap;">{fmt(row['PROXIMO'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;color:#e65100;white-space:nowrap;">{fmt(row['11_30'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;color:#c62828;white-space:nowrap;">{fmt(row['31_60'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;color:#b71c1c;white-space:nowrap;">{fmt(row['61_90'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;font-weight:700;color:#7b1fa2;white-space:nowrap;">{fmt(row['90+'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;font-weight:700;border-radius:4px;white-space:nowrap;{total_style}">{fmt(row['TOTAL'])}</td>
+                </tr>"""
+
+            iniciales = "".join([p[0] for p in responsable.split()[:2]]).upper()
+            n_clientes = df['CLIENTE'].sum() if 'CLIENTE' in df.columns else "—"
+
+            if t['TOTAL'] > 0:
+                icv_30 = (t['31_60'] + t['61_90'] + t['90+']) / t['TOTAL'] * 100
+                icv_90 = t['90+'] / t['TOTAL'] * 100
+            else:
+                icv_30 = icv_90 = 0
+
+            html = f"""
+            <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:1100px;margin:0 auto;
+                        background:#ffffff;border-radius:12px;overflow:hidden;
+                        box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+
+            <!-- HEADER -->
+            <div style="background:linear-gradient(135deg,#0f2044 0%,#1a3a6e 60%,#1e4d8c 100%);padding:28px 36px;">
+                <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                    <td>
+                    <div style="color:#ffffff;font-size:20px;font-weight:700;">📋 Informe de Cartera</div>
+                    <div style="color:#93afd4;font-size:13px;margin-top:4px;">Estado de cuentas y vencimientos</div>
+                    </td>
+                    <td align="right">
+                    <span style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.2);
+                                color:#cddff5;padding:6px 14px;border-radius:20px;font-size:12px;">
+                        📅 {fecha}
+                    </span>
+                    </td>
+                </tr>
+                </table>
+                <div style="margin-top:18px;display:flex;gap:20px;flex-wrap:wrap;">
+                <span style="color:#93afd4;font-size:12px;">
+                    <span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#d5f5e3;border:1px solid #a9dfbf;margin-right:5px;"></span>Cartera sana
+                </span>
+                <span style="color:#93afd4;font-size:12px;">
+                    <span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#fffbeb;border:1px solid #f9e79f;margin-right:5px;"></span>Mora media (11–60 días)
+                </span>
+                <span style="color:#93afd4;font-size:12px;">
+                    <span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#fff0f0;border:1px solid #f5b7b1;margin-right:5px;"></span>Mora crítica (61+ días)
+                </span>
+                </div>
+            </div>
+
+            <!-- RESPONSABLE -->
+            <div style="padding:24px 36px 8px;">
+                <table cellpadding="0" cellspacing="0">
+                <tr>
+                    <td>
+                    <div style="width:38px;height:38px;border-radius:50%;
+                                background:linear-gradient(135deg,#1a3a6e,#1e4d8c);
+                                color:white;font-size:14px;font-weight:700;
+                                text-align:center;line-height:38px;">{iniciales}</div>
+                    </td>
+                    <td style="padding-left:12px;">
+                    <div style="font-size:15px;font-weight:700;color:#0f2044;">{responsable}</div>
+                    <div style="font-size:12px;color:#8492a6;">{n_clientes} clientes</div>
+                    </td>
+                    <td style="padding-left:24px;">
+                    <div style="font-size:11px;color:#8492a6;text-transform:uppercase;letter-spacing:0.5px;">ICV 30</div>
+                    <div style="font-size:18px;font-weight:700;color:#c62828;">{icv_30:.2f}%</div>
+                    </td>
+                    <td style="padding-left:24px;">
+                    <div style="font-size:11px;color:#8492a6;text-transform:uppercase;letter-spacing:0.5px;">ICV 90+</div>
+                    <div style="font-size:18px;font-weight:700;color:#7b1fa2;">{icv_90:.2f}%</div>
+                    </td>
+                </tr>
+                </table>
+            </div>
+
+            <!-- TABLA -->
+            <div style="padding:12px 36px 28px;overflow-x:auto;">
+                <table width="100%" cellpadding="0" cellspacing="0"
+                    style="border-collapse:collapse;font-size:11.5px;
+                            border:1px solid #e8ecf2;border-radius:8px;overflow:hidden;">
+                <thead>
+                    <tr style="background:#f7f9fc;">
+                    <th style="padding:11px 10px;text-align:left;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;">Canal</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">Corriente</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">Próximo</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">11–30 d</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">31–60 d</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">61–90 d</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">90+ d</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {filas}
+                    <tr style="background:#0f2044;">
+                    <td style="padding:12px 10px;color:#e8f0fc;font-weight:700;font-size:13px;">SUBTOTAL</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['CORRIENTE'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['PROXIMO'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['11_30'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['31_60'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['61_90'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['90+'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#7dd3fc;font-weight:700;font-size:14px;white-space:nowrap;">{fmt(t['TOTAL'])}</td>
+                    </tr>
+                </tbody>
+                </table>
+            </div>
+
+            <!-- FOOTER -->
+            <div style="background:#f7f9fc;padding:16px 36px;border-top:1px solid #e0e5ee;
+                        display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <span style="font-size:11.5px;color:#8492a6;">Generado automáticamente · Análisis de Datos</span>
+                <span style="font-size:11.5px;color:#8492a6;">Valores en COP · Incluye todos los rangos de mora</span>
+            </div>
+            </div>
+            """
+            return html
+
+
+        # ── INFORME CONSOLIDADO ───────────────────────────────────────────────────────
+        def build_email_html_consolidado(df):
+            t = df[['CORRIENTE','PROXIMO','11_30','31_60','61_90','90+','TOTAL']].sum()
+
+            filas = ""
+            for _, row in df.iterrows():
+                total_style = get_status_class(row)
+                filas += f"""
+                <tr>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;font-weight:600;color:#1a1f2e;white-space:nowrap;">{row['TIPO CLIENTE'].upper()}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;color:#2e7d32;white-space:nowrap;">{fmt(row['CORRIENTE'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;color:#0077b6;white-space:nowrap;">{fmt(row['PROXIMO'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;color:#e65100;white-space:nowrap;">{fmt(row['11_30'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;color:#c62828;white-space:nowrap;">{fmt(row['31_60'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;color:#b71c1c;white-space:nowrap;">{fmt(row['61_90'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;font-weight:700;color:#7b1fa2;white-space:nowrap;">{fmt(row['90+'])}</td>
+                <td style="padding:8px 10px;border-bottom:1px solid #eef0f5;text-align:right;font-weight:700;border-radius:4px;white-space:nowrap;{total_style}">{fmt(row['TOTAL'])}</td>
+                </tr>"""
+
+            n_responsables = df['RESPONSABLE'].nunique() if 'RESPONSABLE' in df.columns else "—"
+            n_clientes     = df['CLIENTE'].sum() if 'CLIENTE' in df.columns else "—"
+
+            if t['TOTAL'] > 0:
+                icv_30 = (t['31_60'] + t['61_90'] + t['90+']) / t['TOTAL'] * 100
+                icv_90 = t['90+'] / t['TOTAL'] * 100
+            else:
+                icv_30 = icv_90 = 0
+
+            html = f"""
+            <div style="font-family:'Segoe UI',Arial,sans-serif;max-width:1100px;margin:0 auto;
+                        background:#ffffff;border-radius:12px;overflow:hidden;
+                        box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+
+            <!-- HEADER -->
+            <div style="background:linear-gradient(135deg,#0f2044 0%,#1a3a6e 60%,#1e4d8c 100%);padding:28px 36px;">
+                <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                    <td>
+                    <div style="color:#ffffff;font-size:20px;font-weight:700;">📋 Informe de Cartera — Consolidado</div>
+                    <div style="color:#93afd4;font-size:13px;margin-top:4px;">Vista global · Todos los responsables</div>
+                    </td>
+                    <td align="right">
+                    <span style="background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.2);
+                                color:#cddff5;padding:6px 14px;border-radius:20px;font-size:12px;">
+                        📅 {fecha}
+                    </span>
+                    </td>
+                </tr>
+                </table>
+                <div style="margin-top:18px;display:flex;gap:20px;flex-wrap:wrap;">
+                <span style="color:#93afd4;font-size:12px;">
+                    <span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#d5f5e3;border:1px solid #a9dfbf;margin-right:5px;"></span>Cartera sana
+                </span>
+                <span style="color:#93afd4;font-size:12px;">
+                    <span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#fffbeb;border:1px solid #f9e79f;margin-right:5px;"></span>Mora media (11–60 días)
+                </span>
+                <span style="color:#93afd4;font-size:12px;">
+                    <span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#fff0f0;border:1px solid #f5b7b1;margin-right:5px;"></span>Mora crítica (61+ días)
+                </span>
+                </div>
+            </div>
+
+            <!-- MÉTRICAS RESUMEN -->
+            <div style="padding:20px 36px 8px;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                <td style="text-align:center;padding:12px 8px;background:#f7f9fc;border-radius:8px;border:1px solid #e0e5ee;">
+                    <div style="font-size:11px;color:#8492a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Responsables</div>
+                    <div style="font-size:22px;font-weight:700;color:#0f2044;">{n_responsables}</div>
+                </td>
+                <td style="width:12px;"></td>
+                <td style="text-align:center;padding:12px 8px;background:#f7f9fc;border-radius:8px;border:1px solid #e0e5ee;">
+                    <div style="font-size:11px;color:#8492a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Clientes</div>
+                    <div style="font-size:22px;font-weight:700;color:#0f2044;">{n_clientes}</div>
+                </td>
+                <td style="width:12px;"></td>
+                <td style="text-align:center;padding:12px 8px;background:#f7f9fc;border-radius:8px;border:1px solid #e0e5ee;">
+                    <div style="font-size:11px;color:#8492a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Cartera Total</div>
+                    <div style="font-size:22px;font-weight:700;color:#0f2044;">{fmt(t['TOTAL'])}</div>
+                </td>
+                <td style="width:12px;"></td>
+                <td style="text-align:center;padding:12px 8px;background:#fff0f0;border-radius:8px;border:1px solid #f5b7b1;">
+                    <div style="font-size:11px;color:#8492a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">ICV 30</div>
+                    <div style="font-size:22px;font-weight:700;color:#c62828;">{icv_30:.2f}%</div>
+                </td>
+                <td style="width:12px;"></td>
+                <td style="text-align:center;padding:12px 8px;background:#fdf4ff;border-radius:8px;border:1px solid #e9d5ff;">
+                    <div style="font-size:11px;color:#8492a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">ICV 90+</div>
+                    <div style="font-size:22px;font-weight:700;color:#7b1fa2;">{icv_90:.2f}%</div>
+                </td>
+                </tr>
+            </table>
+            </div>
+            <!-- TABLA -->
+            <div style="padding:12px 36px 28px;overflow-x:auto;">
+                <table width="100%" cellpadding="0" cellspacing="0"
+                    style="border-collapse:collapse;font-size:11.5px;
+                            border:1px solid #e8ecf2;border-radius:8px;overflow:hidden;">
+                <thead>
+                    <tr style="background:#f7f9fc;">
+                    <th style="padding:11px 10px;text-align:left;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;">Canal</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">Corriente</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">Próximo</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">11–30 d</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">31–60 d</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">61–90 d</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;white-space:nowrap;">90+ d</th>
+                    <th style="padding:11px 10px;text-align:right;font-weight:600;color:#5a6478;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;border-bottom:2px solid #e0e5ee;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {filas}
+                    <tr style="background:#0f2044;">
+                    <td style="padding:12px 10px;color:#e8f0fc;font-weight:700;font-size:13px;">TOTAL GENERAL</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['CORRIENTE'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['PROXIMO'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['11_30'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['31_60'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['61_90'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#e8f0fc;font-weight:700;white-space:nowrap;">{fmt(t['90+'])}</td>
+                    <td style="padding:12px 10px;text-align:right;color:#7dd3fc;font-weight:700;font-size:14px;white-space:nowrap;">{fmt(t['TOTAL'])}</td>
+                    </tr>
+                </tbody>
+                </table>
+            </div>
+
+            <!-- FOOTER -->
+            <div style="background:#f7f9fc;padding:16px 36px;border-top:1px solid #e0e5ee;
+                        display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                <span style="font-size:11.5px;color:#8492a6;">Generado automáticamente · Análisis de Datos </span>
+                <span style="font-size:11.5px;color:#8492a6;">Valores en COP · Incluye todos los rangos de mora</span>
+            </div>
+            </div>
+            """
+            return html
+
+
+        # ── EJECUCIÓN ─────────────────────────────────────────────────────────────────
+        informes_por_responsable = {}
+
+
+
+        html_consolidado = build_email_html_consolidado(df_cartera_pivot_grouped)
+        informes_por_responsable['__CONSOLIDADO__'] = html_consolidado
+
+
+        # POR RESPONSABLE
+        for responsable in df_cartera_pivot_grouped['RESPONSABLE'].unique():
+            df = df_cartera_pivot_grouped[df_cartera_pivot_grouped['RESPONSABLE'] == responsable].copy()
+            html = build_email_html(responsable, df)
+            informes_por_responsable[responsable] = html
+
+        return informes_por_responsable, df_cartera
+    
