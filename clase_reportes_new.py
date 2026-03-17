@@ -17,6 +17,7 @@ import requests
 from difflib import get_close_matches
 import unicodedata
 from collections import defaultdict
+import fitz  # PyMuPDF
 
 
 
@@ -28,7 +29,7 @@ class ReportClassNew():
 
 
 
-    def consolidar_carpeta(self, extension='xlsx', sep=None, encoding=None, decimal=',',sheet_name=None, ruta_carpeta=None):
+    def consolidar_carpeta(self, extension='xlsx', sep=None, encoding=None, decimal=',',sheet_name=None, ruta_carpeta=None, axis=0, ignore_index=True):
         """
         Consolida todos los archivos de una carpeta en un único DataFrame de pandas.
 
@@ -101,7 +102,7 @@ class ReportClassNew():
             return pd.DataFrame()
 
         print("Concatenando todos los archivos...")
-        df_concatenado = pd.concat(lista_dataframes, ignore_index=True)
+        df_concatenado = pd.concat(lista_dataframes, ignore_index=ignore_index, axis=axis)
         print("¡Consolidación completada!")
         
         return df_concatenado
@@ -2087,7 +2088,7 @@ class ReportClassNew():
             <!-- FOOTER -->
             <div style="background:#f7f9fc;padding:16px 36px;border-top:1px solid #e0e5ee;
                         display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;">
-                <span style="font-size:11.5px;color:#8492a6;">Generado automáticamente · Análisis de Datos</span>
+                <span style="font-size:11.5px;color:#8492a6;">Generado automáticamente · Análisis de Datos </span>
                 <span style="font-size:11.5px;color:#8492a6;">Valores en COP · Incluye todos los rangos de mora</span>
             </div>
             </div>
@@ -2249,3 +2250,238 @@ class ReportClassNew():
 
         return informes_por_responsable, df_cartera
     
+
+
+
+
+
+
+    # -------------------------------------------------
+    # LIMPIAR VALORES MONEDA
+    # -------------------------------------------------
+
+    def limpiar_moneda(self, valor):
+        if not valor:
+            return None
+        return float(valor.replace('.', '').replace(',', '.'))
+
+
+    # -------------------------------------------------
+    # EXTRAER TIPO DE CERTIFICADO (ICA, FUENTE, ETC)
+    # -------------------------------------------------
+
+    def extraer_tipo_certificado(self,texto):
+
+        match = re.search(
+            r"CERTIFICADO DE RETENCIÓN EN\s+([A-ZÁÉÍÓÚÑ ]+)",
+            texto
+        )
+
+        if not match:
+            return "CERT"
+
+        tipo = match.group(1)
+
+        # cortar si aparece NIT o salto de línea
+        tipo = tipo.split("NIT")[0]
+        tipo = tipo.split("\n")[0]
+
+        # limpiar artículos
+        tipo = re.sub(r"\b(LA|EL|DEL|DE)\b", "", tipo)
+
+        tipo = tipo.strip()
+
+        # reemplazar espacios por _
+        tipo = re.sub(r"\s+", "_", tipo)
+
+        return tipo
+
+
+    # -------------------------------------------------
+    # FUNCIÓN PRINCIPAL
+    # -------------------------------------------------
+
+    def separar_pdfs_estrategico(
+            self,
+            carpeta_salida,
+            ruta_pdf_input=None,
+            find_texto="NIT:",
+            nit_carpeta=True,
+            list_path=None,
+            df=False,
+            enumerar=0):
+
+        os.makedirs(carpeta_salida, exist_ok=True)
+
+        registros = []
+
+        # -------------------------------------------------
+        # ABRIR DOCUMENTO
+        # -------------------------------------------------
+
+        if list_path:
+            doc = fitz.open()
+            for pdf in list_path:
+                with fitz.open(pdf) as temp:
+                    doc.insert_pdf(temp)
+        else:
+            doc = fitz.open(ruta_pdf_input)
+
+        total_paginas = len(doc)
+
+        print(f"🚀 Procesando {total_paginas} páginas...")
+
+        procesados = 0
+        contador_global = enumerar
+
+        for i in range(total_paginas):
+
+            pagina = doc[i]
+            texto = pagina.get_text()
+
+            # -------------------------------------------------
+            # TIPO CERTIFICADO DINÁMICO
+            # -------------------------------------------------
+
+            nombre_base_extraido = self.extraer_tipo_certificado(texto)
+
+            # -------------------------------------------------
+            # EXTRAER NIT
+            # -------------------------------------------------
+
+            nits_encontrados = re.findall(
+                rf"{find_texto}\s*(\d+-?\d*)",
+                texto
+            )
+
+            if len(nits_encontrados) >= 2:
+                nit_cliente = nits_encontrados[1].replace("-", "").strip()
+            else:
+                nit_cliente = "REVISAR_MANUAL"
+
+            # -------------------------------------------------
+            # EXTRAER TOTALES
+            # -------------------------------------------------
+
+            monto_match = re.search(
+                r"MONTO DEL PAGO SUJETO A RETENCIÓN:\s*\$\s*([\d\.,]+)",
+                texto
+            )
+
+            retenido_match = re.search(
+                r"RETENIDO Y CONSIGNADO:\s*\$\s*([\d\.,]+)",
+                texto
+            )
+
+            monto_pago = self.limpiar_moneda(
+                monto_match.group(1)
+            ) if monto_match else None
+
+            retenido = self.limpiar_moneda(
+                retenido_match.group(1)
+            ) if retenido_match else None
+
+            # -------------------------------------------------
+            # CARPETA DESTINO
+            # -------------------------------------------------
+
+            ruta_destino_final = carpeta_salida
+
+            if nit_carpeta:
+                ruta_destino_final = os.path.join(
+                    carpeta_salida,
+                    nit_cliente
+                )
+                os.makedirs(ruta_destino_final, exist_ok=True)
+
+            # -------------------------------------------------
+            # NOMBRE ARCHIVO
+            # -------------------------------------------------
+
+            if enumerar > 0:
+
+                contador_global += 1
+                id_archivo = contador_global
+
+                nombre_archivo = (
+                    f"{id_archivo}_{nit_cliente}_{nombre_base_extraido}.pdf"
+                )
+
+                ruta_final = os.path.join(
+                    ruta_destino_final,
+                    nombre_archivo
+                )
+
+            else:
+
+                contador = 1
+                id_archivo = None
+
+                nombre_archivo = (
+                    f"{nit_cliente}_{nombre_base_extraido}.pdf"
+                )
+
+                ruta_final = os.path.join(
+                    ruta_destino_final,
+                    nombre_archivo
+                )
+
+                while os.path.exists(ruta_final):
+
+                    contador += 1
+
+                    nombre_archivo = (
+                        f"{nit_cliente}_{nombre_base_extraido}_{contador}.pdf"
+                    )
+
+                    ruta_final = os.path.join(
+                        ruta_destino_final,
+                        nombre_archivo
+                    )
+
+            # -------------------------------------------------
+            # GUARDAR PDF
+            # -------------------------------------------------
+
+            nuevo_doc = fitz.open()
+
+            nuevo_doc.insert_pdf(
+                doc,
+                from_page=i,
+                to_page=i
+            )
+
+            nuevo_doc.save(ruta_final)
+
+            nuevo_doc.close()
+
+            # -------------------------------------------------
+            # DATAFRAME
+            # -------------------------------------------------
+
+            if df and enumerar > 0:
+
+                registros.append({
+                    "ID": id_archivo,
+                    "NIT": nit_cliente,
+                    "CERTIFICADO": nombre_base_extraido,
+                    "MONTO_PAGO_SUJETO_RETENCION": monto_pago,
+                    "RETENIDO_CONSIGNADO": retenido,
+                    "archivo": nombre_archivo
+                })
+
+            procesados += 1
+
+            if procesados % 10 == 0 or procesados == total_paginas:
+                print(f"📊 {procesados}/{total_paginas} páginas procesadas...")
+
+        doc.close()
+
+        print(f"✅ Finalizado: archivos en {carpeta_salida}\n")
+
+        # -------------------------------------------------
+        # RETORNAR DATAFRAME
+        # -------------------------------------------------
+
+        if df and enumerar > 0:
+            return pd.DataFrame(registros)
