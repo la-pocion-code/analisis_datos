@@ -1118,7 +1118,10 @@ class ReportClassNew():
             ruta_presupuesto: Optional[str] = None,
             clientes: Optional[Dict[str, List[Dict[str, str]]]] = None,
         ):
-
+        """
+        PENDIENTE
+        
+        """
  
 
         if ruta_carpeta:
@@ -1725,7 +1728,7 @@ class ReportClassNew():
                 <tr style="transition: background-color 0.2s;">
                     <td style="padding:12px 16px;border-bottom:1px solid #e8e8e8;
                             font-weight:500;color:#2c3e50;font-size:13px;">
-                        {row['CLIENTE']}
+                        {row['ZONA']}
                     </td>
 
                     <td style="padding:12px 16px;border-bottom:1px solid #e8e8e8;
@@ -1853,9 +1856,16 @@ class ReportClassNew():
 
         df_base_responsable = pd.read_excel(ruta_base, sheet_name='Responsables')
 
-        df_cartera = df_cartera.merge(df_base_responsable, left_on='Tipo de cliente', right_on='TIPO CLIENTE', how='left' )
-
-
+        # df_cartera = df_cartera.merge(df_base_responsable, left_on='Tipo de cliente', right_on='TIPO CLIENTE', how='left' )
+        
+        df_base_responsable = pd.read_excel(ruta_base, sheet_name='Responsables')
+        tipo_repetido = df_base_responsable[df_base_responsable['TIPO CLIENTE'].duplicated()]['TIPO CLIENTE'].unique()
+        tipo_repetido
+        responsables_tipo = df_base_responsable[~df_base_responsable['TIPO CLIENTE'].isin(tipo_repetido)]
+        responsables_clientes = df_base_responsable[df_base_responsable['TIPO CLIENTE'].isin(tipo_repetido)]
+        df_cartera = df_cartera.merge(responsables_tipo[['TIPO CLIENTE', 'RESPONSABLE', 'UBICACIÓN']], left_on='Tipo de cliente', right_on='TIPO CLIENTE', how='left' ).merge(responsables_clientes[[ 'CLIENTE', 'RESPONSABLE']], left_on='Nombre del contacto a mostrar en la factura', right_on='CLIENTE', how='left')
+        df_cartera['RESPONSABLE'] = df_cartera['RESPONSABLE_x'].fillna(df_cartera['RESPONSABLE_y'])
+        df_cartera['TIPO CLIENTE'] = df_cartera['TIPO CLIENTE'].fillna(df_cartera['Tipo de cliente'])
         responsable_default =df_base_responsable[df_base_responsable['TIPO CLIENTE'] == 'Default']['RESPONSABLE'].values[0]
 
         df_cartera['RESPONSABLE'] = df_cartera['RESPONSABLE'].fillna(responsable_default)
