@@ -1,6 +1,32 @@
-/.env
-virtual-env
-/__pycache__
+# Entorno virtual
+virtual-env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Variables de entorno
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Datos sensibles (no versionar)
 *.xlsx
-*x.xls
+*.xls
 *.csv
+*.pdf
+
+# PyInstaller
+build/
+dist/
+*.spec
+*.exe
+
+google_credentials.json
+.logs/
+*.log
+*.jiff
+*.jfif

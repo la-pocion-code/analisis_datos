@@ -1100,12 +1100,8 @@ class ReportClassNew():
             base = sin_cc[sin_cc['Creado por']==i]
             base.to_csv(ruta_errores / f'{i}.csv', index=False, sep=';', decimal=',', encoding='utf-8')
             dicc[i] = f'{i}.csv'
-
         df_base_consol =  self.consolidar_carpeta(extension='csv', encoding='utf-8', sep=';', decimal=',', ruta_carpeta= ruta_contabilidad / 'base')
-
-
         df_base_consol = df_base_consol.loc[:, ~df_base_consol.columns.str.contains('^Unnamed')]
-
         df_base_consol.to_csv(ruta_contabilidad / 'base_consolidada.csv', encoding='utf-8', sep=';', decimal=',', index=False)
 
         return df_base_consol, dicc
@@ -1119,8 +1115,18 @@ class ReportClassNew():
             clientes: Optional[Dict[str, List[Dict[str, str]]]] = None,
         ):
         """
-        PENDIENTE
+        Genera un informe diario de ventas para mayoristas, con análisis de cobertura por zona y ranking de clientes.
         
+        Args:
+            ruta_carpeta (Optional[str]): Ruta de la carpeta con los archivos de ventas.
+            extension (str): Extensión de los archivos a consolidar.
+            producto_pen (Optional[List[str]]): Lista de productos pendientes.
+            ruta_presupuesto (Optional[str]): Ruta del archivo de presupuesto.
+            clientes (Optional[Dict[str, List[Dict[str, str]]]]): Diccionario con la información de los clientes y sus zonas.
+
+        Returns:
+            dict: Diccionario con los DataFrames de cobertura hoy, cobertura ayer y ranking de clientes
+
         """
  
 
@@ -1518,6 +1524,8 @@ class ReportClassNew():
             'PRODUCTO_ANALISIS'
         ] = 'NO COMPRO PRODUCTO ANALISIS'
 
+        penetracion_producto = penetracion_producto.fillna(0)
+        
         informes_por_zona = {}
 
         # Generar informe por zona
@@ -1833,7 +1841,7 @@ class ReportClassNew():
 
         return {'Cuerpo_HTML':informes_por_zona, 'Base_Vendedores': base_vendedores}
     
-    def informe_cartera(self, categorias: list) -> pd.DataFrame:
+    def informe_cartera(self, categorias: list, client_credit_expo: dict) -> pd.DataFrame:
         """
         """
         # Base Cartera
@@ -1881,6 +1889,15 @@ class ReportClassNew():
 
 
         df_cartera = df_cartera[['Número', 'Nombre del contacto a mostrar en la factura', 'Fecha de factura', 'Fecha de vencimiento', 'Importe pendiente firmado', 'RESPONSABLE', 'TIPO CLIENTE']]
+        if client_credit_expo:
+            mask = df_cartera['Nombre del contacto a mostrar en la factura'].isin(client_credit_expo)
+
+            df_cartera.loc[mask, 'Fecha de vencimiento'] = df_cartera.loc[mask].apply(
+                lambda row: pd.to_datetime(row['Fecha de factura']) + pd.Timedelta(days=client_credit_expo[row['Nombre del contacto a mostrar en la factura']]),
+                axis=1
+            )
+
+
         df_cartera['Dias de credito'] = (pd.to_datetime(df_cartera['Fecha de vencimiento']) - pd.to_datetime(df_cartera['Fecha de factura'])).dt.days    
         # df_cartera = df_cartera[df_cartera['Dias de credito'] != 0]
         df_cartera['Dias de atraso'] = (pd.to_datetime('now') - pd.to_datetime(df_cartera['Fecha de vencimiento'])  ).dt.days    
