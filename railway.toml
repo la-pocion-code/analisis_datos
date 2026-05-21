@@ -1,0 +1,6 @@
+[build]
+buildCommand = "pip install -r requirements_etl.txt"
+
+[deploy]
+startCommand = "python etl_odoo_incremental.py"
+cronSchedule = "*/15 * * * *"

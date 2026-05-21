@@ -1,82 +1,142 @@
 import os
 import xmlrpc.client
 import pandas as pd
-import numpy as np
 import logging
 from dotenv import load_dotenv
-from db_loader import DBLoader  # Importamos tu clase
+from db_loader import DBLoader
 
-# Configuración de Logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
 load_dotenv()
 
-def aplanar_datos_odoo(data_list):
-    """Convierte los campos [id, name] de Odoo en valores planos para la DB."""
-    if not data_list:
-        return pd.DataFrame()
-    df = pd.DataFrame(data_list)
-    for col in df.columns:
-        # Si la columna es una lista (Many2one), extraemos el ID o el nombre
-        # En este caso, extraemos el nombre (posición 1) si existe
-        if df[col].apply(lambda x: isinstance(x, (list, tuple))).any():
-            df[col] = df[col].apply(lambda x: x[1] if isinstance(x, (list, tuple)) else x)
-    return df
 
-def ejecutar_sincronizacion():
-    # 1. Credenciales
-    url = os.getenv("url")
-    db = os.getenv("db")
-    username = os.getenv("username")
-    password = os.getenv("password")
+# ── Conexión Odoo ──────────────────────────────────────────────────────────────
+def conectar_odoo():
+    url  = os.getenv("url")
+    db   = os.getenv("db")
+    user = os.getenv("username_odoo")
+    pw   = os.getenv("password")
+    common = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common")
+    uid = common.authenticate(db, user, pw, {})
+    if not uid:
+        raise RuntimeError("Autenticación Odoo fallida. Verifica variables de entorno.")
+    logging.info(f"Odoo conectado (uid={uid})")
+    return db, uid, pw, xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
 
-    # 2. Conexión a Odoo
-    common = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/common')
-    uid = common.authenticate(db, username, password, {})
-    models = xmlrpc.client.ServerProxy(f'{url}/xmlrpc/2/object')
 
-    # 3. Inicializar nuestro Cargador de DB
-    loader = DBLoader()
+# ── Descarga paginada genérica ─────────────────────────────────────────────────
+def descargar_modelo_paginado(models, db, uid, pw, modelo, domain, fields, batch_size=2000):
+    registros, offset = [], 0
+    while True:
+        lote = models.execute_kw(db, uid, pw, modelo, 'search_read', [domain], {
+            'fields': fields, 'limit': batch_size, 'offset': offset, 'order': 'id asc'
+        })
+        if not lote:
+            break
+        registros.extend(lote)
+        offset += len(lote)
+        logging.info(f"  [{modelo}] {len(registros)} registros acumulados")
+        if len(lote) < batch_size:
+            break
+    return registros
 
-    # --- PROCESO PARA ACCOUNT.MOVE.LINE ---
-    nombre_tabla = "account_move_line"
-    
-    # A. Buscar última fecha de modificación en nuestra DB
-    query_fecha = f"SELECT MAX(write_date) FROM raw.{nombre_tabla}"
-    res_fecha = loader.consultar(query_fecha)
-    
-    # Si la tabla no existe o está vacía, iniciamos desde una fecha antigua
-    last_sync = res_fecha.iloc[0,0] if res_fecha is not None and not res_fecha.empty and res_fecha.iloc[0,0] else "2000-01-01 00:00:00"
-    
-    logging.info(f"Sincronizando {nombre_tabla} desde: {last_sync}")
 
-    # B. Consultar cambios en Odoo
-    # Traemos lo que se modificó después de la última sincronización
+# ── Expansión de campos Many2one [id, nombre] ──────────────────────────────────
+def expandir(df, col):
+    df[f"{col}_id"]     = df[col].apply(lambda x: x[0] if isinstance(x, (list, tuple)) and x else None)
+    df[f"{col}_nombre"] = df[col].apply(lambda x: x[1] if isinstance(x, (list, tuple)) and x else None)
+    return df.drop(columns=[col])
+
+
+# ── Obtener última fecha de sincronización ────────────────────────────────────
+def ultima_fecha(loader, tabla, col="write_date", default="2024-01-01 00:00:00"):
+    res = loader.consultar(f"SELECT MAX({col}) AS ult FROM raw.{tabla}")
+    val = res["ult"][0] if res is not None and not res.empty else None
+    return str(val) if val else default
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# JOBS DE SINCRONIZACIÓN
+# ══════════════════════════════════════════════════════════════════════════════
+
+def sync_apuntes_contables(loader, models, db, uid, pw):
+    """account.move.line → raw.odoo_apuntes (facturas y notas crédito de venta)"""
+    tabla = "odoo_apuntes"
+    desde = ultima_fecha(loader, tabla)
+    logging.info(f"[{tabla}] Desde: {desde}")
+
     domain = [
-        ('write_date', '>', str(last_sync)),
-        ('move_id.move_type', 'in', ['out_invoice', 'out_refund'])
+        ["write_date", ">", desde],
+        ["move_id.move_type", "in", ["out_invoice", "out_refund"]],
     ]
-    
     fields = [
-        'id', 'company_id', 'invoice_date', 'move_id', 'product_id', 
-        'partner_id', 'account_id', 'quantity', 'price_unit', 
-        'currency_id', 'price_subtotal', 'balance', 'date', 
-        'name', 'analytic_distribution', 'matching_number', 'write_date'
+        "id", "date", "invoice_date", "move_id", "account_id",
+        "partner_id", "quantity", "price_unit", "price_subtotal",
+        "debit", "credit", "balance", "name", "write_date",
     ]
 
-    lineas_raw = models.execute_kw(db, uid, password, 'account.move.line', 'search_read', [domain], {
-        'fields': fields,
-        'limit': 5000 # Un límite razonable para 15 minutos
-    })
+    datos = descargar_modelo_paginado(models, db, uid, pw, "account.move.line", domain, fields)
+    if not datos:
+        logging.info(f"[{tabla}] Sin cambios.")
+        return
 
-    # C. Cargar a Postgres
-    if lineas_raw:
-        df = aplanar_datos_odoo(lineas_raw)
-        # Usamos la función de preparación que crea tabla y hace UPSERT
-        loader.preparar_y_cargar(df, nombre_tabla)
-        logging.info(f"Se actualizaron {len(df)} registros.")
-    else:
-        logging.info("No se encontraron cambios en Odoo.")
+    df = pd.DataFrame(datos)
+    for col in ["account_id", "partner_id", "move_id"]:
+        df = expandir(df, col)
+
+    loader.preparar_y_cargar(df, tabla)
+    logging.info(f"[{tabla}] ✓ {len(df)} registros sincronizados.")
+
+
+# ── Stub: Órdenes de compra ────────────────────────────────────────────────────
+# def sync_ordenes_compra(loader, models, db, uid, pw):
+#     """purchase.order → raw.odoo_purchase_orders"""
+#     tabla  = "odoo_purchase_orders"
+#     desde  = ultima_fecha(loader, tabla)
+#     domain = [["write_date", ">", desde]]
+#     fields = ["id", "name", "partner_id", "date_order", "amount_total", "state", "write_date"]
+#     datos  = descargar_modelo_paginado(models, db, uid, pw, "purchase.order", domain, fields)
+#     if not datos: return
+#     df = pd.DataFrame(datos)
+#     df = expandir(df, "partner_id")
+#     loader.preparar_y_cargar(df, tabla)
+#     logging.info(f"[{tabla}] ✓ {len(df)} registros sincronizados.")
+
+
+# ── Stub: Inventario (stock.quant) ────────────────────────────────────────────
+# def sync_inventario(loader, models, db, uid, pw):
+#     """stock.quant → raw.odoo_stock  +  snapshot semanal en raw.odoo_stock_snapshot"""
+#     tabla  = "odoo_stock"
+#     domain = []
+#     fields = ["id", "product_id", "location_id", "quantity", "reserved_quantity", "write_date"]
+#     datos  = descargar_modelo_paginado(models, db, uid, pw, "stock.quant", domain, fields)
+#     if not datos: return
+#     df = pd.DataFrame(datos)
+#     for col in ["product_id", "location_id"]:
+#         df = expandir(df, col)
+#     loader.preparar_y_cargar(df, tabla)            # estado actual (UPSERT)
+#     # snapshot semanal: agregar semana y appended para histórico de inventario
+#     # df["semana"] = pd.Timestamp.now().strftime("%Y-W%U")
+#     # loader.cargar(df, "odoo_stock_snapshot", if_exists="append")
+#     logging.info(f"[{tabla}] ✓ {len(df)} registros sincronizados.")
+
+
+# ── Jobs activos ──────────────────────────────────────────────────────────────
+JOBS = [
+    sync_apuntes_contables,
+    # sync_ordenes_compra,
+    # sync_inventario,
+]
+
+
+def main():
+    db, uid, pw, models = conectar_odoo()
+    loader = DBLoader()
+    for job in JOBS:
+        try:
+            job(loader, models, db, uid, pw)
+        except Exception as e:
+            logging.error(f"Error en {job.__name__}: {e}", exc_info=True)
+
 
 if __name__ == "__main__":
-    ejecutar_sincronizacion()
+    main()
