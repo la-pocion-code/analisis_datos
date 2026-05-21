@@ -1,12 +1,39 @@
 import os
+import sys
 import xmlrpc.client
 import pandas as pd
 import logging
 from dotenv import load_dotenv
-from db_loader import DBLoader
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 load_dotenv()
+
+
+# ── Validación temprana: DB disponible antes de importar psycopg2 ──────────────
+def verificar_db() -> bool:
+    try:
+        import psycopg2
+        conn = psycopg2.connect(
+            host=os.getenv("DB_HOST"),
+            port=os.getenv("DB_PORT"),
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            connect_timeout=10,
+        )
+        conn.close()
+        logging.info("DB Railway: conexión OK")
+        return True
+    except Exception as e:
+        logging.error(f"DB Railway no disponible: {e}")
+        return False
+
+
+if not verificar_db():
+    logging.error("Abortando ETL — base de datos no accesible.")
+    sys.exit(1)
+
+from db_loader import DBLoader
 
 
 # ── Conexión Odoo ──────────────────────────────────────────────────────────────
