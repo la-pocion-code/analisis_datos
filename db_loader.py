@@ -95,12 +95,15 @@ class DBLoader:
     def _pg_type(self, dtype, col_name: str) -> str:
         """Mapea dtype de pandas a tipo PostgreSQL."""
         col = col_name.upper()
-        if np.issubdtype(dtype, np.integer):
-            return "BIGINT"
-        elif np.issubdtype(dtype, np.floating):
-            return "NUMERIC"
-        elif np.issubdtype(dtype, np.datetime64):
-            return "TIMESTAMP"
+        try:
+            if np.issubdtype(dtype, np.integer):
+                return "BIGINT"
+            elif np.issubdtype(dtype, np.floating):
+                return "NUMERIC"
+            elif np.issubdtype(dtype, np.datetime64):
+                return "TIMESTAMP"
+        except TypeError:
+            pass  # pandas 2.x StringDtype / extension types caen a VARCHAR
         elif col in ('OBSERVACIONES', 'DESCRIPCION', 'NOTAS', 'DETALLE', 'CUERPO_HTML'):
             return "TEXT"
         else:
