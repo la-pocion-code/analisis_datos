@@ -104,10 +104,9 @@ class DBLoader:
                 return "TIMESTAMP"
         except TypeError:
             pass  # pandas 2.x StringDtype / extension types caen a VARCHAR
-        elif col in ('OBSERVACIONES', 'DESCRIPCION', 'NOTAS', 'DETALLE', 'CUERPO_HTML'):
+        if col in ('OBSERVACIONES', 'DESCRIPCION', 'NOTAS', 'DETALLE', 'CUERPO_HTML'):
             return "TEXT"
-        else:
-            return "VARCHAR(512)"
+        return "VARCHAR(512)"
 
     # ========================
     # LIMPIEZA DE COLUMNAS
