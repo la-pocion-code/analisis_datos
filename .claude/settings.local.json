@@ -1,7 +1,33 @@
 {
   "permissions": {
     "allow": [
-      "Bash(dir D:\\\\Desktop\\\\analisis_datos *)"
+      "Bash(dir D:\\\\Desktop\\\\analisis_datos *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "PowerShell([System.IO.File]::WriteAllText\\(\"D:\\\\Desktop\\\\analisis_datos\\\\requirements.txt\", \"pandas==2.3.1`nnumpy==2.3.5`npsycopg2-binary==2.9.9`npython-dotenv==1.1.1`n\", [System.Text.UTF8Encoding]::new\\($false\\)\\))",
+      "PowerShell([System.IO.File]::WriteAllText\\(\"D:\\\\Desktop\\\\analisis_datos\\\\requirements.txt\", \"pandas>=2.0.0`nnumpy>=1.24.0`npsycopg2-binary>=2.9.10`npython-dotenv>=1.0.0`n\", [System.Text.UTF8Encoding]::new\\($false\\)\\))",
+      "Bash(railway status *)",
+      "Bash(railway link *)",
+      "Bash(railway whoami *)",
+      "Bash(railway list *)",
+      "Bash(railway service *)",
+      "Bash(railway ps *)",
+      "Bash(railway --help)",
+      "Bash(railway logs *)",
+      "Bash(railway deployment *)",
+      "Bash(railway project *)",
+      "Bash(railway open *)",
+      "Bash(railway mcp *)",
+      "PowerShell(Test-Path *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Get-Content *)",
+      "PowerShell($token = \"cxQ23KEPDht_HCrI5Bt31j6XRlm0nLEJz3ijnpr3A0n\"; $headers = @{ \"Authorization\" = \"Bearer $token\"; \"Content-Type\" = \"application/json\" }; $projectId = \"f05f345b-d2a4-4bec-84b3-8a5362f31bcf\"; $body = '{\"query\":\"{ project\\(id: \\\\\"' + $projectId + '\\\\\"\\) { id name services { edges { node { id name } } } } }\"}'; $r = Invoke-RestMethod -Uri \"https://backboard.railway.com/graphql/v2\" -Method POST -Headers $headers -Body $body; $r | ConvertTo-Json -Depth 10)",
+      "Bash(railway variables *)",
+      "Bash(railway redeploy *)",
+      "Bash(python -c \"from db_loader import DBLoader; print\\('OK'\\)\")",
+      "PowerShell(python \"C:\\\\Users\\\\ANALISTA DATOS\\\\AppData\\\\Local\\\\Temp\\\\map_aml.py\")",
+      "PowerShell(Remove-Item \"C:\\\\Users\\\\ANALISTA DATOS\\\\AppData\\\\Local\\\\Temp\\\\map_aml.py\" -Confirm:$false)"
     ]
   }
 }

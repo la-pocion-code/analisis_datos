@@ -33,7 +33,7 @@ if not verificar_db():
     logging.error("Abortando ETL — base de datos no accesible.")
     sys.exit(1)
 
-from db_loader import DBLoader
+from classes.db_loader import DBLoader
 
 
 # ── Conexión Odoo ──────────────────────────────────────────────────────────────
