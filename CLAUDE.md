@@ -52,14 +52,16 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `empresa_id` (multiempresa: 1=Aristizabal Hector Fabio, 8=PCN Poción), PUC por prefijo del código
   (`clase_codigo`/`grupo_codigo`). Fechas como DATE (`fecha`, `fecha_factura`,
   `fecha_vencimiento`) además de las `*_key`.
-- **Clasificación para estados financieros (100% de los reportes de Odoo):** `nivel_movimiento`,
-  `seccion` y `subseccion` de `dim_cuenta` se **derivan de los reportes de Odoo** (`account.report`
-  → Balance/ESF id 24 + Estado de Resultados id 23, en `es_CO`) vía
-  `cargar_clasificacion_reportes`. Cubre **todas las clases** (1–7) → permite armar Balance y Estado
-  de Resultados completos. Se clasifica cada cuenta por el **prefijo de código** de las líneas hoja
-  (`engine='account_codes'`, match del prefijo más largo, con exclusiones `\(...)`): NO es siempre a
-  2 díg (17/28 se parten en corriente/no corriente; 51 excluye la depreciación 5160/5165). Ya **no**
-  hay dict manual `NIVEL_N2` (superseded; ver `docs/MODELO_ESTRELLA.md` §11).
+- **Clasificación para estados financieros (100% de los reportes de Odoo):** `dim_cuenta` trae 3
+  niveles del árbol del reporte (`account.report`, es_CO): **`seccion`** (raíz:
+  ACTIVOS/PASIVO/PATRIMONIO · Ingresos/Gastos/Costos…), **`concepto`** (intermedio, padre del leaf:
+  Gastos, Activos corrientes, PATRIMONIO…) y **`nivel_movimiento`** (DETALLE/hoja, el nivel del PyG:
+  Operacionales de administración, Costo de ventas, Deudores…), vía `cargar_clasificacion_reportes`
+  (Balance id 24 + Estado de Resultados id 38). Cubre **todas las clases** (1–7). Match por
+  **prefijo de código** de las líneas hoja (`engine='account_codes'`, prefijo más largo, con
+  exclusiones `\(...)`): NO siempre a 2 díg (17/28 corriente/no corriente; 51 excluye 5160/5165). Sin
+  dict manual `NIVEL_N2`. Flujo de efectivo (report 5) no tiene líneas por cuenta → follow-up. Ver
+  `docs/MODELO_ESTRELLA.md` §11.
 - **Roles de planes analíticos** (`canal`/`linea_producto`/`tipo_producto`/`pais_analitico`/
   `centro`) se **derivan del nombre** de `account.analytic.plan` en Odoo (`derivar_plan_rol`), no de
   IDs fijos; plan `La Poción` (id 3) = excepción legacy de centro de costo.

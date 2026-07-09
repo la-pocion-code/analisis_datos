@@ -243,16 +243,24 @@ motor de reportes de Odoo.
 
 **Fuente (100% Odoo).** `account.report` → `account.report.line` → `account.report.expression`.
 Las líneas hoja usan `engine='account_codes'` con **prefijos de código PUC** como fórmula. Se leen
-en **`es_CO`** (Odoo tiene ese idioma): Balance/ESF (report id **24**, clases 1/2/3) y Estado de
-Resultados (report id **23**, clases 4–7).
+en **`es_CO`**: Balance/ESF (report id **24** "Saldo general CO", clases 1/2/3) y Estado de
+Resultados (report id **38** "Estado de Resultados Mensual" = el dashboard del usuario, clases 4–7).
 
-**Columnas en `dim_cuenta`** (pobladas por `etl_dw_marts.cargar_clasificacion_reportes`):
-- `nivel_movimiento` — nombre de la línea hoja del reporte (p.ej. *Disponible, Deudores, Inventario,
-  Propiedades planta y equipo, Proveedores, Operacionales, Costo de ventas…*). Es `TEXT`.
-- `seccion` — raíz del árbol: *ACTIVOS / PASIVO / PATRIMONIO* (balance) e *Ingresos / Costos / Gastos*
-  (resultados).
-- `subseccion` — subtotal intermedio: *Activos corrientes / no corrientes, Pasivos corrientes / no
-  corrientes*, etc.
+**Tres niveles del reporte en `dim_cuenta`** (poblados por `cargar_clasificacion_reportes`; subiendo
+del leaf a la raíz del árbol del reporte):
+- `seccion` — **raíz**: *ACTIVOS / PASIVO / PATRIMONIO* (balance) · *Ingresos / Gastos / Costos de
+  ventas / Costos de producción / Ganancias y pérdidas / Impuesto de renta* (resultados).
+- `concepto` — **intermedio** (padre del leaf): *Gastos, Activos corrientes / no corrientes,
+  PATRIMONIO, Pasivos corrientes…*.
+- `nivel_movimiento` — **DETALLE** (hoja), el nivel con el que se arma el PyG / Estado de Resultados:
+  *Operacionales (ingresos op.), Operacionales de administración (gastos admin.), Operacionales de
+  ventas (gastos operativos), Costo de ventas y de prestación de servicios, Depreciaciones y
+  amortizaciones, Deudores, Disponible, Capital social…*. Es `TEXT`.
+
+Ejemplos: `510506` → (seccion=Gastos, concepto=Gastos, **nivel_movimiento=Operacionales de
+administración**) · `130505001` → (ACTIVOS, Activos corrientes, **Deudores**) · `310505` →
+(PATRIMONIO, PATRIMONIO, **Capital social**). El flujo de efectivo (report 5) **no tiene líneas por
+cuenta** en Odoo → queda como follow-up aparte.
 
 **Match por prefijo (NO siempre a 2 díg).** Cada cuenta se asigna a la línea cuyo prefijo la
 *incluye* (match del **prefijo más largo**, respetando exclusiones `\(...)`):
@@ -268,12 +276,14 @@ Resultados (report id **23**, clases 4–7).
 Reemplaza al dict manual `NIVEL_N2` (y al hardcode de `09_nivel_movimiento.sql`, **superseded**).
 
 **Uso en Power BI.**
-- *Estado de Resultados*: filtrar `clase_codigo IN (4,5,6,7)`, agrupar por `seccion` (Ingresos/Costos/
-  Gastos) y `nivel_movimiento`; medida = `SUM(credito − debito)`.
+- *Estado de Resultados / PyG*: filtrar `clase_codigo IN (4,5,6,7)`, agrupar por `nivel_movimiento`
+  (Operacionales, Operacionales de administración, de ventas, Costo de ventas…) con subtotal por
+  `seccion` (Ingresos/Gastos/Costos); medida = `SUM(credito − debito)`.
 - *Balance/ESF*: `clase_codigo IN (1,2,3)`, saldo acumulado `SUM(debito − credito)` hasta la fecha,
-  agrupar por `seccion` → `subseccion` → `nivel_movimiento`. El **resultado del ejercicio en curso**
-  (utilidad P&L del período, aún sin cerrar a patrimonio) completa el cuadre Activo = Pasivo +
-  Patrimonio, igual que la línea "Resultados del ejercicio en curso" del Balance de Odoo.
+  agrupar por `seccion` (ACTIVO/PASIVO/PATRIMONIO) → `concepto` (corriente/no corriente) →
+  `nivel_movimiento` (Deudores, Disponible…). El **resultado del ejercicio en curso** (utilidad P&L
+  del período, aún sin cerrar a patrimonio) completa el cuadre Activo = Pasivo + Patrimonio, igual
+  que la línea "Resultados del ejercicio en curso" del Balance de Odoo.
 
 ## 12. Pendientes de decisión
 - **[PENDIENTE]** Reglas exactas de `SIN_CENTRO_COSTO` (qué cuentas/clases exigen centro de costo).

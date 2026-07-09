@@ -77,7 +77,7 @@ Para probarlo localmente igual que el cron: `python run_dw.py`.
 
 ## 3. Refresco de dimensiones
 - **Cada corrida** refresca en full los catálogos pequeños: `dim_cuenta` (incluye
-  `nivel_movimiento/seccion/subseccion` derivados de los reportes de Odoo), `dim_diario`,
+  `seccion/concepto/nivel_movimiento` derivados de los reportes de Odoo), `dim_diario`,
   `dim_centro_costo` (100% Odoo) y `dim_empresa`.
 - **`dim_tercero`, `dim_producto`, `dim_vendedor`** se refrescan por su propio `write_date`
   (nuevos o modificados, aunque no tengan transacción nueva). En `--full`/`--rebuild` el refresco
@@ -101,10 +101,11 @@ Para probarlo localmente igual que el cron: `python run_dw.py`.
 - Conectar a PostgreSQL (variables `DB_*`), **modo Import**. Importar las dimensiones +
   **`fact_movimiento_contable`** (único hecho). Relaciones estrella por los `*_id` y `fecha_key`.
 - **Ventas/cartera** se calculan con medidas DAX sobre el hecho (sin duplicar tablas).
-- **Estado de Resultados:** filtrar `clase_codigo IN (4,5,6,7)`, agrupar por `seccion`/
-  `nivel_movimiento`, medida `SUM(credito − debito)`.
+- **Estado de Resultados / PyG:** filtrar `clase_codigo IN (4,5,6,7)`, agrupar por `nivel_movimiento`
+  (detalle: Operacionales, Operacionales de administración, de ventas, Costo de ventas…) con subtotal
+  por `seccion` (Ingresos/Gastos/Costos); medida `SUM(credito − debito)`.
 - **Balance/ESF:** `clase_codigo IN (1,2,3)`, saldo acumulado `SUM(debito − credito)` hasta la fecha,
-  agrupar por `seccion` → `subseccion` → `nivel_movimiento`.
+  agrupar por `seccion` → `concepto` → `nivel_movimiento`.
 - Detalle de medidas: [MODELO_ESTRELLA.md §9 y §11](MODELO_ESTRELLA.md).
 
 ## 6. Programación en Railway (ya montado)

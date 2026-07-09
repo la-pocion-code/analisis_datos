@@ -147,12 +147,14 @@ NATURALEZA_N1 = {"1": "Débito", "5": "Débito", "6": "Débito", "7": "Débito",
 
 
 # ── Clasificación de estados financieros derivada de los reportes de Odoo (account.report) ──
-# nivel_movimiento / seccion / subseccion se toman de las LÍNEAS de los informes de Odoo (es_CO):
-# Balance (ESF) para clases 1/2/3 y Estado de Resultados para 4/5/6/7. Las líneas hoja usan
+# seccion / concepto / nivel_movimiento se toman de las LÍNEAS de los informes de Odoo (es_CO):
+# Balance/ESF para clases 1/2/3 y Estado de Resultados para 4/5/6/7. Las líneas hoja usan
 # engine='account_codes' con prefijos de código PUC; se clasifica cada cuenta por el prefijo que la
-# incluye (match más largo, respetando exclusiones). Sin diccionarios manuales → fiel a Odoo.
-REP_BALANCE_IDS = [24, 4]     # candidatos de Balance/ESF (localizado primero)
-REP_PYL_IDS = [23, 38, 7]     # candidatos de Estado de Resultados / Profit and Loss
+# incluye (match más largo, respetando exclusiones). Subiendo del leaf a la raíz:
+#   seccion = raíz · concepto = padre del leaf (intermedio) · nivel_movimiento = hoja (DETALLE, para PyG).
+# Sin diccionarios manuales → fiel a Odoo.
+REP_BALANCE_IDS = [24, 4]     # candidatos de Balance/ESF (localizado CO primero: nombres/prefijos PUC)
+REP_PYL_IDS = [38, 23, 7]     # candidatos de Estado de Resultados (dashboard del usuario primero)
 _TOK_ACCOUNT_CODES = re.compile(r"(\d+)(?:\\\(([\d,]+)\))?")
 
 
@@ -167,7 +169,8 @@ def _parse_account_codes(formula):
 
 
 def _hojas_reporte(od, rid):
-    """Prefijos de las líneas hoja de un account.report, con su jerarquía (seccion=raíz, subseccion=padre)."""
+    """Prefijos de las líneas hoja de un account.report con su jerarquía:
+    seccion=raíz, concepto=padre del leaf (intermedio), nivel_movimiento=hoja (DETALLE)."""
     lineas = od._exec("account.report.line", "search_read", [[["report_id", "=", rid]]],
                       {"fields": ["id", "name", "parent_id"], "context": {"lang": "es_CO"}})
     if not lineas:
@@ -193,17 +196,18 @@ def _hojas_reporte(od, rid):
         if not l:
             continue
         inc, exc = _parse_account_codes(x.get("formula"))
-        cad = cadena(l["id"])
-        seccion = cad[-1] if cad else l["name"]
-        subseccion = cad[1] if len(cad) >= 2 else seccion
+        cad = cadena(l["id"])                          # [hoja, padre, ..., raíz]
+        leaf = cad[0] if cad else l["name"]            # hoja (DETALLE, va a nivel_movimiento)
+        seccion = cad[-1] if cad else l["name"]        # raíz
+        concepto = cad[1] if len(cad) >= 2 else leaf   # padre del leaf (intermedio)
         for p in inc:
-            hojas.append((p, exc, l["name"], seccion, subseccion))
+            hojas.append((p, exc, leaf, concepto, seccion))
     return hojas
 
 
 def cargar_clasificacion_reportes(od):
-    """Devuelve clasificar(codigo) -> (nivel_movimiento, seccion, subseccion), derivado de los
-    reportes de Odoo (Balance + Estado de Resultados, es_CO)."""
+    """Devuelve clasificar(codigo) -> (nivel_movimiento=hoja/detalle, concepto, seccion), derivado de
+    los reportes de Odoo (Balance + Estado de Resultados, es_CO)."""
     hojas = []
     for candidatos, etiqueta in ((REP_BALANCE_IDS, "balance"), (REP_PYL_IDS, "pyl")):
         for rid in candidatos:
@@ -219,10 +223,10 @@ def cargar_clasificacion_reportes(od):
         if not codigo:
             return (None, None, None)
         mejor = None
-        for pref, exc, nivel, sec, sub in hojas:
+        for pref, exc, leaf, concepto, sec in hojas:
             if codigo.startswith(pref) and not any(codigo.startswith(x) for x in exc):
                 if mejor is None or len(pref) > len(mejor[0]):
-                    mejor = (pref, nivel, sec, sub)
+                    mejor = (pref, leaf, concepto, sec)
         return (mejor[1], mejor[2], mejor[3]) if mejor else (None, None, None)
 
     return clasificar
@@ -353,12 +357,12 @@ def cargar_catalogos_pequenos(od, loader):
     cuentas = od.search_read("account.account", [], ["id", "code", "name", "account_type"], context=CTX_ALL)
     filas = []
     for c in cuentas:
-        nivel, seccion, subseccion = clasificar(c.get("code"))
+        nivel, concepto, seccion = clasificar(c.get("code"))
         filas.append({
             "cuenta_id": as_int(c["id"]), "codigo": c.get("code"), "nombre": c.get("name"),
             "clase_codigo": puc(c.get("code"))[0], "grupo_codigo": puc(c.get("code"))[1],
             "cuenta_codigo": puc(c.get("code"))[2], "subcuenta_codigo": puc(c.get("code"))[3],
-            "nivel_movimiento": nivel, "seccion": seccion, "subseccion": subseccion,
+            "nivel_movimiento": nivel, "concepto": concepto, "seccion": seccion,
             "naturaleza": NATURALEZA_N1.get(puc(c.get("code"))[0]),
             "tipo_cuenta": c.get("account_type"),
         })
