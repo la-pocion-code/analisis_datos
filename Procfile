@@ -1,1 +1,1 @@
-worker: python etl_odoo_incremental.py
+worker: python run_dw.py
