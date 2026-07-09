@@ -29,19 +29,22 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 
 ## Data Warehouse — modelo estrella (esquema `marts`)  ⭐ trabajo activo
 Nuevo pipeline separado del cron `raw`. **Un solo hecho** a grano de línea contable que sirve
-ventas, cartera y estado de resultados; en Power BI se importa ese hecho + dimensiones y se filtra
+ventas, cartera y estados financieros; en Power BI se importa ese hecho + dimensiones y se filtra
 con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUIA_OPERACION.md`.
+**Referencia de comandos que se pueden correr y en qué casos: `docs/GUIA_OPERACION.md` §2.**
 - `etl_dw_marts.py` — ETL del DW. Modos: `--full` (histórico), `--incremental` (write_date),
   `--rebuild [--desde --hasta]` (recrea por rango), `--dims` (solo dimensiones). Carga **por año,
   más reciente primero**; reintentos ante 502 de Odoo + reconexión de BD; refresco de dimensiones
   por su `write_date`; `marcar_reversos` y `aplicar_correcciones` al cierre.
 - `run_dw.py` — **entrypoint del cron de Railway** (`railway.toml` → `0 * * * *`): incremental por
   hora + rebuild del año actual días 3 y 24 a las 03h. Reemplazó al antiguo sync raw (archivado).
-- `sql/marts/01..11_*.sql` — DDL: dims (`dim_fecha/cuenta/tercero/producto/diario/vendedor/
+- `sql/marts/01..12_*.sql` — DDL: dims (`dim_fecha/cuenta/tercero/producto/diario/vendedor/
   empresa/centro_costo`), hecho `fact_movimiento_contable`, vistas (`v_ventas`, `v_cartera`,
   `v_balance_comprobacion`, `v_dq_analitica`), control (`etl_control`), calidad, `correcciones`,
-  `09_nivel_movimiento.sql` (etiqueta canónica de grupo), `10_centro_costo_odoo.sql` (dim CC 100%
-  Odoo) y `11_puc_canonico.sql` (canonicalización PUC, no destructivo). Todos idempotentes.
+  `10_centro_costo_odoo.sql` (dim CC 100% Odoo), `11_puc_canonico.sql` (canonicalización PUC, no
+  destructivo) y `12_estados_financieros.sql` (columnas `nivel_movimiento/seccion/subseccion` para
+  estados financieros; se pueblan desde `account.report`). `09_nivel_movimiento.sql` quedó
+  **superseded** por 12. Todos idempotentes.
 - **Fuente:** todo de Odoo (`account.move.line`+`account.move`, catálogos), salvo `dim_fecha`
   (calendario generado) y `correcciones` (overrides manuales).
 - **Reglas del hecho:** `es_venta`/`es_reverso` (ventas = clase 4 sin reversos totales
@@ -49,12 +52,17 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `empresa_id` (multiempresa: 1=Aristizabal Hector Fabio, 8=PCN Poción), PUC por prefijo del código
   (`clase_codigo`/`grupo_codigo`). Fechas como DATE (`fecha`, `fecha_factura`,
   `fecha_vencimiento`) además de las `*_key`.
-- **Clasificación (fiel a Odoo, sin IDs mágicos):** la clave de agrupación P&L es `grupo_codigo`
-  (2 díg del `code` de Odoo); `nivel_movimiento` es solo su **etiqueta canónica única** entre
-  empresas (dict `NIVEL_N2`; Odoo no da una etiqueta única — difiere por empresa). Los **roles de
-  planes analíticos** (`canal`/`linea_producto`/`tipo_producto`/`pais_analitico`/`centro`) se
-  **derivan del nombre** de `account.analytic.plan` en Odoo (`derivar_plan_rol`), no de IDs fijos;
-  plan `La Poción` (id 3) = excepción legacy de centro de costo.
+- **Clasificación para estados financieros (100% de los reportes de Odoo):** `nivel_movimiento`,
+  `seccion` y `subseccion` de `dim_cuenta` se **derivan de los reportes de Odoo** (`account.report`
+  → Balance/ESF id 24 + Estado de Resultados id 23, en `es_CO`) vía
+  `cargar_clasificacion_reportes`. Cubre **todas las clases** (1–7) → permite armar Balance y Estado
+  de Resultados completos. Se clasifica cada cuenta por el **prefijo de código** de las líneas hoja
+  (`engine='account_codes'`, match del prefijo más largo, con exclusiones `\(...)`): NO es siempre a
+  2 díg (17/28 se parten en corriente/no corriente; 51 excluye la depreciación 5160/5165). Ya **no**
+  hay dict manual `NIVEL_N2` (superseded; ver `docs/MODELO_ESTRELLA.md` §11).
+- **Roles de planes analíticos** (`canal`/`linea_producto`/`tipo_producto`/`pais_analitico`/
+  `centro`) se **derivan del nombre** de `account.analytic.plan` en Odoo (`derivar_plan_rol`), no de
+  IDs fijos; plan `La Poción` (id 3) = excepción legacy de centro de costo.
 - **Canonicalización PUC (no destructivo):** en Odoo coexisten 2 códigos para la misma cuenta
   (8 vs 9 díg). `dim_cuenta` tiene `cuenta_canonica_id`/`codigo_canonico`/`nombre_canonico`
   (`11_puc_canonico.sql` + `canonicalizar_puc`): canónico = variante **más usada** de misma

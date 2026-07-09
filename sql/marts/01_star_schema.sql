@@ -45,9 +45,11 @@ CREATE TABLE IF NOT EXISTS marts.dim_cuenta (
     grupo_codigo     CHAR(2),                -- N2 (2 díg)
     cuenta_codigo    CHAR(4),                -- N4 (4 díg)
     subcuenta_codigo CHAR(6),                -- N6 (6 díg)
-    nivel_movimiento VARCHAR(40),            -- etiqueta canónica del grupo (clave=grupo_codigo, de Odoo);
-                                             -- única entre empresas. Grupos: 41/42/47/51/52/53/54/57/59/61/62/7x
-                                             -- (ver NIVEL_N2 en etl_dw_marts.py y sql/marts/09_nivel_movimiento.sql)
+    nivel_movimiento TEXT,                   -- línea del reporte de Odoo (es_CO); todas las clases
+    seccion          TEXT,                   -- raíz del reporte: ACTIVOS/PASIVO/PATRIMONIO/Ingresos/Gastos/Costos…
+    subseccion       TEXT,                   -- subtotal: Activos corrientes/no corrientes, Pasivos corrientes…
+                                             -- Los tres se derivan de account.report (Balance+Estado de Resultados,
+                                             -- es_CO) vía etl_dw_marts.cargar_clasificacion_reportes. Ver 12_estados_financieros.sql
     naturaleza       VARCHAR(10),            -- Débito / Crédito según clase
     tipo_cuenta      VARCHAR(64),            -- account_type (NULL hasta extender)
     -- Canonicalización PUC (no destructivo; ver sql/marts/11_puc_canonico.sql). El hecho conserva

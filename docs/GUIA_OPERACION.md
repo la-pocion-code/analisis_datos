@@ -9,80 +9,116 @@ modelo en [MODELO_ESTRELLA.md](MODELO_ESTRELLA.md); contexto general del repo en
 Odoo (XML-RPC)                          PostgreSQL (Railway)
   account.move.line  ──┐
   account.move         │   etl_dw_marts.py         ┌─ marts.fact_movimiento_contable (ÚNICO hecho, líneas)
-  account.account      ├──►  (por lotes, UPSERT) ──┤─ marts.dim_* (8 dimensiones)
-  res.partner/product  │                           └─ vistas v_ventas / v_cartera / v_dq_analitica
+  account.account      ├──►  (por lotes, UPSERT) ──┤─ marts.dim_* (dimensiones)
+  res.partner/product  │                           └─ vistas v_ventas / v_cartera / v_balance_comprobacion
   analytic.account…  ──┘
 ```
 - Es el **cron activo** del proyecto (Railway → `run_dw.py`, horario). Reemplazó al antiguo sync raw
   `etl_odoo_incremental.py` (archivado). Lee de Odoo directo; no depende de `raw.odoo_apuntes`.
 - Grano: **una línea de asiento** (`account.move.line`, `state='posted'`).
-- **Un solo hecho** sirve ventas y cartera (en BI se filtra con DAX; no se duplican tablas).
-  Cartera = líneas de CxC (`es_cxc`) con su `saldo_pendiente` (residual por línea).
+- **Un solo hecho** sirve ventas, cartera y estados financieros (en BI se filtra con DAX; no se
+  duplican tablas).
 
-## 2. Cómo se ejecuta (`etl_dw_marts.py`)
-| Comando | Qué hace | Cuándo |
+---
+
+## 2. Comandos que puedes correr y cuándo  ⭐
+
+> Todos se corren desde la raíz del repo (`d:\Desktop\analisis_datos`) con el `.env` presente.
+> Nada de esto borra Odoo; solo escribe en el esquema `marts` de PostgreSQL.
+
+### 2.1 Ver el estado del DW (solo lectura, no cambia nada)
+| Comando | Qué muestra | Cuándo |
 |---|---|---|
-| `python etl_dw_marts.py --full` | Carga histórica completa (hecho + cartera + dims full). Sin truncar. | Primera población / recarga total |
-| `python etl_dw_marts.py --incremental` | Solo cambios por `write_date` (hecho, cartera y dimensiones). Idempotente. | Frecuente (cada hora) |
-| `python etl_dw_marts.py --rebuild [--desde AAAA-MM-DD]` | **DELETE del rango + recarga**. Por defecto **solo el año actual** (años cerrados intactos). Refleja **borrados** de Odoo. | ~2×/mes + manual |
-| `python etl_dw_marts.py --dims` | Solo refresca catálogos y dimensiones (sin hechos). Rápido. | Cuando cambian clientes/productos sin factura nueva |
+| `python estado_dw.py` | Si el ETL está corriendo, conteo del hecho por año, rango de fechas, `tipo_cliente`, y **partida doble por empresa** (debe ≈ 0). | Chequeo rápido en cualquier momento |
+| `python estado_dw.py --odoo` | Lo anterior **+ cuadre por año vs Odoo** (conteos de `account.move.line` posted). Más lento (consulta Odoo). | Para confirmar que no falta información vs Odoo |
 
-- **Marcas de agua** en `marts.etl_control` (una por modelo Odoo): `account.move.line`,
-  `account.move`, `res.partner`, `product.product`, `res.users`. El incremental pide a Odoo solo
-  `write_date > marca` y guarda el nuevo máximo.
-- **Carga por lotes** (páginas de 5.000 líneas) → memoria estable con millones de filas.
-- **En Railway (automático):** el cron corre **`run_dw.py`** (`railway.toml` → `0 * * * *`), que
-  hace `--incremental` cada hora y `--rebuild` del año actual los días 3 y 24 a las 03h. Los comandos
-  de la tabla son para ejecución manual.
+### 2.2 Cargar / actualizar el hecho (`etl_dw_marts.py`)
+| Comando | Qué hace | Cuándo usarlo |
+|---|---|---|
+| `python etl_dw_marts.py --incremental` | Solo cambios por `write_date` (hecho + cartera + dimensiones). Idempotente y rápido. | Actualización normal. **Es lo que corre el cron cada hora**; rara vez hace falta a mano. |
+| `python etl_dw_marts.py --dims` | Refresca **solo catálogos y dimensiones** (cuentas, clasificación de estados financieros, centros de costo, terceros/productos/vendedores). No toca el hecho. Rápido. | Cambió algo de **dimensiones** y quieres verlo ya: cuenta nueva, cliente/producto nuevo, o **tras cambiar la clasificación** (`nivel_movimiento/seccion/subseccion`). |
+| `python etl_dw_marts.py --rebuild` | **DELETE + recarga del AÑO ACTUAL** (años cerrados intactos). Refleja **borrados/ediciones** de Odoo que el incremental no detecta. | El año en curso no cuadra o sospechas datos viejos. El cron lo hace los días **3 y 24** a las 03h. |
+| `python etl_dw_marts.py --rebuild --desde 2026-06-01 --hasta 2026-06-30` | **DELETE + recarga de un RANGO** exacto. | Un **mes o rango puntual no cuadra** (p.ej. partida doble ≠ 0 en junio). Lo más quirúrgico. |
+| `python etl_dw_marts.py --full` | Carga histórica **completa** (todos los años, sin truncar; UPSERT). Larga (millones de filas). | Primera población, o reconstrucción total tras cambios de fondo. |
+
+Opciones comunes:
+- `--desde AAAA-MM-DD` / `--hasta AAAA-MM-DD` acotan el rango en `--rebuild` (y `--desde` en `--full`).
+- Sin `--desde`, `--rebuild` toma **el año actual**; `--full` toma desde 2018.
+
+### 2.3 Aplicar cambios de esquema (SQL DDL)
+Los archivos `sql/marts/01..12_*.sql` son **idempotentes** (se pueden re-ejecutar). Solo hace falta
+correrlos cuando **cambia el esquema** (columnas/vistas nuevas). Población de datos = vía el ETL.
+```bash
+# aplicar un archivo DDL (ejemplo)
+python -c "import sys; sys.path.insert(0,'.'); from classes.db_loader import DBLoader; \
+c=DBLoader().get_connection(); cur=c.cursor(); \
+cur.execute(open('sql/marts/12_estados_financieros.sql',encoding='utf-8').read()); c.commit(); \
+print('aplicado')"
+```
+Tras un DDL que agrega columnas de dimensión, correr `python etl_dw_marts.py --dims` para poblarlas.
+
+### 2.4 El cron automático (no hay que correrlo a mano)
+`run_dw.py` es el entrypoint del cron de Railway (`railway.toml` → `0 * * * *`):
+- **Cada hora:** `--incremental`.
+- **Días 3 y 24, 03:00:** además `--rebuild` del año actual.
+Para probarlo localmente igual que el cron: `python run_dw.py`.
+
+### 2.5 Recetas rápidas (síntoma → comando)
+| Situación | Qué correr |
+|---|---|
+| "¿Cómo va el DW / cuadra con Odoo?" | `python estado_dw.py --odoo` |
+| Cliente/producto/centro de costo nuevo no aparece | `python etl_dw_marts.py --dims` |
+| Cambié la clasificación de cuentas (estados financieros) | aplicar el DDL si tocó columnas + `python etl_dw_marts.py --dims` |
+| Un **mes no cuadra** (partida doble ≠ 0) | `python etl_dw_marts.py --rebuild --desde AAAA-MM-01 --hasta AAAA-MM-31` |
+| El **año en curso** trae datos raros/borrados | `python etl_dw_marts.py --rebuild` |
+| Reconstruir **todo** desde cero | `python etl_dw_marts.py --full` |
+
+---
 
 ## 3. Refresco de dimensiones
-- **Cada corrida** refresca en full los catálogos pequeños: `dim_cuenta`, `dim_diario`,
-  `dim_centro_costo` (**centros de costo nuevos** ✓) y `dim_empresa`.
+- **Cada corrida** refresca en full los catálogos pequeños: `dim_cuenta` (incluye
+  `nivel_movimiento/seccion/subseccion` derivados de los reportes de Odoo), `dim_diario`,
+  `dim_centro_costo` (100% Odoo) y `dim_empresa`.
 - **`dim_tercero`, `dim_producto`, `dim_vendedor`** se refrescan por su propio `write_date`
-  (clientes/productos/vendedores **nuevos o modificados**, aunque no tengan transacción nueva).
-  En `--full`/`--rebuild` el refresco es total; en `--incremental`/`--dims`, solo cambios.
+  (nuevos o modificados, aunque no tengan transacción nueva). En `--full`/`--rebuild` el refresco
+  es total; en `--incremental`/`--dims`, solo cambios.
 - `tipo_cliente` (de `partner_type_id` del asiento) no se pisa al refrescar el tercero.
 
-## 4. Reglas de negocio
-- **Ventas sin reversos:** una factura anulada (`payment_state='reversed'`) y su nota crédito de
-  reverso se marcan `es_reverso=TRUE` y **se excluyen** de ventas (el par suma 0). Las
-  **devoluciones parciales** (factura `paid`) **sí restan** vía `venta_neta`. Recalculado en cada
-  corrida (`marcar_reversos`).
-- **Cartera:** en el mismo hecho, líneas `es_cxc` (`account_type='asset_receivable'`) con
-  `saldo_pendiente = amount_residual` (por línea) y `fecha_vencimiento_key` para aging.
-  `v_cartera` = líneas `es_cxc` con saldo ≠ 0. No hay tabla de cartera aparte.
-- **Calidad (`v_dq_analitica`):** líneas con algún reparto analítico ≠ 100% (error a corregir en
-  Odoo) y líneas de gasto/costo (clases 5/6) sin centro de costo.
-- **Correcciones (`marts.correcciones`):** overrides de datos mal registrados en Odoo, aplicados
-  en el DW tras cargar (`aplicar_correcciones`), sin tocar Odoo. Formato: `tabla, pk_col, pk_val,
-  campo, valor_nuevo, motivo, activo`.
+## 4. Reglas de negocio (recalculadas al cierre de cada carga)
+- **Ventas sin reversos:** factura anulada (`payment_state='reversed'`) + su NC → `es_reverso=TRUE`,
+  excluidas de ventas. Devoluciones **parciales** (factura `paid`) sí restan vía `venta_neta`
+  (`marcar_reversos`).
+- **Cartera:** líneas `es_cxc` (`account_type='asset_receivable'`) con `saldo_pendiente`
+  (residual por línea) y `fecha_vencimiento_key` para aging. `v_cartera` = `es_cxc` con saldo ≠ 0.
+- **Clasificación estados financieros:** `nivel_movimiento/seccion/subseccion` desde `account.report`
+  de Odoo (Balance + Estado de Resultados, es_CO). Ver [MODELO_ESTRELLA.md §11](MODELO_ESTRELLA.md).
+- **Canonicalización PUC:** `codigo_canonico`/`cuenta_canonica_id` unifican los códigos 8 vs 9 díg
+  de la misma cuenta (no destructivo; `canonicalizar_puc`).
+- **Correcciones (`marts.correcciones`):** overrides de datos mal registrados en Odoo, aplicados en
+  el DW tras cargar (`aplicar_correcciones`), sin tocar Odoo.
 
 ## 5. Consumo en Power BI
-- Conectar a PostgreSQL (variables `DB_*`), **modo Import**. Importar las 8 dimensiones +
+- Conectar a PostgreSQL (variables `DB_*`), **modo Import**. Importar las dimensiones +
   **`fact_movimiento_contable`** (único hecho). Relaciones estrella por los `*_id` y `fecha_key`.
-  Ventas y cartera se calculan con medidas DAX sobre ese hecho (sin duplicar tablas).
-- Medidas DAX (esbozo): ver [MODELO_ESTRELLA.md §9](MODELO_ESTRELLA.md). Ventas y cartera se
-  calculan con DAX (no se duplican tablas).
+- **Ventas/cartera** se calculan con medidas DAX sobre el hecho (sin duplicar tablas).
+- **Estado de Resultados:** filtrar `clase_codigo IN (4,5,6,7)`, agrupar por `seccion`/
+  `nivel_movimiento`, medida `SUM(credito − debito)`.
+- **Balance/ESF:** `clase_codigo IN (1,2,3)`, saldo acumulado `SUM(debito − credito)` hasta la fecha,
+  agrupar por `seccion` → `subseccion` → `nivel_movimiento`.
+- Detalle de medidas: [MODELO_ESTRELLA.md §9 y §11](MODELO_ESTRELLA.md).
 
-## 6. Programación en Railway (servicio nuevo)
-- Se ejecuta vía `run_dw.py` (dispatcher): cada hora corre `--incremental`; los días **3 y 24 a
-  las 03:00** corre además `--rebuild` (año actual).
-- **Setup** (sin tocar el cron existente): crear un **servicio nuevo** en Railway sobre este mismo
-  repo con:
-  - *Start Command:* `python run_dw.py`
-  - *Cron Schedule:* `0 * * * *`
-  - Variables de entorno: `url, db, username_odoo, password, DB_HOST, DB_PORT, DB_NAME,
-    DB_USER, DB_PASSWORD`.
+## 6. Programación en Railway (ya montado)
+El cron corre `run_dw.py` (`railway.toml` + `Procfile`):
+- *Start Command:* `python run_dw.py` · *Cron Schedule:* `0 * * * *`.
+- Variables de entorno requeridas: `url, db, username_odoo, password, DB_HOST, DB_PORT, DB_NAME,
+  DB_USER, DB_PASSWORD`.
+- Al hacer **push a `main`**, Railway redepliega y el próximo tick horario usa el código nuevo.
 
-## 7. Puesta en marcha (orden)
-1. Aplicar DDL (una vez): `sql/marts/01_star_schema.sql`, `02_vistas.sql`, `03_control.sql`,
-   `04_empresa_cartera.sql`, `05_calidad_correcciones.sql`. Poblar `dim_fecha` (bloque en 01).
-2. Carga inicial: `python etl_dw_marts.py --full`.
-3. Conectar Power BI (sección 5).
-4. Programar el servicio en Railway (sección 6).
-
-## 8. Conciliación / verificación
-- Partida doble: por `factura_id`, `SUM(debito)=SUM(credito)`.
-- Ventas: `SUM(venta_neta)` en `v_ventas` (clase 4, sin reversos) vs ingresos de Odoo.
-- Cartera: `SUM(saldo_pendiente)` de `v_cartera` vs CxC de Odoo.
-- Calidad: `v_dq_analitica` debería tender a 0 tras corregir en Odoo.
+## 7. Conciliación / verificación
+- **Estado y cuadre:** `python estado_dw.py --odoo` (conteos por año vs Odoo + partida doble).
+- **Partida doble:** `SUM(debito) = SUM(credito)` por empresa (debe ≈ 0). Si un período falla →
+  `--rebuild` de ese rango (ver receta 2.5).
+- **Ventas:** `SUM(venta_neta)` en `v_ventas` (clase 4, sin reversos) vs ingresos de Odoo.
+- **Estados financieros:** `v_balance_comprobacion` (por empresa, con `seccion/subseccion/
+  nivel_movimiento`) vs los reportes Balance / Estado de Resultados de Odoo.
+- **Calidad:** `v_dq_analitica` debería tender a 0 tras corregir en Odoo.

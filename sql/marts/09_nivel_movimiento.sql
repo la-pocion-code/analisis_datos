@@ -1,5 +1,10 @@
 -- ============================================================================
--- Ajuste de nivel_movimiento (etiqueta canónica del grupo PUC de 2 díg).
+-- ⚠️ SUPERSEDED (2026-07): nivel_movimiento ya NO se fija con este CASE por 2 díg. Ahora se DERIVA
+-- de los reportes de Odoo (account.report, es_CO) para TODAS las clases, junto con seccion/subseccion
+-- (ver sql/marts/12_estados_financieros.sql y etl_dw_marts.cargar_clasificacion_reportes). Este
+-- archivo se conserva como histórico; NO ejecutar (pisaría con etiquetas de solo 2 díg de P&L).
+-- ============================================================================
+-- Ajuste de nivel_movimiento (etiqueta canónica del grupo PUC de 2 díg).  [HISTÓRICO]
 -- Archivo: sql/marts/09_nivel_movimiento.sql  (ejecutar DESPUÉS de 01..08). Idempotente.
 --
 -- La CLAVE de agrupación es c.grupo_codigo (2 díg del code de Odoo = fiel a Odoo). Odoo NO tiene

@@ -235,7 +235,46 @@ que corre al cierre de cada carga (tras `aplicar_correcciones`, requiere el hech
 `codigo_canonico` / `cuenta_canonica_id`** (no por `codigo`/`cuenta_id`). Para el detalle exacto de
 Odoo, seguir usando `codigo`/`cuenta_id`.
 
-## 11. Pendientes de decisión
+## 11. Estados financieros — clasificación derivada de los reportes de Odoo — APLICADO (2026-07-09)
+
+**Objetivo.** Armar **todos los estados financieros** (Balance/ESF, Estado de Resultados) fieles a
+los informes que ya existen en Odoo. La clasificación de cuentas **no se inventa**: se extrae del
+motor de reportes de Odoo.
+
+**Fuente (100% Odoo).** `account.report` → `account.report.line` → `account.report.expression`.
+Las líneas hoja usan `engine='account_codes'` con **prefijos de código PUC** como fórmula. Se leen
+en **`es_CO`** (Odoo tiene ese idioma): Balance/ESF (report id **24**, clases 1/2/3) y Estado de
+Resultados (report id **23**, clases 4–7).
+
+**Columnas en `dim_cuenta`** (pobladas por `etl_dw_marts.cargar_clasificacion_reportes`):
+- `nivel_movimiento` — nombre de la línea hoja del reporte (p.ej. *Disponible, Deudores, Inventario,
+  Propiedades planta y equipo, Proveedores, Operacionales, Costo de ventas…*). Es `TEXT`.
+- `seccion` — raíz del árbol: *ACTIVOS / PASIVO / PATRIMONIO* (balance) e *Ingresos / Costos / Gastos*
+  (resultados).
+- `subseccion` — subtotal intermedio: *Activos corrientes / no corrientes, Pasivos corrientes / no
+  corrientes*, etc.
+
+**Match por prefijo (NO siempre a 2 díg).** Cada cuenta se asigna a la línea cuyo prefijo la
+*incluye* (match del **prefijo más largo**, respetando exclusiones `\(...)`):
+- `17` se parte: `1705+1710` → *Diferidos / Activos corrientes* vs `1715+1720+1798` → *Activos no corrientes*.
+- `28` igual (corrientes `2805…` vs no corrientes `2830…`).
+- `51` excluye `5160/5165`: el resto → *Operacionales de administración*; `5160/5165` →
+  *Depreciaciones y amortizaciones* (línea aparte, como en el reporte de Odoo).
+
+**Cobertura (datos reales).** 1 892 cuentas clase 1–7; **0** usadas en el hecho quedan sin clasificar.
+
+**Dónde vive.** `etl_dw_marts.py::cargar_clasificacion_reportes` (+ `_parse_account_codes`,
+`_hojas_reporte`), poblado en `cargar_catalogos_pequenos`; DDL en `sql/marts/12_estados_financieros.sql`.
+Reemplaza al dict manual `NIVEL_N2` (y al hardcode de `09_nivel_movimiento.sql`, **superseded**).
+
+**Uso en Power BI.**
+- *Estado de Resultados*: filtrar `clase_codigo IN (4,5,6,7)`, agrupar por `seccion` (Ingresos/Costos/
+  Gastos) y `nivel_movimiento`; medida = `SUM(credito − debito)`.
+- *Balance/ESF*: `clase_codigo IN (1,2,3)`, saldo acumulado `SUM(debito − credito)` hasta la fecha,
+  agrupar por `seccion` → `subseccion` → `nivel_movimiento`. El **resultado del ejercicio en curso**
+  (utilidad P&L del período, aún sin cerrar a patrimonio) completa el cuadre Activo = Pasivo +
+  Patrimonio, igual que la línea "Resultados del ejercicio en curso" del Balance de Odoo.
+
+## 12. Pendientes de decisión
 - **[PENDIENTE]** Reglas exactas de `SIN_CENTRO_COSTO` (qué cuentas/clases exigen centro de costo).
-- **[VERIFICAR]** Enriquecer `dim_centro_costo` con la hoja `CC` de `base_cuentas.xlsx`.
 - **[INFO]** Repartos analíticos: siempre 100% por plan; un valor ≠ 100% es error (lo detecta `v_dq_analitica`).

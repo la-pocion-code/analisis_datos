@@ -14,6 +14,7 @@ Grano del hecho: línea de account.move.line (todos los move_type, state='posted
 La carga es POR LOTES (páginas de account.move.line) para no agotar memoria.
 """
 import os
+import re
 import sys
 import math
 import time
@@ -141,19 +142,90 @@ def puc(codigo):
     return (c[:1] or None, c[:2] or None, c[:4] or None, c[:6] or None)
 
 
-# nivel_movimiento = etiqueta CANÓNICA única por grupo PUC de 2 díg (misma para ambas empresas).
-# La CLAVE de agrupación real es grupo_codigo (2 díg del code de Odoo); esta etiqueta es el nombre
-# legible. Odoo no tiene una etiqueta única (difiere por empresa) → se fija aquí, canónica.
-NIVEL_N2 = {"41": "Ingresos operacionales", "42": "Ingresos no operacionales",
-            "47": "Impuesto diferido (ingreso)",
-            "51": "Gastos operacionales de administración", "52": "Gastos operacionales de ventas",
-            "53": "Gastos no operacionales", "54": "Impuesto de renta y complementarios",
-            "57": "Impuesto diferido (gasto)", "59": "Ganancias y pérdidas (cierre)",
-            "61": "Costo de ventas", "62": "Compras",
-            "71": "Costos de producción", "72": "Costos de producción",
-            "73": "Costos de producción", "74": "Costos de producción"}
 NATURALEZA_N1 = {"1": "Débito", "5": "Débito", "6": "Débito", "7": "Débito", "8": "Débito",
                  "2": "Crédito", "3": "Crédito", "4": "Crédito", "9": "Crédito"}
+
+
+# ── Clasificación de estados financieros derivada de los reportes de Odoo (account.report) ──
+# nivel_movimiento / seccion / subseccion se toman de las LÍNEAS de los informes de Odoo (es_CO):
+# Balance (ESF) para clases 1/2/3 y Estado de Resultados para 4/5/6/7. Las líneas hoja usan
+# engine='account_codes' con prefijos de código PUC; se clasifica cada cuenta por el prefijo que la
+# incluye (match más largo, respetando exclusiones). Sin diccionarios manuales → fiel a Odoo.
+REP_BALANCE_IDS = [24, 4]     # candidatos de Balance/ESF (localizado primero)
+REP_PYL_IDS = [23, 38, 7]     # candidatos de Estado de Resultados / Profit and Loss
+_TOK_ACCOUNT_CODES = re.compile(r"(\d+)(?:\\\(([\d,]+)\))?")
+
+
+def _parse_account_codes(formula):
+    """'51\\(5160,5165)' -> (includes={'51'}, excludes={'5160','5165'}); '1705 + 1710' -> {'1705','1710'}."""
+    inc, exc = set(), set()
+    for pref, ex in _TOK_ACCOUNT_CODES.findall(formula or ""):
+        inc.add(pref)
+        if ex:
+            exc.update(ex.split(","))
+    return inc, exc
+
+
+def _hojas_reporte(od, rid):
+    """Prefijos de las líneas hoja de un account.report, con su jerarquía (seccion=raíz, subseccion=padre)."""
+    lineas = od._exec("account.report.line", "search_read", [[["report_id", "=", rid]]],
+                      {"fields": ["id", "name", "parent_id"], "context": {"lang": "es_CO"}})
+    if not lineas:
+        return []
+    by_id = {l["id"]: l for l in lineas}
+
+    def cadena(lid):  # [hoja, ..., raíz]
+        out = []
+        while lid:
+            l = by_id.get(lid)
+            if not l:
+                break
+            out.append(l["name"])
+            lid = m2o_id(l.get("parent_id"))
+        return out
+
+    exprs = od._exec("account.report.expression", "search_read",
+                     [[["report_line_id", "in", list(by_id)], ["engine", "=", "account_codes"]]],
+                     {"fields": ["report_line_id", "formula"], "context": {"lang": "es_CO"}})
+    hojas = []
+    for x in exprs:
+        l = by_id.get(m2o_id(x["report_line_id"]))
+        if not l:
+            continue
+        inc, exc = _parse_account_codes(x.get("formula"))
+        cad = cadena(l["id"])
+        seccion = cad[-1] if cad else l["name"]
+        subseccion = cad[1] if len(cad) >= 2 else seccion
+        for p in inc:
+            hojas.append((p, exc, l["name"], seccion, subseccion))
+    return hojas
+
+
+def cargar_clasificacion_reportes(od):
+    """Devuelve clasificar(codigo) -> (nivel_movimiento, seccion, subseccion), derivado de los
+    reportes de Odoo (Balance + Estado de Resultados, es_CO)."""
+    hojas = []
+    for candidatos, etiqueta in ((REP_BALANCE_IDS, "balance"), (REP_PYL_IDS, "pyl")):
+        for rid in candidatos:
+            h = _hojas_reporte(od, rid)
+            if h:
+                logging.info(f"clasificación EF: reporte {etiqueta} id={rid} ({len(h)} prefijos)")
+                hojas.extend(h)
+                break
+        else:
+            logging.warning(f"clasificación EF: ningún reporte con account_codes en {candidatos} ({etiqueta})")
+
+    def clasificar(codigo):
+        if not codigo:
+            return (None, None, None)
+        mejor = None
+        for pref, exc, nivel, sec, sub in hojas:
+            if codigo.startswith(pref) and not any(codigo.startswith(x) for x in exc):
+                if mejor is None or len(pref) > len(mejor[0]):
+                    mejor = (pref, nivel, sec, sub)
+        return (mejor[1], mejor[2], mejor[3]) if mejor else (None, None, None)
+
+    return clasificar
 
 
 def clave_dominante(dist):
@@ -275,15 +347,22 @@ def get_watermark(loader, modelo):
 
 # ══ Catálogos pequeños (se cargan una vez por corrida) ══
 def cargar_catalogos_pequenos(od, loader):
+    # Clasificación de estados financieros (nivel_movimiento/seccion/subseccion) derivada de los
+    # reportes de Odoo (account.report, es_CO). Fiel a los informes; sin diccionarios manuales.
+    clasificar = cargar_clasificacion_reportes(od)
     cuentas = od.search_read("account.account", [], ["id", "code", "name", "account_type"], context=CTX_ALL)
-    dc = pd.DataFrame([{
-        "cuenta_id": as_int(c["id"]), "codigo": c.get("code"), "nombre": c.get("name"),
-        "clase_codigo": puc(c.get("code"))[0], "grupo_codigo": puc(c.get("code"))[1],
-        "cuenta_codigo": puc(c.get("code"))[2], "subcuenta_codigo": puc(c.get("code"))[3],
-        "nivel_movimiento": NIVEL_N2.get(puc(c.get("code"))[1]),
-        "naturaleza": NATURALEZA_N1.get(puc(c.get("code"))[0]),
-        "tipo_cuenta": c.get("account_type"),
-    } for c in cuentas])
+    filas = []
+    for c in cuentas:
+        nivel, seccion, subseccion = clasificar(c.get("code"))
+        filas.append({
+            "cuenta_id": as_int(c["id"]), "codigo": c.get("code"), "nombre": c.get("name"),
+            "clase_codigo": puc(c.get("code"))[0], "grupo_codigo": puc(c.get("code"))[1],
+            "cuenta_codigo": puc(c.get("code"))[2], "subcuenta_codigo": puc(c.get("code"))[3],
+            "nivel_movimiento": nivel, "seccion": seccion, "subseccion": subseccion,
+            "naturaleza": NATURALEZA_N1.get(puc(c.get("code"))[0]),
+            "tipo_cuenta": c.get("account_type"),
+        })
+    dc = pd.DataFrame(filas)
     upsert(loader, dc, "dim_cuenta", "cuenta_id")
 
     diarios = od.search_read("account.journal", [], ["id", "code", "name", "type"], context=CTX_ALL)
