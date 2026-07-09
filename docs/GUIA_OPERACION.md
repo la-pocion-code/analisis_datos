@@ -106,6 +106,10 @@ Para probarlo localmente igual que el cron: `python run_dw.py`.
   por `seccion` (Ingresos/Gastos/Costos); medida `SUM(credito − debito)`.
 - **Balance/ESF:** `clase_codigo IN (1,2,3)`, saldo acumulado `SUM(debito − credito)` hasta la fecha,
   agrupar por `seccion` → `concepto` → `nivel_movimiento`.
+- **Jerarquía PUC por cuenta:** `dim_cuenta` trae `clase_nombre/grupo_nombre/cuenta_nombre/
+  subcuenta_nombre` (de `account.group`, es_CO). Para una etiqueta "código - nombre", columna
+  calculada DAX: `Grupo = dim_cuenta[grupo_codigo] & " - " & dim_cuenta[grupo_nombre]`
+  (→ "41 - OPERACIONALES"); igual para clase/cuenta/subcuenta.
 - Detalle de medidas: [MODELO_ESTRELLA.md §9 y §11](MODELO_ESTRELLA.md).
 
 ## 6. Programación en Railway (ya montado)

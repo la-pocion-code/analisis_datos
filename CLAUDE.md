@@ -42,9 +42,9 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   empresa/centro_costo`), hecho `fact_movimiento_contable`, vistas (`v_ventas`, `v_cartera`,
   `v_balance_comprobacion`, `v_dq_analitica`), control (`etl_control`), calidad, `correcciones`,
   `10_centro_costo_odoo.sql` (dim CC 100% Odoo), `11_puc_canonico.sql` (canonicalización PUC, no
-  destructivo) y `12_estados_financieros.sql` (columnas `nivel_movimiento/seccion/subseccion` para
-  estados financieros; se pueblan desde `account.report`). `09_nivel_movimiento.sql` quedó
-  **superseded** por 12. Todos idempotentes.
+  destructivo), `12_estados_financieros.sql` (`seccion/concepto/nivel_movimiento` para estados
+  financieros, desde `account.report`) y `13_puc_nombres.sql` (`clase/grupo/cuenta/subcuenta_nombre`
+  desde `account.group`). `09_nivel_movimiento.sql` quedó **superseded** por 12. Todos idempotentes.
 - **Fuente:** todo de Odoo (`account.move.line`+`account.move`, catálogos), salvo `dim_fecha`
   (calendario generado) y `correcciones` (overrides manuales).
 - **Reglas del hecho:** `es_venta`/`es_reverso` (ventas = clase 4 sin reversos totales
@@ -62,6 +62,11 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   exclusiones `\(...)`): NO siempre a 2 díg (17/28 corriente/no corriente; 51 excluye 5160/5165). Sin
   dict manual `NIVEL_N2`. Flujo de efectivo (report 5) no tiene líneas por cuenta → follow-up. Ver
   `docs/MODELO_ESTRELLA.md` §11.
+- **Jerarquía PUC por cuenta (nombres):** `dim_cuenta` también trae `clase_nombre/grupo_nombre/
+  cuenta_nombre/subcuenta_nombre` desde `account.group` (es_CO, nombre más frecuente por prefijo;
+  `cargar_puc_nombres`, `13_puc_nombres.sql`). Complementa (no reemplaza) los `*_codigo` y la
+  clasificación de reportes. Ej.: 510506 → 5 GASTOS / 51 OPERACIONALES DE ADMINISTRACION / 5105
+  GASTOS DE PERSONAL / 510506 GASTOS DE PERSONAL SALARIOS.
 - **Roles de planes analíticos** (`canal`/`linea_producto`/`tipo_producto`/`pais_analitico`/
   `centro`) se **derivan del nombre** de `account.analytic.plan` en Odoo (`derivar_plan_rol`), no de
   IDs fijos; plan `La Poción` (id 3) = excepción legacy de centro de costo.

@@ -232,6 +232,35 @@ def cargar_clasificacion_reportes(od):
     return clasificar
 
 
+# ── Nombres de la jerarquía PUC (clase/grupo/cuenta/subcuenta) desde account.group (es_CO) ──
+# account.group tiene un nodo por prefijo puntual (code_prefix_start==end) con su nombre. Para cada
+# longitud 1/2/4/6 se toma el nombre MÁS FRECUENTE del prefijo (resuelve duplicados triviales entre
+# empresas: mayúsculas/acentos/singular-plural). Complementa (no reemplaza) seccion/concepto/nivel.
+def cargar_puc_nombres(od):
+    from collections import defaultdict, Counter
+    grupos = od._exec("account.group", "search_read", [[]],
+                      {"fields": ["name", "code_prefix_start", "code_prefix_end"],
+                       "context": {"lang": "es_CO", "active_test": False}})
+    cnt = {1: defaultdict(Counter), 2: defaultdict(Counter), 4: defaultdict(Counter), 6: defaultdict(Counter)}
+    for g in grupos:
+        a = (g.get("code_prefix_start") or "").strip()
+        b = (g.get("code_prefix_end") or "").strip()
+        nm = (g.get("name") or "").strip()
+        if a and a == b and len(a) in cnt and nm:
+            cnt[len(a)][a][nm] += 1
+    mapa = {L: {p: c.most_common(1)[0][0] for p, c in d.items()} for L, d in cnt.items()}
+    logging.info("nombres PUC (account.group): "
+                 + " ".join(f"N{L}={len(mapa[L])}" for L in (1, 2, 4, 6)))
+
+    def nombre_puc(codigo):
+        if not codigo:
+            return (None, None, None, None)
+        return (mapa[1].get(codigo[:1]), mapa[2].get(codigo[:2]),
+                mapa[4].get(codigo[:4]), mapa[6].get(codigo[:6]))
+
+    return nombre_puc
+
+
 def clave_dominante(dist):
     if not isinstance(dist, dict) or not dist:
         return None
@@ -351,19 +380,25 @@ def get_watermark(loader, modelo):
 
 # ══ Catálogos pequeños (se cargan una vez por corrida) ══
 def cargar_catalogos_pequenos(od, loader):
-    # Clasificación de estados financieros (nivel_movimiento/seccion/subseccion) derivada de los
-    # reportes de Odoo (account.report, es_CO). Fiel a los informes; sin diccionarios manuales.
+    # Clasificación de estados financieros (seccion/concepto/nivel_movimiento) derivada de los
+    # reportes de Odoo (account.report), y nombres de la jerarquía PUC desde account.group (es_CO).
+    # Todo fiel a Odoo; sin diccionarios manuales.
     clasificar = cargar_clasificacion_reportes(od)
+    nombre_puc = cargar_puc_nombres(od)
     cuentas = od.search_read("account.account", [], ["id", "code", "name", "account_type"], context=CTX_ALL)
     filas = []
     for c in cuentas:
-        nivel, concepto, seccion = clasificar(c.get("code"))
+        cod = c.get("code")
+        nivel, concepto, seccion = clasificar(cod)
+        clase_nombre, grupo_nombre, cuenta_nombre, subcuenta_nombre = nombre_puc(cod)
         filas.append({
-            "cuenta_id": as_int(c["id"]), "codigo": c.get("code"), "nombre": c.get("name"),
-            "clase_codigo": puc(c.get("code"))[0], "grupo_codigo": puc(c.get("code"))[1],
-            "cuenta_codigo": puc(c.get("code"))[2], "subcuenta_codigo": puc(c.get("code"))[3],
+            "cuenta_id": as_int(c["id"]), "codigo": cod, "nombre": c.get("name"),
+            "clase_codigo": puc(cod)[0], "grupo_codigo": puc(cod)[1],
+            "cuenta_codigo": puc(cod)[2], "subcuenta_codigo": puc(cod)[3],
+            "clase_nombre": clase_nombre, "grupo_nombre": grupo_nombre,
+            "cuenta_nombre": cuenta_nombre, "subcuenta_nombre": subcuenta_nombre,
             "nivel_movimiento": nivel, "concepto": concepto, "seccion": seccion,
-            "naturaleza": NATURALEZA_N1.get(puc(c.get("code"))[0]),
+            "naturaleza": NATURALEZA_N1.get(puc(cod)[0]),
             "tipo_cuenta": c.get("account_type"),
         })
     dc = pd.DataFrame(filas)

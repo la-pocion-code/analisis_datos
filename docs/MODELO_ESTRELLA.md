@@ -269,6 +269,17 @@ cuenta** en Odoo → queda como follow-up aparte.
 - `51` excluye `5160/5165`: el resto → *Operacionales de administración*; `5160/5165` →
   *Depreciaciones y amortizaciones* (línea aparte, como en el reporte de Odoo).
 
+**Jerarquía PUC completa por cuenta (clase/grupo/cuenta/subcuenta) — desde `account.group`.**
+Además de la clasificación por reporte, `dim_cuenta` trae el nombre de cada nivel PUC (fuente
+`account.group` de Odoo, es_CO; nombre más frecuente por prefijo): `clase_nombre` (N1),
+`grupo_nombre` (N2), `cuenta_nombre` (N4), `subcuenta_nombre` (N6) — junto a los `*_codigo` que ya
+existían. Ej.: `510506` → 5 *GASTOS* · 51 *OPERACIONALES DE ADMINISTRACION* · 5105 *GASTOS DE
+PERSONAL* · 510506 *GASTOS DE PERSONAL SALARIOS*. Cobertura sobre cuentas usadas: N1≈100%, N2≈99.9%,
+N4≈99.6%, N6≈92.7%. DDL en `sql/marts/13_puc_nombres.sql`; poblado por `cargar_puc_nombres`.
+- **DAX (etiqueta combinada, columna calculada en `dim_cuenta`):**
+  `Grupo = dim_cuenta[grupo_codigo] & " - " & dim_cuenta[grupo_nombre]` → "41 - OPERACIONALES".
+  Igual para clase/cuenta/subcuenta (p.ej. `Clase = dim_cuenta[clase_codigo] & " - " & dim_cuenta[clase_nombre]`).
+
 **Cobertura (datos reales).** 1 892 cuentas clase 1–7; **0** usadas en el hecho quedan sin clasificar.
 
 **Dónde vive.** `etl_dw_marts.py::cargar_clasificacion_reportes` (+ `_parse_account_codes`,
