@@ -36,7 +36,7 @@ Odoo (XML-RPC)                          PostgreSQL (Railway)
 | Comando | Qué hace | Cuándo usarlo |
 |---|---|---|
 | `python etl_dw_marts.py --incremental` | Solo cambios por `write_date` (hecho + cartera + dimensiones). Idempotente y rápido. | Actualización normal. **Es lo que corre el cron cada hora**; rara vez hace falta a mano. |
-| `python etl_dw_marts.py --dims` | Refresca **solo catálogos y dimensiones** (cuentas, clasificación de estados financieros, centros de costo, terceros/productos/vendedores). No toca el hecho. Rápido. | Cambió algo de **dimensiones** y quieres verlo ya: cuenta nueva, cliente/producto nuevo, o **tras cambiar la clasificación** (`nivel_movimiento/seccion/subseccion`). |
+| `python etl_dw_marts.py --dims` | Refresca **solo catálogos y dimensiones** (cuentas, clasificación de estados financieros, centros de costo, terceros/productos/vendedores) **+ enriquecimiento de ventas** (`dim_tercero`: telefono/email/etiqueta/cliente_padre; `dim_producto.es_kit`) **+ kits** (`dim_kit_componente` desde `mrp.bom`). No toca el hecho (`fact.equipo` se llena al cargar el hecho, no aquí). | Cambió algo de **dimensiones** y quieres verlo ya: cuenta/cliente/producto nuevo, tras cambiar la clasificación, o para **poblar el enriquecimiento de ventas / kits**. ⚠ El refresco total de terceros son ~206k registros (unos minutos). |
 | `python etl_dw_marts.py --rebuild` | **DELETE + recarga del AÑO ACTUAL** (años cerrados intactos). Refleja **borrados/ediciones** de Odoo que el incremental no detecta. | El año en curso no cuadra o sospechas datos viejos. El cron lo hace los días **3 y 24** a las 03h. |
 | `python etl_dw_marts.py --rebuild --desde 2026-06-01 --hasta 2026-06-30` | **DELETE + recarga de un RANGO** exacto. | Un **mes o rango puntual no cuadra** (p.ej. partida doble ≠ 0 en junio). Lo más quirúrgico. |
 | `python etl_dw_marts.py --full` | Carga histórica **completa** (todos los años, sin truncar; UPSERT). Larga (millones de filas). | Primera población, o reconstrucción total tras cambios de fondo. |
@@ -63,12 +63,20 @@ Tras un DDL que agrega columnas de dimensión, correr `python etl_dw_marts.py --
 - **Días 3 y 24, 03:00:** además `--rebuild` del año actual.
 Para probarlo localmente igual que el cron: `python run_dw.py`.
 
-### 2.5 Recetas rápidas (síntoma → comando)
+### 2.6 Mapeos de negocio de ventas (NO-Odoo) — `cargar_mapeos.py`
+`python cargar_mapeos.py` lee de Google Drive (vía `DriveLoader`) los Excel de **zonas** (general,
+Cundinamarca, Bogotá), **clientes padres** y **categorías**, y recrea las tablas `marts.map_*`
+(TRUNCATE + insert). Es el **único insumo NO-Odoo** del DW y se corre **a demanda** (cuando cambie
+alguno de esos Excel). Requiere el DDL `sql/marts/16_mapeos_ventas.sql` aplicado.
+
+### 2.7 Recetas rápidas (síntoma → comando)
 | Situación | Qué correr |
 |---|---|
 | "¿Cómo va el DW / cuadra con Odoo?" | `python estado_dw.py --odoo` |
 | Cliente/producto/centro de costo nuevo no aparece | `python etl_dw_marts.py --dims` |
 | Cambié la clasificación de cuentas (estados financieros) | aplicar el DDL si tocó columnas + `python etl_dw_marts.py --dims` |
+| Poblar enriquecimiento de ventas / kits (tel/email/etiqueta/es_kit) | aplicar DDL 15/15b + `python etl_dw_marts.py --dims` |
+| Cambió un Excel de zonas / clientes padres / categorías | `python cargar_mapeos.py` |
 | Un **mes no cuadra** (partida doble ≠ 0) | `python etl_dw_marts.py --rebuild --desde AAAA-MM-01 --hasta AAAA-MM-31` |
 | El **año en curso** trae datos raros/borrados | `python etl_dw_marts.py --rebuild` |
 | Reconstruir **todo** desde cero | `python etl_dw_marts.py --full` |
@@ -110,6 +118,19 @@ Para probarlo localmente igual que el cron: `python run_dw.py`.
   subcuenta_nombre` (de `account.group`, es_CO). Para una etiqueta "código - nombre", columna
   calculada DAX: `Grupo = dim_cuenta[grupo_codigo] & " - " & dim_cuenta[grupo_nombre]`
   (→ "41 - OPERACIONALES"); igual para clase/cuenta/subcuenta.
+- **Ventas comerciales:** usar `marts.v_ventas_producto` (ya netea NC y excluye reversos; producto
+  comercial PCN/KD/TNG/B8) — medidas `SUM(venta_subtotal)` y `SUM(cantidad_neta)`. Para ver el kit
+  descompuesto en sus componentes: `marts.v_ventas_explotada` (`venta_componente`/`cantidad_componente`,
+  `origen` INDIVIDUAL/KIT). Enriquecimiento de cliente/producto ya en `dim_tercero`/`dim_producto`.
+- **Categoría (tipo de cliente):** usar **`fact.categoria`** (ya viene en `v_ventas_producto`). Es el
+  campo **único y consolidado** que sirve a ventas y a contabilidad: sale de `tipo_cliente`
+  (`partner_type_id`, manda) + analítico plan 21 (`fact.canal`, rellena), con las reglas de respaldo
+  del Excel y normalizado por `map_categoria`. No tiene nulos (default CALL CENTER). Para agrupar
+  gastos/costos por cliente usar también `categoria` (el analítico rescata las líneas cargadas a
+  terceros). ⚠ No confundir con `producto_categoria` (categoría de producto).
+- **Zona / cliente padre (no-Odoo):** unir con `marts.map_*` (ver §2.6). Orden de zona: `map_zona`
+  (depto+categoría) → `map_zona_cundinamarca`. Cliente consolidado por `map_cliente_padre`.
+  (`map_zona_bogota` está deprecada y vacía.)
 - Detalle de medidas: [MODELO_ESTRELLA.md §9 y §11](MODELO_ESTRELLA.md).
 
 ## 6. Programación en Railway (ya montado)

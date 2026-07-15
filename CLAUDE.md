@@ -20,6 +20,8 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 ## Archivos clave
 - `run_dw.py` — **entrypoint del cron** (dispatcher DW: incremental horario + rebuild 3/24).
 - `etl_dw_marts.py` — ETL del DW (ver sección Data Warehouse).
+- `cargar_mapeos.py` — carga los mapeos NO-Odoo de ventas (zona/cliente_padre/categoría) de Drive a
+  `marts.map_*`. A demanda (ver sección Data Warehouse).
 - `classes/db_loader.py` — `DBLoader`: conexión PG, auto-DDL, UPSERT, carga incremental.
 - `classes/drive_loader.py` — `DriveLoader`: lee Excel/CSV de Google Drive.
 - `classes/send_mail.py` — `MailSender`: correos SMTP con adjuntos.
@@ -45,6 +47,40 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   destructivo), `12_estados_financieros.sql` (`seccion/concepto/nivel_movimiento` para estados
   financieros, desde `account.report`) y `13_puc_nombres.sql` (`clase/grupo/cuenta/subcuenta_nombre`
   desde `account.group`). `09_nivel_movimiento.sql` quedó **superseded** por 12. Todos idempotentes.
+  **Ventas (14–16):** `14_ventas.sql` (`v_ventas_producto`, ventas netas a grano de producto),
+  `15_dims_ventas.sql` (enriquece `dim_tercero`: telefono/email/etiqueta/cliente_padre;
+  `dim_producto.es_kit`; y `fact.equipo`), `15b_kits.sql` (`dim_kit_componente` + `v_ventas_explotada`) y
+  `16_mapeos_ventas.sql` (mapeos NO-Odoo `map_zona/map_zona_cundinamarca/map_zona_bogota/
+  map_cliente_padre/map_categoria`, poblados por `cargar_mapeos.py`).
+- **Ventas desde el DW (reemplaza el pipeline de Excel `ReportClassNew.pipeline_bi`):**
+  `v_ventas_producto` = líneas clase 4 con `es_venta` y `es_reverso IS NOT TRUE`, producto comercial
+  (`codigo` LIKE `PCN%/KD%/TNG%/B8%`); netas por `venta_neta`/`cantidad_neta` (NC restan, la contabilidad
+  ya enlaza la NC → no se casa por `ref`). Enriquecimiento antes local, ahora desde Odoo: `dim_tercero`
+  += `telefono/email/etiqueta` (`res.partner.category`) `/cliente_padre` (`commercial_partner_id`);
+  `dim_producto.es_kit` (`bom_count>0`). **`equipo` (Equipo de ventas) va en el HECHO**, no en el
+  tercero: `res.partner.team_id` está VACÍO en este Odoo (0 de ~206k) y el equipo vive en el asiento
+  (`account.move.team_id`, 99,97% de las líneas de venta) — igual que el Excel, que lo mapea por
+  factura. Se guarda como columna degenerada del hecho (patrón de `vendedor_id`). Kits: `dim_kit_componente` desde
+  `mrp.bom` phantom (`cargar_kits`) + `v_ventas_explotada` (unidades × cantidad BOM, valor prorrateado
+  por cantidad BOM). Poblado: `python etl_dw_marts.py --dims` (dims + kits). Ver `docs/MODELO_ESTRELLA.md`.
+- **Mapeos de negocio NO-Odoo (única excepción local, a demanda):** `cargar_mapeos.py` lee de Drive
+  (`DriveLoader` + `DRIVE_IDS`) → `marts.map_*`: ZONA por depto+categoría (+ Cundinamarca por
+  depto+ciudad), CLIENTE PADRE, y CATEGORÍA normalizada. Correr cuando cambie un Excel.
+  `map_zona_bogota` quedó **DEPRECADA** (`Base_bogota.xlsx` ya no se usa; tabla creada pero vacía).
+- **CATEGORÍA (tipo de cliente) consolidada — `fact.categoria`** (`17_categoria.sql` +
+  `consolidar_categoria`, paso de cierre post-carga). Sirve igual a **ventas y contabilidad**. Se arma
+  de **2 fuentes de Odoo, ninguna basta sola**:
+  1. `partner_type_id` (cabecera del asiento) → `dim_tercero.tipo_cliente`. **Manda** cuando existe.
+  2. Analítico **plan 21 "Canal"** (`analytic_line_ids/x_plan21_id`) → **ya está como `fact.canal`**
+     (el rol se deriva del nombre del plan). **Rellena** cuando falta (1). Existe porque la utilidad
+     por cliente se mira por nombre del cliente pero **hay gastos de esos clientes cargados a
+     TERCEROS** que desaparecerían del análisis; es lo que rescata las clases 5/6.
+  Luego se replican las reglas de respaldo del Excel (`transformar_base`) **en su orden**: país
+  extranjero pisa todo (`dim_tercero.pais` es el NOMBRE, se compara `<> 'Colombia'`, no `'CO'`) →
+  `equipo='Shopify'`→SHOPIFY → `equipo='Punto de venta'`→CALL CENTER → `CLIENTE`→CALL CENTER →
+  base → default **CALL CENTER**. Cierra normalizando con `marts.map_categoria`.
+  ⚠ `fact.categoria` = categoría de **CLIENTE**; `dim_producto.categoria` es la de **PRODUCTO**
+  (en `v_ventas_producto` se expone como `producto_categoria`). Son cosas distintas.
 - **Fuente:** todo de Odoo (`account.move.line`+`account.move`, catálogos), salvo `dim_fecha`
   (calendario generado) y `correcciones` (overrides manuales).
 - **Reglas del hecho:** `es_venta`/`es_reverso` (ventas = clase 4 sin reversos totales
@@ -101,6 +137,12 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
 - DW: las empresas 1 y 8 pueden tener **PUC distinto** (al crear PCN cambiaron cuentas) → validar y
   agregar el estado de resultados **por empresa**, nunca mezclando ambas.
 - `marts.fact_movimiento_contable._loaded_at` ya usa hora **Colombia** (`America/Bogota`).
+- **Refresco de dimensiones: SIEMPRE por páginas.** Un `search_read` sin `limit` de `res.partner`
+  (~206k con contacto/etiqueta/padre) hace que Odoo **corte la respuesta a medias** →
+  `http.client.IncompleteRead`. `refrescar_dimensiones` pagina con `PAGINA`. No quitar el paginado
+  "porque cabe": el payload creció al añadir campos y quedó al filo.
+- **`IncompleteRead`/`BadStatusLine` heredan de `http.client.HTTPException`, NO de `OSError`** → hay
+  que nombrarlas explícitamente en el `except` de `Odoo._exec` o el ETL muere sin reintentar.
 
 ## PENDIENTES del DW (retomar aquí)
 - Carga inicial `--full` (TRUNCATE + todos los años) — al terminar, **validar**:
@@ -117,6 +159,13 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
 - ✅ HECHO: el **cron de Railway** ahora corre `run_dw.py` (horario, `railway.toml`/`Procfile`
   ajustados); el sync raw `etl_odoo_incremental.py` quedó archivado. Falta solo **desplegar** en Railway.
 - DQ: cuentas usadas con `clase_codigo`/`grupo_codigo` nulo o inesperado.
+- **Ventas desde el DW (proyecto por fases):**
+  - ✅ Fase 1: `v_ventas_producto` (netas, grano producto, comercial). Aplicada y validada (empresa 8 2026).
+  - 🟡 Fases 2–4 (código escrito, **falta aplicar DDL + poblar**): `15_dims_ventas.sql`/`15b_kits.sql`/
+    `16_mapeos_ventas.sql` + `etl_dw_marts.py` (dims enriquecidas + `cargar_kits`) + `cargar_mapeos.py`.
+    Correr: aplicar DDL 15/15b/16 → `python etl_dw_marts.py --dims` (⚠ refresca ~206k terceros, minutos)
+    → `python cargar_mapeos.py`.
+  - ⏳ Fase 5: validar `v_ventas_producto` mensual vs `base_ventas` del Excel + documentar diferencias.
 
 ## Reglas de trabajo
 - NO ejecutar el cron, ni conectarse a Odoo/Postgres en vivo, sin que el usuario lo pida.

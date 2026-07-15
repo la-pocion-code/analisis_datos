@@ -20,6 +20,7 @@ import math
 import time
 import logging
 import argparse
+import http.client
 import xmlrpc.client
 from datetime import date
 import numpy as np
@@ -72,10 +73,13 @@ class Odoo:
     def _exec(self, modelo, metodo, args, kwargs=None, reintentos=10):
         # Reintenta ante errores transitorios de Odoo (502/503, timeouts, cortes de red).
         # Ventana amplia (~10 min acumulados) para sobrevivir un reinicio/deploy de Odoo.
+        # http.client.HTTPException cubre IncompleteRead/BadStatusLine (respuesta cortada a medias):
+        # hereda de Exception, NO de OSError, así que hay que nombrarla explícitamente.
         for intento in range(1, reintentos + 1):
             try:
                 return self.m.execute_kw(self.db, self.uid, self.pw, modelo, metodo, args, kwargs or {})
-            except (xmlrpc.client.ProtocolError, ConnectionError, OSError, TimeoutError) as e:
+            except (xmlrpc.client.ProtocolError, http.client.HTTPException,
+                    ConnectionError, OSError, TimeoutError) as e:
                 if intento == reintentos:
                     raise
                 espera = min(120, 2 ** intento)
@@ -125,6 +129,29 @@ def as_int(v):
         return int(v)
     except (TypeError, ValueError):
         return None
+
+
+# ── Etiquetas de terceros (res.partner.category, many2many) ──────────────────
+# Odoo devuelve category_id como lista de IDs (m2m); se resuelve a nombres con un mapa
+# id→nombre cargado UNA sola vez por proceso (la tabla de categorías es pequeña).
+_CAT_TERCERO = None
+
+
+def cat_map_tercero(od):
+    """Mapa id→nombre de res.partner.category (etiquetas de terceros); cacheado por proceso."""
+    global _CAT_TERCERO
+    if _CAT_TERCERO is None:
+        cats = od.search_read("res.partner.category", [], ["id", "name"], context=CTX_ALL)
+        _CAT_TERCERO = {c["id"]: c.get("name") for c in cats}
+    return _CAT_TERCERO
+
+
+def etiquetas_nombres(cat_ids, cat_map):
+    """Lista de IDs de category_id (m2m) -> 'Etiqueta A; Etiqueta B' (o None)."""
+    if not cat_ids:
+        return None
+    nombres = [cat_map.get(i) for i in cat_ids if cat_map.get(i)]
+    return "; ".join(nombres) if nombres else None
 
 
 def fecha_key(s):
@@ -440,12 +467,20 @@ def cargar_terceros(od, loader, part_ids, tipo_tercero):
     part_ids = [p for p in part_ids if p]
     if not part_ids:
         return
-    partners = od.read("res.partner", part_ids, ["id", "name", "vat", "city", "state_id", "country_id"],
+    cmap = cat_map_tercero(od)
+    # Sin team_id: el equipo de ventas va en el hecho (fact.equipo), no en el tercero.
+    partners = od.read("res.partner", part_ids,
+                       ["id", "name", "vat", "city", "state_id", "country_id",
+                        "phone", "mobile", "email", "category_id", "commercial_partner_id"],
                        context=CTX_ALL)
     dt = pd.DataFrame([{
         "tercero_id": as_int(p["id"]), "nombre": p.get("name"), "identificacion": p.get("vat"),
         "tipo_cliente": tipo_tercero.get(p["id"]), "ciudad": p.get("city"),
         "departamento": m2o_nombre(p.get("state_id")), "pais": m2o_nombre(p.get("country_id")),
+        "telefono": p.get("phone") or p.get("mobile"), "email": p.get("email"),
+        "etiqueta": etiquetas_nombres(p.get("category_id"), cmap),
+        "cliente_padre_id": m2o_id(p.get("commercial_partner_id")),
+        "cliente_padre": m2o_nombre(p.get("commercial_partner_id")),
     } for p in partners])
     # tipo_cliente vía COALESCE: no borrar el existente si esta fuente no lo trae.
     upsert(loader, dt, "dim_tercero", "tercero_id", coalesce=["tipo_cliente"])
@@ -454,17 +489,27 @@ def cargar_terceros(od, loader, part_ids, tipo_tercero):
 # ══ Refresco de dimensiones por su propio write_date (clientes/productos/vendedores) ══
 # Cierra el gap: capta creados/modificados en Odoo aunque no tengan transacción nueva.
 def refrescar_dimensiones(od, loader, full=False):
+    cmap = cat_map_tercero(od)  # etiquetas de terceros (m2m id→nombre), cargado una vez
     specs = [
-        ("res.partner", ["id", "name", "vat", "city", "state_id", "country_id"],
+        # OJO: nada de team_id aquí — el equipo de ventas vive en el asiento (fact.equipo), no en
+        # el tercero (res.partner.team_id está vacío en este Odoo).
+        ("res.partner", ["id", "name", "vat", "city", "state_id", "country_id",
+                         "phone", "mobile", "email", "category_id", "commercial_partner_id"],
          "dim_tercero", "tercero_id",
          lambda r: {"tercero_id": as_int(r["id"]), "nombre": r.get("name"),
                     "identificacion": r.get("vat"), "ciudad": r.get("city"),
                     "departamento": m2o_nombre(r.get("state_id")),
-                    "pais": m2o_nombre(r.get("country_id"))}),  # tipo_cliente no se toca (viene del asiento)
-        ("product.product", ["id", "default_code", "name", "categ_id"],
+                    "pais": m2o_nombre(r.get("country_id")),
+                    "telefono": r.get("phone") or r.get("mobile"), "email": r.get("email"),
+                    "etiqueta": etiquetas_nombres(r.get("category_id"), cmap),
+                    "cliente_padre_id": m2o_id(r.get("commercial_partner_id")),
+                    "cliente_padre": m2o_nombre(r.get("commercial_partner_id"))}),
+        # tipo_cliente no se toca (viene del asiento)
+        ("product.product", ["id", "default_code", "name", "categ_id", "bom_count"],
          "dim_producto", "producto_id",
          lambda r: {"producto_id": as_int(r["id"]), "codigo": r.get("default_code"),
-                    "nombre": r.get("name"), "categoria": m2o_nombre(r.get("categ_id"))}),
+                    "nombre": r.get("name"), "categoria": m2o_nombre(r.get("categ_id")),
+                    "es_kit": bool(r.get("bom_count"))}),
         ("res.users", ["id", "name"], "dim_vendedor", "vendedor_id",
          lambda r: {"vendedor_id": as_int(r["id"]), "nombre": r.get("name")}),
     ]
@@ -474,15 +519,76 @@ def refrescar_dimensiones(od, loader, full=False):
             marca = get_watermark(loader, modelo)
             if marca:
                 dom = [["write_date", ">", marca]]
-        regs = od.search_read(modelo, dom, fields + ["write_date"], context=CTX_ALL)
-        if not regs:
+        # POR PÁGINAS: un search_read sin límite de ~206k terceros (con contacto/etiqueta/padre) hace
+        # que Odoo corte la respuesta a medias → http.client.IncompleteRead. Paginar acota el payload
+        # y la memoria. El order por defecto ('id asc') hace estable el offset.
+        offset, total, mw = 0, 0, None
+        while True:
+            regs = od.search_read(modelo, dom, fields + ["write_date"],
+                                  limit=PAGINA, offset=offset, context=CTX_ALL)
+            if not regs:
+                break
+            upsert(loader, pd.DataFrame([builder(r) for r in regs]), tabla, pk)
+            m = max((str(r["write_date"]) for r in regs if r.get("write_date")), default=None)
+            if m and (mw is None or m > mw):
+                mw = m
+            total += len(regs)
+            offset += len(regs)
+        if not total:
             logging.info(f"  dim {tabla}: sin cambios")
             continue
-        upsert(loader, pd.DataFrame([builder(r) for r in regs]), tabla, pk)
-        mw = max((str(r["write_date"]) for r in regs if r.get("write_date")), default=None)
         if mw:
-            set_watermark(loader, modelo, mw, len(regs))
-        logging.info(f"  dim {tabla}: {len(regs)} {'(full)' if full else '(cambios)'}")
+            set_watermark(loader, modelo, mw, total)
+        logging.info(f"  dim {tabla}: {total} {'(full)' if full else '(cambios)'}")
+
+
+# ══ Kits: explosión de BOM phantom (mrp.bom) → dim_kit_componente ══
+# Refresco TOTAL (los kits son pocos): TRUNCATE + insert, así refleja componentes removidos.
+def cargar_kits(od, loader):
+    """dim_kit_componente = kit (product.product) → componentes (product.product) con cantidad del BOM.
+    Solo BOM tipo 'phantom' (los que se venden como kit y se explotan)."""
+    boms = od.search_read("mrp.bom", [["type", "=", "phantom"]],
+                          ["id", "product_tmpl_id", "product_id", "product_qty"], context=CTX_ALL)
+    if not boms:
+        logging.info("  kits: sin BOM phantom en Odoo")
+        return
+    # product.product del kit: product_id directo del BOM, o las variantes de su product_tmpl_id.
+    tmpl_ids = {m2o_id(b.get("product_tmpl_id")) for b in boms if not m2o_id(b.get("product_id"))}
+    tmpl_ids.discard(None)
+    tmpl_a_prod = {}
+    if tmpl_ids:
+        variantes = od.search_read("product.product", [["product_tmpl_id", "in", list(tmpl_ids)]],
+                                   ["id", "product_tmpl_id"], context=CTX_ALL)
+        for v in variantes:
+            tmpl_a_prod.setdefault(m2o_id(v.get("product_tmpl_id")), []).append(as_int(v["id"]))
+    # Componentes (mrp.bom.line) por BOM.
+    lineas = od.search_read("mrp.bom.line", [["bom_id", "in", [b["id"] for b in boms]]],
+                            ["bom_id", "product_id", "product_qty"], context=CTX_ALL)
+    comps_por_bom = {}
+    for ln in lineas:
+        comps_por_bom.setdefault(m2o_id(ln.get("bom_id")), []).append(
+            (as_int(m2o_id(ln.get("product_id"))), float(ln.get("product_qty") or 0)))
+    filas = []
+    for b in boms:
+        pid = m2o_id(b.get("product_id"))
+        kit_ids = [as_int(pid)] if pid else tmpl_a_prod.get(m2o_id(b.get("product_tmpl_id")), [])
+        for kit_id in kit_ids:
+            if kit_id is None:
+                continue
+            for comp_id, qty in comps_por_bom.get(b["id"], []):
+                if comp_id is not None:
+                    filas.append({"kit_producto_id": kit_id, "componente_id": comp_id, "cantidad": qty})
+    if not filas:
+        logging.info("  kits: BOM phantom sin líneas de componente")
+        return
+    df = (pd.DataFrame(filas)
+          .groupby(["kit_producto_id", "componente_id"], as_index=False)["cantidad"].sum())
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("TRUNCATE marts.dim_kit_componente;")
+        conn.commit()
+    upsert(loader, df, "dim_kit_componente", ["kit_producto_id", "componente_id"])
+    logging.info(f"  kits: {len(df)} pares kit-componente (dim_kit_componente)")
 
 
 # ══ tipo_cliente en dim_tercero por UPDATE (sin releer res.partner de Odoo) ══
@@ -527,10 +633,11 @@ def cargar_dims_lote(od, loader, moves, part_ids, prod_ids, catalogos_completos=
     cargar_terceros(od, loader, part_ids, tipo_tercero)
 
     if prod_ids:
-        productos = od.read("product.product", prod_ids, ["id", "default_code", "name", "categ_id"],
-                            context=CTX_ALL)
+        productos = od.read("product.product", prod_ids,
+                            ["id", "default_code", "name", "categ_id", "bom_count"], context=CTX_ALL)
         dp = pd.DataFrame([{"producto_id": as_int(p["id"]), "codigo": p.get("default_code"),
-                            "nombre": p.get("name"), "categoria": m2o_nombre(p.get("categ_id"))}
+                            "nombre": p.get("name"), "categoria": m2o_nombre(p.get("categ_id")),
+                            "es_kit": bool(p.get("bom_count"))}
                            for p in productos])
         upsert(loader, dp, "dim_producto", "producto_id")
 
@@ -581,6 +688,7 @@ def construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol):
             "tercero_id": m2o_id(ln.get("partner_id")),
             "producto_id": m2o_id(ln.get("product_id")),
             "vendedor_id": m2o_id(m.get("invoice_user_id")),
+            "equipo": m2o_nombre(m.get("team_id")),   # equipo de ventas (del asiento, no del tercero)
             "diario_id": m2o_id(ln.get("journal_id")),
             "empresa_id": m2o_id(ln.get("company_id")),
             "centro_costo_id": centro,
@@ -600,7 +708,7 @@ LINE_FIELDS = ["id", "move_id", "account_id", "account_type", "partner_id", "pro
                "debit", "credit", "balance", "amount_residual", "date", "invoice_date",
                "date_maturity", "ref", "analytic_distribution", "write_date"]
 MOVE_FIELDS = ["id", "name", "move_type", "invoice_user_id", "partner_type_id", "partner_id",
-               "payment_state", "reversed_entry_id"]
+               "payment_state", "reversed_entry_id", "team_id"]
 
 
 # ══ Bucle principal por lotes ══
@@ -695,6 +803,57 @@ def aplicar_correcciones(loader):
     logging.info(f"Correcciones aplicadas: {n} filas")
 
 
+# ══ CATEGORÍA (tipo de cliente) consolidada en fact.categoria ══
+# Dos fuentes de Odoo, ninguna basta sola (ver sql/marts/17_categoria.sql):
+#   · dim_tercero.tipo_cliente (partner_type_id de la cabecera) → MANDA cuando existe.
+#   · fact.canal (plan analítico 21 "Canal" = x_plan21_id)      → RELLENA cuando falta.
+#     El analítico existe porque hay gastos de un cliente cargados a TERCEROS: sin él, esas líneas
+#     (clases 5/6) se quedarían sin categoría y desaparecerían del análisis por cliente.
+# Luego se replican las reglas de respaldo de ReportClassNew.transformar_base() EN SU MISMO ORDEN:
+# el país extranjero pisa todo (incluso SHOPIFY), y CLIENTE→CALL CENTER se evalúa DESPUÉS del equipo
+# (por eso Shopify gana sobre CLIENTE). Cierra con el default 'CALL CENTER' del Excel.
+# Al final se normaliza el vocabulario con marts.map_categoria (editable sin tocar código).
+# Nota: dim_tercero.pais guarda el NOMBRE del país ("Colombia"), no el código 'CO' del Excel.
+_SQL_CATEGORIA = """
+WITH base AS (
+    SELECT f.linea_id,
+           COALESCE(t.tipo_cliente, f.canal) AS cat0,   -- tipo_cliente manda; el analítico rellena
+           t.pais, f.equipo
+    FROM marts.fact_movimiento_contable f
+    LEFT JOIN marts.dim_tercero t ON t.tercero_id = f.tercero_id
+),
+resuelta AS (
+    SELECT linea_id,
+           CASE
+               WHEN pais IS NOT NULL AND pais <> 'Colombia' THEN pais   -- EXTERIOR: pisa todo
+               WHEN equipo = 'Shopify'                      THEN 'SHOPIFY'
+               WHEN equipo = 'Punto de venta'               THEN 'CALL CENTER'
+               WHEN cat0   = 'CLIENTE'                      THEN 'CALL CENTER'
+               WHEN cat0 IS NOT NULL                        THEN cat0
+               ELSE 'CALL CENTER'
+           END AS cat
+    FROM base
+)
+UPDATE marts.fact_movimiento_contable f
+SET categoria = COALESCE(m.categoria_bi, r.cat)          -- normalización (map_categoria)
+FROM resuelta r
+LEFT JOIN marts.map_categoria m ON m.categoria_origen = r.cat
+WHERE f.linea_id = r.linea_id
+  AND f.categoria IS DISTINCT FROM COALESCE(m.categoria_bi, r.cat);
+"""
+
+
+def consolidar_categoria(loader):
+    """Puebla fact.categoria (tipo de cliente) desde tipo_cliente + analítico plan 21, con las
+    reglas de respaldo del Excel y normalizado por marts.map_categoria."""
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(_SQL_CATEGORIA)
+        n = cur.rowcount
+        conn.commit()
+    logging.info(f"Categoría consolidada: {n} líneas actualizadas")
+
+
 # ══ Canonicalización PUC (no destructivo): unifica códigos 8 vs 9 díg de la MISMA cuenta ══
 # Canónico = variante más usada en el hecho dentro de (subcuenta 6 díg + nombre normalizado).
 # El hecho conserva el cuenta_id real de Odoo; solo se pueblan columnas en dim_cuenta.
@@ -750,6 +909,7 @@ def main(modo, desde, hasta=None):
     # Refresco de dimensiones (clientes/productos/vendedores) por su propio write_date.
     # full/rebuild → refresco total; incremental/dims → solo cambios.
     refrescar_dimensiones(od, loader, full=(modo in ("full", "rebuild")))
+    cargar_kits(od, loader)   # dim_kit_componente (BOM phantom) para v_ventas_explotada
     if modo == "dims":
         logging.info("OK DIMS: catálogos y dimensiones refrescados.")
         return
@@ -793,6 +953,7 @@ def main(modo, desde, hasta=None):
     marcar_reversos(loader)      # ventas: excluir reversos totales
     aplicar_correcciones(loader)  # limpieza de datos mal registrados en Odoo
     canonicalizar_puc(loader)     # unifica códigos 8 vs 9 díg de la misma cuenta (no destructivo)
+    consolidar_categoria(loader)  # categoría de cliente: tipo_cliente + analítico plan 21
 
     logging.info(f"OK {modo.upper()} completado: hecho={total_h} líneas.")
 
