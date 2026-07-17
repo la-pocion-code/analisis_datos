@@ -41,6 +41,7 @@ SELECT
     f.vendedor_id,
     v.nombre                AS vendedor,
     f.equipo,
+    f.cliente_analitico,                                 -- cliente atribuido por analítico (plan 22)
     -- producto
     f.producto_id,
     p.codigo                AS producto_codigo,

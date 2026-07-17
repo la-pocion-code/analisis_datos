@@ -40,11 +40,12 @@ CTX_ALL = {"active_test": False}  # incluir registros ARCHIVADOS (active=False) 
 # Rol de cada plan analítico en el hecho. NO se hardcodean IDs: se derivan del NOMBRE del plan
 # en Odoo (account.analytic.plan) por nombre normalizado (ver derivar_plan_rol). El rol 'centro'
 # va a centro_costo_id; los demás a columnas degeneradas homónimas.
-PLAN_ROLES = {"canal", "linea_producto", "tipo_producto", "pais_analitico", "centro"}
+PLAN_ROLES = {"canal", "linea_producto", "tipo_producto", "pais_analitico", "centro", "cliente_analitico"}
 # nombre de plan normalizado (sin acentos, minúsculas) -> rol
 PLAN_NOMBRE_A_ROL = {
     "pais": "pais_analitico",
     "canal": "canal",
+    "cliente": "cliente_analitico",   # plan 22 "Cliente": atribuye ventas/gastos al cliente (export + clave)
     "linea de producto": "linea_producto",
     "tipo de producto": "tipo_producto",
     "centro de costos": "centro",
@@ -649,7 +650,7 @@ def construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol):
         m = mv.get(m2o_id(ln.get("move_id")), {})
         mtype = m.get("move_type")
         dist = ln.get("analytic_distribution") or {}
-        centro = canal = lprod = tprod = pais = None
+        centro = canal = lprod = tprod = pais = cliente = None
         clave = clave_dominante(dist)
         if clave:
             for pid in str(clave).split(","):
@@ -667,6 +668,8 @@ def construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol):
                     tprod = an_nombre.get(aid)
                 elif rol == "pais_analitico":
                     pais = an_nombre.get(aid)
+                elif rol == "cliente_analitico":
+                    cliente = an_nombre.get(aid)
         filas.append({
             "linea_id": as_int(ln["id"]),
             "factura_id": m2o_id(ln.get("move_id")),
@@ -693,6 +696,7 @@ def construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol):
             "empresa_id": m2o_id(ln.get("company_id")),
             "centro_costo_id": centro,
             "canal": canal, "linea_producto": lprod, "tipo_producto": tprod, "pais_analitico": pais,
+            "cliente_analitico": cliente,
             "cantidad": ln.get("quantity"), "precio_unitario": ln.get("price_unit"),
             "subtotal": ln.get("price_subtotal"), "debito": ln.get("debit"),
             "credito": ln.get("credit"), "saldo": ln.get("balance"),
@@ -816,16 +820,22 @@ def aplicar_correcciones(loader):
 # Nota: dim_tercero.pais guarda el NOMBRE del país ("Colombia"), no el código 'CO' del Excel.
 _SQL_CATEGORIA = """
 WITH base AS (
-    SELECT f.linea_id,
+    SELECT f.linea_id, f.es_venta,
            COALESCE(t.tipo_cliente, f.canal) AS cat0,   -- tipo_cliente manda; el analítico rellena
-           t.pais, f.equipo
+           t.tipo_cliente, t.etiqueta, t.pais, f.equipo,
+           cc.codigo AS centro_codigo
     FROM marts.fact_movimiento_contable f
-    LEFT JOIN marts.dim_tercero t ON t.tercero_id = f.tercero_id
+    LEFT JOIN marts.dim_tercero      t  ON t.tercero_id      = f.tercero_id
+    LEFT JOIN marts.dim_centro_costo cc ON cc.centro_costo_id = f.centro_costo_id
 ),
 resuelta AS (
-    SELECT linea_id,
+    SELECT linea_id, pais,
            CASE
-               WHEN pais IS NOT NULL AND pais <> 'Colombia' THEN pais   -- EXTERIOR: pisa todo
+               -- EXPORTACION = VENTAS a clientes EXTERIOR + gastos de exportación (centros [EXPO]).
+               -- es_venta evita meter gastos de PROVEEDORES extranjeros (AWS, Odoo Inc, agencias de
+               -- marketing) que también están etiquetados EXTERIOR pero no son exportación.
+               WHEN es_venta AND (tipo_cliente = 'EXTERIOR' OR etiqueta ILIKE '%EXTERIOR%') THEN 'EXPORTACION'
+               WHEN centro_codigo = 'EXPO'                  THEN 'EXPORTACION'
                WHEN equipo = 'Shopify'                      THEN 'SHOPIFY'
                WHEN equipo = 'Punto de venta'               THEN 'CALL CENTER'
                WHEN cat0   = 'CLIENTE'                      THEN 'CALL CENTER'
@@ -835,17 +845,50 @@ resuelta AS (
     FROM base
 )
 UPDATE marts.fact_movimiento_contable f
-SET categoria = COALESCE(m.categoria_bi, r.cat)          -- normalización (map_categoria)
+SET categoria = COALESCE(m.categoria_bi, r.cat),         -- normalización (map_categoria)
+    pais      = r.pais                                   -- país estricto de la línea (dim_tercero.pais)
 FROM resuelta r
 LEFT JOIN marts.map_categoria m ON m.categoria_origen = r.cat
 WHERE f.linea_id = r.linea_id
-  AND f.categoria IS DISTINCT FROM COALESCE(m.categoria_bi, r.cat);
+  AND (f.categoria IS DISTINCT FROM COALESCE(m.categoria_bi, r.cat)
+       OR f.pais   IS DISTINCT FROM r.pais);
 """
+
+
+# ══ Backfill de cliente_analitico (plan 22 "Cliente") desde account.analytic.line ══
+# El plan 22 vive en la columna x_plan22_id de la línea analítica (una por distribución). Enlaza con
+# la línea contable por move_line_id → UPDATE directo del hecho. Barato (~4k filas) y idempotente.
+# Hacia adelante lo captura construir_hecho; esto rellena lo ya cargado (patrón del backfill de equipo).
+def backfill_cliente_analitico(od, loader):
+    pares, off = [], 0
+    while True:
+        al = od.search_read("account.analytic.line", [["x_plan22_id", "!=", False]],
+                            ["move_line_id", "x_plan22_id"], limit=20000, offset=off)
+        if not al:
+            break
+        pares += [(m2o_id(a.get("move_line_id")), m2o_nombre(a.get("x_plan22_id")))
+                  for a in al if m2o_id(a.get("move_line_id"))]
+        off += len(al)
+    if not pares:
+        logging.info("  cliente_analitico: sin líneas plan 22")
+        return
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        psycopg2.extras.execute_values(
+            cur,
+            "UPDATE marts.fact_movimiento_contable f SET cliente_analitico = v.cli "
+            "FROM (VALUES %s) AS v(id, cli) "
+            "WHERE f.linea_id = v.id AND f.cliente_analitico IS DISTINCT FROM v.cli",
+            pares, page_size=5000)
+        n = cur.rowcount
+        conn.commit()
+    logging.info(f"  cliente_analitico (plan 22): {len(pares)} líneas, {n} actualizadas")
 
 
 def consolidar_categoria(loader):
     """Puebla fact.categoria (tipo de cliente) desde tipo_cliente + analítico plan 21, con las
-    reglas de respaldo del Excel y normalizado por marts.map_categoria."""
+    reglas de respaldo del Excel y normalizado por marts.map_categoria. En el mismo UPDATE denormaliza
+    fact.pais = dim_tercero.pais (país estricto por línea)."""
     with loader.get_connection() as conn:
         cur = conn.cursor()
         cur.execute(_SQL_CATEGORIA)
@@ -953,7 +996,8 @@ def main(modo, desde, hasta=None):
     marcar_reversos(loader)      # ventas: excluir reversos totales
     aplicar_correcciones(loader)  # limpieza de datos mal registrados en Odoo
     canonicalizar_puc(loader)     # unifica códigos 8 vs 9 díg de la misma cuenta (no destructivo)
-    consolidar_categoria(loader)  # categoría de cliente: tipo_cliente + analítico plan 21
+    backfill_cliente_analitico(od, loader)  # plan 22 "Cliente" en líneas ya cargadas
+    consolidar_categoria(loader)  # categoría (incl. EXPORTACION) + país por línea
 
     logging.info(f"OK {modo.upper()} completado: hecho={total_h} líneas.")
 

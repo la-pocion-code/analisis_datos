@@ -131,6 +131,11 @@ alguno de esos Excel). Requiere el DDL `sql/marts/16_mapeos_ventas.sql` aplicado
 - **Zona / cliente padre (no-Odoo):** unir con `marts.map_*` (ver §2.6). Orden de zona: `map_zona`
   (depto+categoría) → `map_zona_cundinamarca`. Cliente consolidado por `map_cliente_padre`.
   (`map_zona_bogota` está deprecada y vacía.)
+- **Exportaciones (PyG por país y cliente):** usar `marts.v_exportaciones` (líneas `EXPORTACION` =
+  clientes EXTERIOR + gastos en centros `[EXPO]`). Trae `pais` (de `dim_tercero.pais`, estricto),
+  `cliente_analitico` (plan 22, atribuye ventas **y** gastos de logística al cliente) y los importes.
+  Para PyG por país×cliente: agrupar por `pais` y `cliente_analitico`. `cliente_analitico` también
+  sirve para clientes clave domésticos (Novaventa, Copidrogas, Farmatodo, Pasteur).
 - Detalle de medidas: [MODELO_ESTRELLA.md §9 y §11](MODELO_ESTRELLA.md).
 
 ## 6. Programación en Railway (ya montado)

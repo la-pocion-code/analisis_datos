@@ -75,12 +75,24 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
      (el rol se deriva del nombre del plan). **Rellena** cuando falta (1). Existe porque la utilidad
      por cliente se mira por nombre del cliente pero **hay gastos de esos clientes cargados a
      TERCEROS** que desaparecerían del análisis; es lo que rescata las clases 5/6.
-  Luego se replican las reglas de respaldo del Excel (`transformar_base`) **en su orden**: país
-  extranjero pisa todo (`dim_tercero.pais` es el NOMBRE, se compara `<> 'Colombia'`, no `'CO'`) →
-  `equipo='Shopify'`→SHOPIFY → `equipo='Punto de venta'`→CALL CENTER → `CLIENTE`→CALL CENTER →
-  base → default **CALL CENTER**. Cierra normalizando con `marts.map_categoria`.
+  Luego se replican las reglas de respaldo del Excel (`transformar_base`) **en su orden**:
+  **EXPORTACION** (`es_venta` a cliente `EXTERIOR` **o** centro de costo `[EXPO]`; el `es_venta` evita
+  meter gastos de proveedores extranjeros como AWS/Odoo Inc) → `equipo='Shopify'`→SHOPIFY →
+  `equipo='Punto de venta'`→CALL CENTER → `CLIENTE`→CALL CENTER → base → default **CALL CENTER**.
+  Cierra normalizando con `marts.map_categoria`. (La antigua regla "país extranjero→nombre del país"
+  se **eliminó**: metía proveedores extranjeros como "United States".)
   ⚠ `fact.categoria` = categoría de **CLIENTE**; `dim_producto.categoria` es la de **PRODUCTO**
   (en `v_ventas_producto` se expone como `producto_categoria`). Son cosas distintas.
+- **Exportaciones (PyG por país y cliente) — `18_exportaciones.sql` + `v_exportaciones`:** dos planes
+  analíticos nuevos de Odoo. **Plan 20 "País"** (`[PAIS-*]`) ya está en `fact.pais_analitico`. **Plan 22
+  "Cliente"** (`[CLI-ZAR-EC]`…) se captura ahora como **`fact.cliente_analitico`** (rol `cliente` en
+  `derivar_plan_rol`/`construir_hecho`) — atribuye **ventas y gastos** al cliente correcto (los gastos
+  de logística van a proveedores como TRANSTAINER, no al cliente; el analítico es lo que los enlaza).
+  Backfill de lo ya cargado: `backfill_cliente_analitico` (vía `account.analytic.line.x_plan22_id`,
+  ~4k líneas). **`fact.pais`** = `dim_tercero.pais` de la línea (país estricto; se puebla en
+  `consolidar_categoria`). El código del cliente trae el país en el sufijo (`-EC/-PE/-US/-DO/-CO`);
+  el "error de Colombia" venía de que `x_plan20` quedaba en `[PAIS-CO]` por defecto. `v_exportaciones`
+  = todo lo `EXPORTACION` (o con `cliente_analitico`) para auditar y proyectar el PyG por país×cliente.
 - **Fuente:** todo de Odoo (`account.move.line`+`account.move`, catálogos), salvo `dim_fecha`
   (calendario generado) y `correcciones` (overrides manuales).
 - **Reglas del hecho:** `es_venta`/`es_reverso` (ventas = clase 4 sin reversos totales
@@ -103,9 +115,10 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `cargar_puc_nombres`, `13_puc_nombres.sql`). Complementa (no reemplaza) los `*_codigo` y la
   clasificación de reportes. Ej.: 510506 → 5 GASTOS / 51 OPERACIONALES DE ADMINISTRACION / 5105
   GASTOS DE PERSONAL / 510506 GASTOS DE PERSONAL SALARIOS.
-- **Roles de planes analíticos** (`canal`/`linea_producto`/`tipo_producto`/`pais_analitico`/
-  `centro`) se **derivan del nombre** de `account.analytic.plan` en Odoo (`derivar_plan_rol`), no de
-  IDs fijos; plan `La Poción` (id 3) = excepción legacy de centro de costo.
+- **Roles de planes analíticos** (`canal`/`cliente_analitico`/`linea_producto`/`tipo_producto`/
+  `pais_analitico`/`centro`) se **derivan del nombre** de `account.analytic.plan` en Odoo
+  (`derivar_plan_rol`), no de IDs fijos; plan `La Poción` (id 3) = excepción legacy de centro de costo.
+  Plan 22 "Cliente" → `cliente_analitico` (ver Exportaciones).
 - **Canonicalización PUC (no destructivo):** en Odoo coexisten 2 códigos para la misma cuenta
   (8 vs 9 díg). `dim_cuenta` tiene `cuenta_canonica_id`/`codigo_canonico`/`nombre_canonico`
   (`11_puc_canonico.sql` + `canonicalizar_puc`): canónico = variante **más usada** de misma
