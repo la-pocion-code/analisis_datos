@@ -150,6 +150,13 @@ El cron corre `run_dw.py` (`railway.toml` + `Procfile`):
 - **Partida doble:** `SUM(debito) = SUM(credito)` por empresa (debe ≈ 0). Si un período falla →
   `--rebuild` de ese rango (ver receta 2.5).
 - **Ventas:** `SUM(venta_neta)` en `v_ventas` (clase 4, sin reversos) vs ingresos de Odoo.
+- **Ventas vs Excel (base_ventas del pipeline):** `python validar_ventas.py` concilia
+  `v_ventas_producto` contra los CSV de `CLEAN DATA`. Para que cuadre hay que **alinear 3 cosas**:
+  (1) **combinar empresas** (el Excel no distingue; ene-2026 estaba en empresa 1, luego en la 8),
+  (2) por **fecha de factura** (no la contable), (3) producto comercial. Con eso cuadra al ~1% en
+  meses normales. **Diferencias esperadas (el DW es más correcto):** facturas **anuladas**
+  (`payment_state='reversed'`, `es_reverso`) que el DW excluye y el Excel aún cuenta (explicó Mar/Abr
+  2026 casi exacto: gap ≈ monto anulado); y **timing** (un CSV viejo vs el DW con más facturas).
 - **Estados financieros:** `v_balance_comprobacion` (por empresa, con `seccion/subseccion/
   nivel_movimiento`) vs los reportes Balance / Estado de Resultados de Odoo.
 - **Calidad:** `v_dq_analitica` debería tender a 0 tras corregir en Odoo.

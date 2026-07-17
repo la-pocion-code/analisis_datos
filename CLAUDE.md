@@ -178,7 +178,10 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
     `16_mapeos_ventas.sql` + `etl_dw_marts.py` (dims enriquecidas + `cargar_kits`) + `cargar_mapeos.py`.
     Correr: aplicar DDL 15/15b/16 → `python etl_dw_marts.py --dims` (⚠ refresca ~206k terceros, minutos)
     → `python cargar_mapeos.py`.
-  - ⏳ Fase 5: validar `v_ventas_producto` mensual vs `base_ventas` del Excel + documentar diferencias.
+  - ✅ Fase 5 (validada): `python validar_ventas.py` concilia `v_ventas_producto` vs `base_ventas`
+    (CLEAN DATA). Cuadra al ~1% alineando 3 cosas (combinar empresas + fecha de factura + producto
+    comercial). Los gaps grandes (Mar/Abr 2026) son **facturas anuladas** (`es_reverso`) que el DW
+    excluye y el Excel aún cuenta → el DW es más correcto; Jul = timing (DW con más facturas).
 
 ## Reglas de trabajo
 - NO ejecutar el cron, ni conectarse a Odoo/Postgres en vivo, sin que el usuario lo pida.
