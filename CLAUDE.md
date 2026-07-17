@@ -95,8 +95,10 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   = todo lo `EXPORTACION` (o con `cliente_analitico`) para auditar y proyectar el PyG por país×cliente.
 - **Fuente:** todo de Odoo (`account.move.line`+`account.move`, catálogos), salvo `dim_fecha`
   (calendario generado) y `correcciones` (overrides manuales).
-- **Reglas del hecho:** `es_venta`/`es_reverso` (ventas = clase 4 sin reversos totales
-  `payment_state='reversed'`), `es_cxc`+`saldo_pendiente` (cartera = residual por línea de CxC),
+- **Reglas del hecho:** `es_venta`/`es_reverso` (ventas = clase 4 sin **anulaciones reales**:
+  factura + NC de reversión que la cubre ≥99%; **NO** por `payment_state='reversed'`, que en este Odoo
+  lo pone también el **factoring** y las NC **parciales** — esas son ventas reales que sí cuentan),
+  `es_cxc`+`saldo_pendiente` (cartera = residual por línea de CxC),
   `empresa_id` (multiempresa: 1=Aristizabal Hector Fabio, 8=PCN Poción), PUC por prefijo del código
   (`clase_codigo`/`grupo_codigo`). Fechas como DATE (`fecha`, `fecha_factura`,
   `fecha_vencimiento`) además de las `*_key`.
@@ -179,9 +181,11 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
     Correr: aplicar DDL 15/15b/16 → `python etl_dw_marts.py --dims` (⚠ refresca ~206k terceros, minutos)
     → `python cargar_mapeos.py`.
   - ✅ Fase 5 (validada): `python validar_ventas.py` concilia `v_ventas_producto` vs `base_ventas`
-    (CLEAN DATA). Cuadra al ~1% alineando 3 cosas (combinar empresas + fecha de factura + producto
-    comercial). Los gaps grandes (Mar/Abr 2026) son **facturas anuladas** (`es_reverso`) que el DW
-    excluye y el Excel aún cuenta → el DW es más correcto; Jul = timing (DW con más facturas).
+    (CLEAN DATA). Alinear 3 cosas: combinar empresas + fecha de factura + producto comercial.
+    **Destapó un bug de `es_reverso`** (se excluían facturas de factoring/NC-parcial marcadas
+    `payment_state='reversed'` como si fueran anuladas): corregido (ver `marcar_reversos`). Tras el
+    fix, **TOTAL 2026 Excel vs DW = -0,0%** (antes -5,1%). Residuos mensuales ≤4% (timing/parciales);
+    Jul + por timing (DW con más facturas que el CSV).
 
 ## Reglas de trabajo
 - NO ejecutar el cron, ni conectarse a Odoo/Postgres en vivo, sin que el usuario lo pida.

@@ -7,10 +7,11 @@ Alineación necesaria para que cuadre (ver docs/GUIA_OPERACION.md §7):
   2. Por FECHA DE FACTURA (el Excel agrupa por invoice_date, no por fecha contable).
   3. Producto comercial [PCN/[KD/[TNG/[B8 (ya filtrado en ambos lados).
 
-Diferencias esperadas (no son error del DW):
-  - El Excel solo resta las NC que CASAN por NUMERO_FACTURA-PRODUCTO; el DW netea TODAS las NC vía la
-    contabilidad → el DW puede quedar más bajo (más correcto).
+Nota: `es_reverso` = ANULACIÓN real (factura + NC de reversión ≥99%), NO `payment_state='reversed'`
+(que en este Odoo lo pone el FACTORING y las NC PARCIALES → ventas reales que SÍ cuentan). Con eso el
+total 2026 Excel vs DW ≈ 0%. Diferencias residuales esperadas:
   - Timing: un CSV viejo vs el DW recién cargado (más facturas) → el DW puede quedar más alto.
+  - NC/anulaciones fechadas en un mes distinto al de la factura.
 
 Uso:  python validar_ventas.py
 """
@@ -128,9 +129,9 @@ def main():
     # residual = lo que NO explican las anuladas (dif + anulado; ≈0 si las anuladas explican el gap)
     diag["residual"] = diag["dif"] + diag["monto_anulado"]
     print("\n" + "=" * 78)
-    print("DIAGNÓSTICO ANULADAS — el gap = facturas anuladas (es_reverso) que el Excel aún cuenta")
-    print("dif = DW − Excel (negativo: el Excel cuenta de más).  residual = dif + monto_anulado (≈0 ⇒")
-    print("las anuladas explican el gap; el DW es más correcto).  Jul: residual+ = timing (DW más nuevo).")
+    print("DIAGNÓSTICO — anulaciones reales (es_reverso) por mes. Tras corregir es_reverso (no excluir")
+    print("factoring/NC-parcial) el total cuadra ~0%. Estas son las anulaciones REALES excluidas;")
+    print("dif = DW − Excel; residual = dif + monto_anulado (lo no explicado ≈ timing/parciales).")
     print("=" * 78)
     print(_fmt(diag[["mes", "dif", "facturas_anuladas", "monto_anulado", "residual"]]))
 

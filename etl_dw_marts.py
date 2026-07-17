@@ -765,25 +765,45 @@ def _anios_desc(desde, hasta=None):
 
 
 # ══ Marcar reversos totales (excluidos de ventas) ══
-# es_reverso = factura con payment_state='reversed' O nota crédito que reversa una de ellas.
-# Las devoluciones PARCIALES (factura 'paid') NO se marcan: restan vía venta_neta.
-_COND_REVERSO = """
-    (estado_pago = 'reversed')
- OR (tipo_movimiento = 'out_refund' AND reversed_factura_id IN
-        (SELECT factura_id FROM marts.fact_movimiento_contable WHERE estado_pago = 'reversed'))
+# es_reverso = ANULACIÓN real = factura + su(s) NC de reversión que la cubren ≥99% (por clase 4).
+# NO se usa `estado_pago='reversed'`: en este Odoo ese estado lo pone también el FACTORING y las NC
+# PARCIALES (una factura pagada por factoring o con una NC parcial NO está anulada, es venta real).
+# Las anulaciones reales igual se netearían solas (factura +X y NC −X suman 0); marcarlas es solo por
+# claridad. Las devoluciones/NC parciales NO se marcan: restan vía venta_neta (factura +X, NC −Y).
+# Ratio ≥0.99 = la NC reversa el total de la factura (clase 4). Ver docs/GUIA_OPERACION.md §7.
+_SQL_REVERSOS = """
+WITH inv AS (
+    SELECT f.factura_id, SUM(f.credito - f.debito) m
+    FROM marts.fact_movimiento_contable f JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
+    WHERE f.tipo_movimiento = 'out_invoice' AND c.clase_codigo = '4' GROUP BY 1
+),
+ncr AS (
+    SELECT f.reversed_factura_id fid, SUM(f.debito - f.credito) m
+    FROM marts.fact_movimiento_contable f JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
+    WHERE f.tipo_movimiento = 'out_refund' AND f.reversed_factura_id IS NOT NULL
+      AND c.clase_codigo = '4' GROUP BY 1
+),
+anul AS (
+    SELECT i.factura_id FROM inv i JOIN ncr n ON n.fid = i.factura_id
+    WHERE i.m > 0 AND n.m >= 0.99 * i.m           -- NC total (≥99%) = anulación real
+)
+UPDATE marts.fact_movimiento_contable f
+SET es_reverso = (
+        (f.tipo_movimiento = 'out_invoice' AND f.factura_id        IN (SELECT factura_id FROM anul))
+     OR (f.tipo_movimiento = 'out_refund'  AND f.reversed_factura_id IN (SELECT factura_id FROM anul)))
+WHERE f.es_reverso IS DISTINCT FROM (
+        (f.tipo_movimiento = 'out_invoice' AND f.factura_id        IN (SELECT factura_id FROM anul))
+     OR (f.tipo_movimiento = 'out_refund'  AND f.reversed_factura_id IN (SELECT factura_id FROM anul)));
 """
 
 
 def marcar_reversos(loader):
     with loader.get_connection() as conn:
         cur = conn.cursor()
-        cur.execute(f"UPDATE marts.fact_movimiento_contable SET es_reverso = TRUE "
-                    f"WHERE es_reverso IS NOT TRUE AND ({_COND_REVERSO});")
-        n_true = cur.rowcount
-        cur.execute(f"UPDATE marts.fact_movimiento_contable SET es_reverso = FALSE "
-                    f"WHERE es_reverso IS TRUE AND NOT ({_COND_REVERSO});")
+        cur.execute(_SQL_REVERSOS)
+        n = cur.rowcount
         conn.commit()
-    logging.info(f"Reversos marcados: +{n_true} líneas es_reverso=TRUE")
+    logging.info(f"Reversos (anulaciones reales) marcados: {n} líneas cambiadas")
 
 
 def aplicar_correcciones(loader):
