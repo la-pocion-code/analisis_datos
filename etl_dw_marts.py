@@ -506,11 +506,12 @@ def refrescar_dimensiones(od, loader, full=False):
                     "cliente_padre_id": m2o_id(r.get("commercial_partner_id")),
                     "cliente_padre": m2o_nombre(r.get("commercial_partner_id"))}),
         # tipo_cliente no se toca (viene del asiento)
-        ("product.product", ["id", "default_code", "name", "categ_id", "bom_count"],
+        # es_kit NO se setea aquí: lo fija cargar_kits desde dim_kit_componente (BOM phantom).
+        # `bom_count > 0` marcaría también los productos FABRICADOS, que no son kits.
+        ("product.product", ["id", "default_code", "name", "categ_id"],
          "dim_producto", "producto_id",
          lambda r: {"producto_id": as_int(r["id"]), "codigo": r.get("default_code"),
-                    "nombre": r.get("name"), "categoria": m2o_nombre(r.get("categ_id")),
-                    "es_kit": bool(r.get("bom_count"))}),
+                    "nombre": r.get("name"), "categoria": m2o_nombre(r.get("categ_id"))}),
         ("res.users", ["id", "name"], "dim_vendedor", "vendedor_id",
          lambda r: {"vendedor_id": as_int(r["id"]), "nombre": r.get("name")}),
     ]
@@ -569,16 +570,27 @@ def cargar_kits(od, loader):
     for ln in lineas:
         comps_por_bom.setdefault(m2o_id(ln.get("bom_id")), []).append(
             (as_int(m2o_id(ln.get("product_id"))), float(ln.get("product_qty") or 0)))
-    filas = []
+    # ⚠ En Odoo hay VARIAS BOM phantom por kit (77 BOMs para 39 kits: 38 templates con 2 cada uno).
+    # Sumarlas duplicaba la cantidad (guardaba 2.0 donde la BOM dice 1.0) y la explosión daba el doble
+    # de unidades por componente. Se toma UNA sola BOM por kit: la de `id` más alto (la más reciente).
+    bom_por_kit = {}   # kit_producto_id -> BOM elegida
     for b in boms:
         pid = m2o_id(b.get("product_id"))
         kit_ids = [as_int(pid)] if pid else tmpl_a_prod.get(m2o_id(b.get("product_tmpl_id")), [])
         for kit_id in kit_ids:
             if kit_id is None:
                 continue
-            for comp_id, qty in comps_por_bom.get(b["id"], []):
-                if comp_id is not None:
-                    filas.append({"kit_producto_id": kit_id, "componente_id": comp_id, "cantidad": qty})
+            elegida = bom_por_kit.get(kit_id)
+            if elegida is None or b["id"] > elegida["id"]:
+                bom_por_kit[kit_id] = b
+    filas = []
+    for kit_id, b in bom_por_kit.items():
+        # cantidad POR UNIDAD DE KIT: la BOM puede estar definida por lote (product_qty > 1).
+        lote = float(b.get("product_qty") or 1) or 1
+        for comp_id, qty in comps_por_bom.get(b["id"], []):
+            if comp_id is not None:
+                filas.append({"kit_producto_id": kit_id, "componente_id": comp_id,
+                              "cantidad": qty / lote})
     if not filas:
         logging.info("  kits: BOM phantom sin líneas de componente")
         return
@@ -589,7 +601,21 @@ def cargar_kits(od, loader):
         cur.execute("TRUNCATE marts.dim_kit_componente;")
         conn.commit()
     upsert(loader, df, "dim_kit_componente", ["kit_producto_id", "componente_id"])
-    logging.info(f"  kits: {len(df)} pares kit-componente (dim_kit_componente)")
+    # es_kit = ser un KIT de verdad (BOM phantom con componentes), NO tener lista de materiales:
+    # `bom_count > 0` también es TRUE para los productos FABRICADOS y marcaba 139 productos en vez de 39.
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            UPDATE marts.dim_producto p
+               SET es_kit = EXISTS (SELECT 1 FROM marts.dim_kit_componente k
+                                     WHERE k.kit_producto_id = p.producto_id)
+             WHERE p.es_kit IS DISTINCT FROM EXISTS (
+                     SELECT 1 FROM marts.dim_kit_componente k
+                      WHERE k.kit_producto_id = p.producto_id);""")
+        n_kit = cur.rowcount
+        conn.commit()
+    logging.info(f"  kits: {len(df)} pares kit-componente ({len(bom_por_kit)} kits), "
+                 f"es_kit corregido en {n_kit} productos")
 
 
 # ══ tipo_cliente en dim_tercero por UPDATE (sin releer res.partner de Odoo) ══
@@ -634,11 +660,11 @@ def cargar_dims_lote(od, loader, moves, part_ids, prod_ids, catalogos_completos=
     cargar_terceros(od, loader, part_ids, tipo_tercero)
 
     if prod_ids:
+        # es_kit lo fija cargar_kits (BOM phantom); aquí no, para no pisarlo con bom_count.
         productos = od.read("product.product", prod_ids,
-                            ["id", "default_code", "name", "categ_id", "bom_count"], context=CTX_ALL)
+                            ["id", "default_code", "name", "categ_id"], context=CTX_ALL)
         dp = pd.DataFrame([{"producto_id": as_int(p["id"]), "codigo": p.get("default_code"),
-                            "nombre": p.get("name"), "categoria": m2o_nombre(p.get("categ_id")),
-                            "es_kit": bool(p.get("bom_count"))}
+                            "nombre": p.get("name"), "categoria": m2o_nombre(p.get("categ_id"))}
                            for p in productos])
         upsert(loader, dp, "dim_producto", "producto_id")
 

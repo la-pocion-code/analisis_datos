@@ -57,12 +57,22 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   (`codigo` LIKE `PCN%/KD%/TNG%/B8%`); netas por `venta_neta`/`cantidad_neta` (NC restan, la contabilidad
   ya enlaza la NC → no se casa por `ref`). Enriquecimiento antes local, ahora desde Odoo: `dim_tercero`
   += `telefono/email/etiqueta` (`res.partner.category`) `/cliente_padre` (`commercial_partner_id`);
-  `dim_producto.es_kit` (`bom_count>0`). **`equipo` (Equipo de ventas) va en el HECHO**, no en el
+  `dim_producto.es_kit`. **`equipo` (Equipo de ventas) va en el HECHO**, no en el
   tercero: `res.partner.team_id` está VACÍO en este Odoo (0 de ~206k) y el equipo vive en el asiento
   (`account.move.team_id`, 99,97% de las líneas de venta) — igual que el Excel, que lo mapea por
   factura. Se guarda como columna degenerada del hecho (patrón de `vendedor_id`). Kits: `dim_kit_componente` desde
-  `mrp.bom` phantom (`cargar_kits`) + `v_ventas_explotada` (unidades × cantidad BOM, valor prorrateado
-  por cantidad BOM). Poblado: `python etl_dw_marts.py --dims` (dims + kits). Ver `docs/MODELO_ESTRELLA.md`.
+  `mrp.bom` phantom (`cargar_kits`) + `v_ventas_explotada`. Poblado: `python etl_dw_marts.py --dims`.
+  **Ventas en BI: ver `docs/guia_bi_ventas.md`** (las 2 formas de ver los kits + medidas DAX).
+- **KITS — dos presentaciones y reparto de valor:** `v_ventas_producto` = **kits vendidos** (el kit es
+  la unidad, tal como se factura); `v_ventas_explotada` = **unidades de producto** (kit repartido en
+  componentes). ⚠ **No sumar ambas**: es el mismo dinero (los totales coinciden exacto).
+  El valor del kit se prorratea por el **precio individual de cada componente**, con el promedio
+  **dentro de su categoría de cliente** (`marts.v_precio_componente`; cascada: precio en su categoría →
+  promedio global → partes iguales). A partes iguales desviaba 20-25% por producto.
+  ⚠ **`es_kit` = kit REAL** (BOM phantom con componentes, 39 productos), **NO** `bom_count>0` — eso
+  marcaba también los **fabricados** (139). Lo fija `cargar_kits`, no `refrescar_dimensiones`.
+  ⚠ Odoo tiene **2 BOM phantom por kit** (77 para 39): `cargar_kits` toma **una sola** (la más reciente)
+  y normaliza por el lote (`bom.product_qty`); sumarlas duplicaba las unidades de la explosión.
 - **Mapeos de negocio NO-Odoo (única excepción local, a demanda):** `cargar_mapeos.py` lee de Drive
   (`DriveLoader` + `DRIVE_IDS`) → `marts.map_*`: ZONA por depto+categoría (+ Cundinamarca por
   depto+ciudad), CLIENTE PADRE, y CATEGORÍA normalizada. Correr cuando cambie un Excel.

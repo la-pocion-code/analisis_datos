@@ -1,0 +1,137 @@
+# Guía — Ventas en Power BI desde el Data Warehouse
+
+Cómo armar el reporte de ventas sobre el esquema `marts`, reemplazando el pipeline de Excel
+(`ReportClassNew.pipeline_bi`). Recoge todas las reglas validadas contra el `base_ventas`.
+
+Operación del DW: [GUIA_OPERACION.md](GUIA_OPERACION.md) · Modelo: [MODELO_ESTRELLA.md](MODELO_ESTRELLA.md)
+
+---
+
+## 1. Qué importar
+
+| Objeto | Para qué |
+|---|---|
+| `marts.v_ventas_producto` | **Ventas tal como se facturan** (el kit es una unidad). Base del reporte. |
+| `marts.v_ventas_explotada` | **Ventas en unidades de producto** (el kit repartido en sus componentes). |
+| `marts.dim_producto` | Producto, `categoria` de producto, `es_kit`. |
+| `marts.dim_tercero` | Cliente: `nombre`, `identificacion`, `pais`, `ciudad`, `departamento`, `cliente_padre`. |
+| `marts.dim_fecha` | Calendario (relación por `fecha_key`). |
+| `marts.map_zona`, `map_cliente_padre`, `map_categoria` | Mapeos comerciales que NO están en Odoo. |
+| `marts.v_exportaciones` | PyG de exportación por país y cliente. |
+
+Conexión PostgreSQL (variables `DB_*`), **modo Import**.
+
+---
+
+## 2. Los kits: las DOS formas de ver las ventas
+
+El kit se factura como **un producto con un valor único**. Se necesita verlo de dos maneras:
+
+| Necesidad | Vista | Unidad | Valor |
+|---|---|---|---|
+| **Kits vendidos** | `v_ventas_producto` (filtrar `dim_producto.es_kit`) | `cantidad_neta` = kits | `venta_subtotal` = valor del kit |
+| **Unidades de producto** | `v_ventas_explotada` | `cantidad_componente` = unidades del componente | `venta_componente` = parte del valor asignada |
+
+> ⚠ **Nunca sumes las dos vistas en el mismo visual**: el valor se contaría dos veces. Son dos
+> lecturas del **mismo** dinero. El total coincide exactamente:
+> `SUM(v_ventas_producto.venta_subtotal) == SUM(v_ventas_explotada.venta_componente)`.
+
+Ejemplo real (empresa 8, 2026): **29.637 kits vendidos** = **125.643 unidades de producto**, ambos por
+**3.779.680.695**.
+
+### Cómo se reparte el valor del kit entre sus componentes
+El valor se prorratea por el **precio individual de cada componente**, usando el promedio **dentro de
+la categoría de cliente** de esa venta (los precios varían por canal):
+
+```
+peso(componente)   = precio_referencia(componente, categoría) × cantidad_en_el_kit
+venta_componente   = venta_del_kit × peso / Σ pesos de la línea
+```
+El precio de referencia sale de `marts.v_precio_componente` (ventas del producto **suelto**, unidades
+positivas). Cascada: precio en su categoría → promedio global del producto → si ninguno tiene precio,
+todos pesan igual (reparto a partes iguales).
+
+**Por qué no a partes iguales:** desviaba 20-25% por producto. En `PCNKIT12` (5 componentes,
+158.273): PCN19 vale 40.349 suelto y PCN03 25.478; a partes iguales ambos recibirían 31.655. Con el
+prorrateo por precio reciben **43.813** y **25.407** por unidad.
+
+`origen` distingue el tipo de fila en `v_ventas_explotada`: `INDIVIDUAL` (producto vendido suelto) o
+`KIT` (componente que viene de un kit).
+
+---
+
+## 3. Reglas que ya vienen aplicadas en las vistas
+
+No hay que replicarlas en DAX; están dentro de `v_ventas_producto`:
+
+- **Ventas netas**: ingresos (clase 4) de facturas **y notas crédito**; las NC restan vía
+  `venta_subtotal`/`cantidad_neta`. La contabilidad ya enlaza la NC (no se casa por `ref` como el Excel).
+- **Producto comercial**: `codigo` empieza por `PCN`/`KD`/`TNG`/`B8`.
+- **`es_reverso`**: excluye **anulaciones reales** (factura + NC de reversión ≥99%). **No** excluye las
+  pagadas por **factoring** ni las de **NC parcial** — esas son ventas reales.
+
+## 4. Reglas que SÍ hay que respetar al construir los visuales
+
+1. **Combina las dos empresas.** Ene-2026 se facturó en la **empresa 1** (HFA) y desde feb en la **8**
+   (PCN). Filtrar una sola parte el año. Usa slicer de `empresa_id` solo si quieres verlas separadas.
+2. **Agrupa por fecha de factura** (`fecha_factura`), no por la contable, si vas a comparar con el Excel.
+3. **`categoria` ≠ `producto_categoria`**:
+   - `categoria` = categoría del **CLIENTE** (CALL CENTER, MAYORISTA NV, SHOPIFY, EXPORTACION…),
+     consolidada de `partner_type_id` + analítico plan 21 + reglas de respaldo.
+   - `producto_categoria` = categoría del **PRODUCTO** (viene de `dim_producto.categoria`).
+4. **Zona / cliente padre**: unir con `map_zona` (depto+categoría) → `map_zona_cundinamarca`;
+   cliente consolidado con `map_cliente_padre`.
+5. **Exportaciones**: usar `v_exportaciones` y agrupar por **`pais_destino`** (no por `pais`), porque los
+   gastos de exportación se facturan a proveedores logísticos colombianos.
+
+---
+
+## 5. Medidas base (DAX)
+
+```DAX
+-- Ventas (kits como unidad)
+Ventas = SUM ( v_ventas_producto[venta_subtotal] )
+Unidades = SUM ( v_ventas_producto[cantidad_neta] )
+Kits vendidos = CALCULATE ( [Unidades], dim_producto[es_kit] = TRUE )
+
+-- Ventas por producto (kits repartidos en sus componentes)
+Ventas producto = SUM ( v_ventas_explotada[venta_componente] )
+Unidades producto = SUM ( v_ventas_explotada[cantidad_componente] )
+
+-- Cuánto de la venta de un producto viene de kits
+Ventas desde kits =
+    CALCULATE ( [Ventas producto], v_ventas_explotada[origen] = "KIT" )
+% desde kits = DIVIDE ( [Ventas desde kits], [Ventas producto] )
+
+-- Comparativos
+Ventas mes anterior = CALCULATE ( [Ventas], DATEADD ( dim_fecha[fecha], -1, MONTH ) )
+Var % = DIVIDE ( [Ventas] - [Ventas mes anterior], [Ventas mes anterior] )
+```
+
+Para el detalle por producto usa **`Ventas producto`** (reparte los kits); para ver el catálogo tal
+como se vende, usa **`Ventas`**.
+
+---
+
+## 6. Diferencias esperadas contra el Excel (`base_ventas`)
+
+`python validar_ventas.py` concilia mes a mes y las cuantifica. Las dos causas normales:
+
+1. **Notas crédito.** El Excel ya viene **neto**, pero su cruce solo resta la NC cuyo `ref` casa con
+   una factura-producto; **las que no casan se descartan**. El DW resta todas → queda más bajo y es el
+   correcto. Ej. jun-2026: el DW resta 213,9M (`RFEX2` 200,8M…) que el Excel no restó.
+2. **Timing**: el CSV es una foto; el DW sigue cargando cada hora.
+
+Ejemplo de control: `FE9565`/`FE9570`/`FE9576` (mar-2026) están 100% anuladas por
+`RINV/2026/0101/0100/0098` → en el DW la factura suma y la NC resta (**neto 0**); en el Excel salen por
+su valor completo.
+
+---
+
+## 7. Checklist antes de publicar
+
+- [ ] ¿Sumaste `v_ventas_producto` **o** `v_ventas_explotada`, nunca las dos juntas?
+- [ ] ¿Están las **dos empresas** incluidas (ojo enero)?
+- [ ] ¿Agrupaste por `fecha_factura` si comparas con el Excel?
+- [ ] ¿Usaste `categoria` (cliente) y no `producto_categoria` para el canal?
+- [ ] ¿El total de `v_ventas_explotada` coincide con el de `v_ventas_producto`?
