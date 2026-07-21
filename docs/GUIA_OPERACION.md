@@ -166,8 +166,13 @@ El cron corre `run_dw.py` (`railway.toml` + `Procfile`):
   (2) por **fecha de factura** (no la contable), (3) producto comercial. Con eso **TOTAL 2026
   Excel vs DW ≈ 0%**. **`es_reverso` = anulación real** (factura + NC de reversión ≥99%), **NO**
   `payment_state='reversed'` (que en este Odoo lo pone el factoring y las NC parciales — ventas reales
-  que sí cuentan). Diferencias residuales esperadas: **timing** (un CSV viejo vs el DW con más
-  facturas) y NC/anulaciones fechadas en otro mes.
+  que sí cuentan).
+  **Diferencia mensual principal = NOTAS CRÉDITO.** El Excel ya viene **neto** (el pipeline resta la
+  NC dentro de la fila de la factura al agrupar por `NUMERO_FACTURA-PRODUCTO`), por eso no tiene filas
+  negativas; pero **solo resta la NC cuyo `ref` casa** con una factura-producto existente y **descarta
+  las que no casan**. El DW resta **todas** → queda más bajo y es el correcto. El reporte lo cuantifica
+  con `excel_vs_bruto` (≈0 ⇒ el Excel no restó las NC del mes). Ej. jun-2026: el DW resta 213,9M
+  (`RFEX2` 200,8M…) que el Excel no restó. El resto es **timing** (CSV viejo vs DW con más facturas).
 - **Estados financieros:** `v_balance_comprobacion` (por empresa, con `seccion/subseccion/
   nivel_movimiento`) vs los reportes Balance / Estado de Resultados de Odoo.
 - **Calidad:** `v_dq_analitica` debería tender a 0 tras corregir en Odoo.

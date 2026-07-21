@@ -107,7 +107,49 @@ def main():
         print("-" * 78)
         print(_fmt(c))
 
-    # ── 3) Diagnóstico: facturas ANULADAS (es_reverso) que el Excel cuenta y el DW excluye ──
+    # ── 3) NOTAS CRÉDITO: la causa PRINCIPAL del gap ──
+    # OJO: el Excel es el RESULTADO YA NETO del pipeline (la NC se resta dentro de la fila de la
+    # factura al agrupar por NUMERO_FACTURA-PRODUCTO), así que NO tiene filas negativas ni documentos
+    # de NC. Por eso no sirve contar "filas negativas" del Excel: hay que compararlo contra el BRUTO
+    # del DW (solo facturas). Si Excel ≈ dw_bruto ⇒ el Excel NO alcanzó a restar esas NC —su cruce
+    # solo resta la NC cuyo `ref` casa con NUMERO_FACTURA-PRODUCTO; las que no casan se descartan—.
+    # Ej.: FE9565/FE9570/FE9576 (mar-2026) salen en el Excel por su valor COMPLETO aunque estén 100%
+    # anuladas por RINV/2026/0098/0100/0101; en el DW factura + NC netean 0.
+    dwb = lo.consultar("""
+        SELECT EXTRACT(MONTH FROM fecha_factura)::int mes,
+               SUM(venta_subtotal) FILTER (WHERE tipo_movimiento='out_invoice') dw_bruto,
+               SUM(venta_subtotal) dw_neto
+        FROM marts.v_ventas_producto
+        WHERE EXTRACT(YEAR FROM fecha_factura)=2026
+        GROUP BY 1 ORDER BY 1""")
+    nc = m[["mes", "dif"]].copy()
+    nc["mesn"] = nc["mes"].map(inv)
+    nc = nc.merge(dwb, left_on="mesn", right_on="mes", how="left", suffixes=("", "_d"))
+    nc = nc.merge(xl_mes[["mes", "excel"]], left_on="mesn", right_on="mes", how="left",
+                  suffixes=("", "_x"))
+    nc["nc_dw"] = nc["dw_neto"] - nc["dw_bruto"]              # lo que el DW resta (negativo)
+    nc["excel_vs_bruto"] = nc["excel"] - nc["dw_bruto"]       # ≈0 ⇒ el Excel no restó NC
+    nc["residual"] = nc["dif"] - nc["nc_dw"]                  # lo no explicado por las NC (timing)
+    print("\n" + "=" * 78)
+    print("NOTAS CRÉDITO — el Excel ya viene neto, pero su cruce solo resta las NC que casan por")
+    print("NUMERO_FACTURA-PRODUCTO. Si excel_vs_bruto ≈ 0, el Excel NO restó las NC del mes y el gap")
+    print("es nc_dw (el DW es el correcto). residual = lo no explicado por NC (timing).")
+    print("=" * 78)
+    print(_fmt(nc[["mes", "dif", "dw_bruto", "dw_neto", "nc_dw", "excel_vs_bruto", "residual"]]))
+
+    # Documentos de NC que el DW resta (lo accionable: son los que el Excel no alcanzó a netear)
+    nc_docs = lo.consultar("""
+        SELECT EXTRACT(MONTH FROM fecha_factura)::int mes, numero_factura, SUM(venta_subtotal) monto
+        FROM marts.v_ventas_producto
+        WHERE EXTRACT(YEAR FROM fecha_factura)=2026 AND tipo_movimiento='out_refund'
+        GROUP BY 1, 2 ORDER BY 3 LIMIT 12""")
+    if not nc_docs.empty:
+        nc_docs = nc_docs.copy()
+        nc_docs["mes"] = nc_docs["mes"].map(MESES)
+        print("\nNC que resta el DW (top por monto):")
+        print(_fmt(nc_docs))
+
+    # ── 4) Diagnóstico: facturas ANULADAS (es_reverso) que el Excel cuenta y el DW excluye ──
     # payment_state='reversed' = factura anulada totalmente por una NC. El DW la excluye
     # (es_reverso IS NOT TRUE) → venta 0. El Excel, si su cruce de NC no la casó, la sigue contando.
     anul = lo.consultar("""
