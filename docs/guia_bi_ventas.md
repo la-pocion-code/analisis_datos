@@ -15,11 +15,20 @@ Operación del DW: [GUIA_OPERACION.md](GUIA_OPERACION.md) · Modelo: [MODELO_EST
 | `marts.v_ventas_explotada` | **Ventas en unidades de producto** (el kit repartido en sus componentes). |
 | `marts.dim_producto` | Producto, `categoria` de producto, `es_kit`. |
 | `marts.dim_tercero` | Cliente: `nombre`, `identificacion`, `pais`, `ciudad`, `departamento`, `cliente_padre`. |
-| `marts.dim_fecha` | Calendario (relación por `fecha_key`). |
+| `marts.dim_fecha` | Calendario. **Relacionar por `fecha_venta`** (ver abajo). |
 | `marts.map_zona`, `map_cliente_padre`, `map_categoria` | Mapeos comerciales que NO están en Odoo. |
 | `marts.v_exportaciones` | PyG de exportación por país y cliente. |
 
 Conexión PostgreSQL (variables `DB_*`), **modo Import**.
+No hace falta importar `map_nc_factura` ni `v_precio_componente`: ya vienen aplicadas dentro de las vistas.
+
+### Relación con el calendario ⚠
+Relaciona `dim_fecha[fecha]` con **`v_ventas_producto[fecha_venta]`** (y con
+`v_ventas_explotada[fecha_venta]`), **no** con `fecha` ni `fecha_factura`.
+
+`fecha_venta` es la fecha de la **factura original**: hace que una nota crédito reste en el mes de la
+venta que corrige. Si relacionas por la fecha contable (`fecha`/`fecha_key`) o por `fecha_factura`,
+las ventas mensuales salen distintas y las notas crédito caen en el mes equivocado (ver §4.2).
 
 ---
 
@@ -65,7 +74,8 @@ prorrateo por precio reciben **43.813** y **25.407** por unidad.
 No hay que replicarlas en DAX; están dentro de `v_ventas_producto`:
 
 - **Ventas netas**: ingresos (clase 4) de facturas **y notas crédito**; las NC restan vía
-  `venta_subtotal`/`cantidad_neta`. La contabilidad ya enlaza la NC (no se casa por `ref` como el Excel).
+  `venta_subtotal`/`cantidad_neta`. No se casa por `ref` como el Excel: el enlace NC→factura sale de la
+  **conciliación** de Odoo, y por eso la NC ya viene fechada en el mes de su factura (`fecha_venta`).
 - **Producto comercial**: `codigo` empieza por `PCN`/`KD`/`TNG`/`B8`.
 - **`es_reverso`**: excluye **anulaciones reales** (factura + NC de reversión ≥99%). **No** excluye las
   pagadas por **factoring** ni las de **NC parcial** — esas son ventas reales.
@@ -102,6 +112,8 @@ No hay que replicarlas en DAX; están dentro de `v_ventas_producto`:
 
 ## 5. Medidas base (DAX)
 
+Todas asumen la relación con `dim_fecha` por **`fecha_venta`** (§1).
+
 ```DAX
 -- Ventas (kits como unidad)
 Ventas = SUM ( v_ventas_producto[venta_subtotal] )
@@ -117,10 +129,21 @@ Ventas desde kits =
     CALCULATE ( [Ventas producto], v_ventas_explotada[origen] = "KIT" )
 % desde kits = DIVIDE ( [Ventas desde kits], [Ventas producto] )
 
--- Comparativos
+-- Comparativos (la inteligencia de tiempo cuelga de dim_fecha, ya relacionada por fecha_venta)
 Ventas mes anterior = CALCULATE ( [Ventas], DATEADD ( dim_fecha[fecha], -1, MONTH ) )
 Var % = DIVIDE ( [Ventas] - [Ventas mes anterior], [Ventas mes anterior] )
+
+-- Devoluciones del periodo (por el mes en que se EMITIÓ la NC, no el de su factura).
+-- Ojo: no usa la relación del calendario, sino la fecha propia del documento.
+Notas credito emitidas =
+    CALCULATE (
+        SUM ( v_ventas_producto[venta_subtotal] ),
+        v_ventas_producto[tipo_movimiento] = "out_refund",
+        USERELATIONSHIP ( dim_fecha[fecha], v_ventas_producto[fecha_factura] )
+    )
 ```
+> La medida de notas crédito requiere una **relación inactiva** entre `dim_fecha[fecha]` y
+> `v_ventas_producto[fecha_factura]`. Créala inactiva para no alterar las ventas.
 
 Para el detalle por producto usa **`Ventas producto`** (reparte los kits); para ver el catálogo tal
 como se vende, usa **`Ventas`**.
@@ -150,8 +173,25 @@ su valor completo.
 
 ## 7. Checklist antes de publicar
 
+- [ ] ¿El calendario está relacionado por **`fecha_venta`** (no por `fecha` ni `fecha_factura`)?
 - [ ] ¿Sumaste `v_ventas_producto` **o** `v_ventas_explotada`, nunca las dos juntas?
-- [ ] ¿Están las **dos empresas** incluidas (ojo enero)?
-- [ ] ¿Agrupaste por `fecha_factura` si comparas con el Excel?
+- [ ] ¿Están las **dos empresas** incluidas (ojo enero, que se facturó en la empresa 1)?
 - [ ] ¿Usaste `categoria` (cliente) y no `producto_categoria` para el canal?
 - [ ] ¿El total de `v_ventas_explotada` coincide con el de `v_ventas_producto`?
+- [ ] Si comparas contra el Excel: ¿agrupaste por `fecha_factura` (§6.2) en vez de `fecha_venta`?
+- [ ] ¿Filtraste kits con `dim_producto.es_kit` (son 39 kits reales, no los 139 productos fabricados)?
+
+---
+
+## 8. Resumen de columnas clave
+
+| Columna | Vista | Qué es |
+|---|---|---|
+| `fecha_venta` ⭐ | ambas | Fecha con la que se miden las ventas (la de la factura original) |
+| `fecha_factura` | ambas | Fecha propia del documento (para el informe de NC por mes) |
+| `venta_subtotal` / `cantidad_neta` | `v_ventas_producto` | Valor y unidades **con el kit como unidad** |
+| `venta_componente` / `cantidad_componente` | `v_ventas_explotada` | Valor y unidades **por producto** (kit repartido) |
+| `origen` | `v_ventas_explotada` | `INDIVIDUAL` o `KIT` |
+| `categoria` | ambas | Categoría del **cliente** (canal) |
+| `producto_categoria` | ambas | Categoría del **producto** |
+| `es_kit` | `dim_producto` | Kit real (BOM phantom), 39 productos |
