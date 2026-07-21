@@ -93,6 +93,16 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `consolidar_categoria`). El código del cliente trae el país en el sufijo (`-EC/-PE/-US/-DO/-CO`);
   el "error de Colombia" venía de que `x_plan20` quedaba en `[PAIS-CO]` por defecto. `v_exportaciones`
   = todo lo `EXPORTACION` (o con `cliente_analitico`) para auditar y proyectar el PyG por país×cliente.
+  **PyG por país: agrupar por `v_exportaciones.pais_destino`**, NO por `pais`: los gastos de
+  exportación se cargan a proveedores logísticos colombianos, así que `pais` los deja en Colombia.
+  `pais_destino` = sufijo del cliente analítico (`[CLI-ZAR-EC]`→Ecuador) → país en el nombre del centro
+  `[EXPO]` → `pais` si no es Colombia. Validado 2026: Ecuador 947M/26M, USA 273M/8M, Dominicana
+  261M/18M, Perú 174M/9M (ingresos/gastos); solo `[EXPO] EPO-08-2026 FEX 7` (14,4M) quedó sin país.
+- ⚠ **`EXPORTACION` ≠ `EXTERIOR`** (Odoo usa la MISMA etiqueta `EXTERIOR` para clientes de exportación
+  y para proveedores extranjeros): `EXPORTACION` = lo que **vendemos** afuera (+ logística `[EXPO]`);
+  `EXTERIOR` = lo que **compramos** afuera (AWS, Odoo Inc, Apple…, clases 5/6 ≈ 3.465M). La regla manda
+  a EXPORTACION solo las **ventas** (`es_venta`). Las categorías miden **ventas**; `EXTERIOR` queda
+  como bucket de gastos de proveedores del exterior (hoy no se usa para reportar).
 - **Fuente:** todo de Odoo (`account.move.line`+`account.move`, catálogos), salvo `dim_fecha`
   (calendario generado) y `correcciones` (overrides manuales).
 - **Reglas del hecho:** `es_venta`/`es_reverso` (ventas = clase 4 sin **anulaciones reales**:

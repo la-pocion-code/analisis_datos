@@ -132,10 +132,17 @@ alguno de esos Excel). Requiere el DDL `sql/marts/16_mapeos_ventas.sql` aplicado
   (depto+categoría) → `map_zona_cundinamarca`. Cliente consolidado por `map_cliente_padre`.
   (`map_zona_bogota` está deprecada y vacía.)
 - **Exportaciones (PyG por país y cliente):** usar `marts.v_exportaciones` (líneas `EXPORTACION` =
-  clientes EXTERIOR + gastos en centros `[EXPO]`). Trae `pais` (de `dim_tercero.pais`, estricto),
-  `cliente_analitico` (plan 22, atribuye ventas **y** gastos de logística al cliente) y los importes.
-  Para PyG por país×cliente: agrupar por `pais` y `cliente_analitico`. `cliente_analitico` también
-  sirve para clientes clave domésticos (Novaventa, Copidrogas, Farmatodo, Pasteur).
+  **ventas** a clientes EXTERIOR + gastos en centros `[EXPO]`). Para el **PyG por país agrupar por
+  `pais_destino`** (NO por `pais`): los gastos de exportación se cargan a proveedores logísticos
+  **colombianos**, así que `pais` (país estricto del tercero) los deja en Colombia. `pais_destino`
+  resuelve el país real en cascada: sufijo del cliente analítico (`[CLI-ZAR-EC]`→Ecuador) → nombre del
+  centro `[EXPO]` → país del tercero si no es Colombia. Lo que quede en `(sin país)` = centro `[EXPO]`
+  sin país en el nombre → corregir en Odoo. `cliente_analitico` (plan 22) sirve además para clientes
+  clave domésticos (Novaventa, Copidrogas, Farmatodo, Pasteur).
+- ⚠ **`EXPORTACION` ≠ `EXTERIOR`** (son conceptos opuestos, Odoo usa la misma etiqueta para ambos):
+  `EXPORTACION` = lo que **vendemos** afuera (+ su logística); `EXTERIOR` = lo que **compramos** afuera
+  (AWS, Odoo Inc, Apple…). Las categorías miden **ventas** → para ventas del exterior usar
+  `EXPORTACION`; `EXTERIOR` es un bucket de gastos de proveedores extranjeros.
 - Detalle de medidas: [MODELO_ESTRELLA.md §9 y §11](MODELO_ESTRELLA.md).
 
 ## 6. Programación en Railway (ya montado)

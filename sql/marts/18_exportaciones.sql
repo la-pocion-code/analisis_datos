@@ -19,7 +19,10 @@ CREATE INDEX IF NOT EXISTS ix_fact_cliente_analitico ON marts.fact_movimiento_co
 
 -- ── v_exportaciones: auditoría + insumo para el PyG por país×cliente ─────────
 -- Todo lo marcado como EXPORTACION (clientes EXTERIOR o gastos en centros [EXPO]).
-CREATE OR REPLACE VIEW marts.v_exportaciones AS
+-- Se recrea (no CREATE OR REPLACE): la lista de columnas cambia al añadir `pais_destino`.
+DROP VIEW IF EXISTS marts.v_exportaciones;
+
+CREATE VIEW marts.v_exportaciones AS
 SELECT
     f.linea_id,
     f.empresa_id,
@@ -34,6 +37,27 @@ SELECT
     t.nombre                AS tercero,              -- quien factura/recibe el gasto (proveedor logístico)
     f.cliente_analitico,                             -- cliente exportador atribuido (plan 22)
     f.pais,                                          -- país del tercero de la línea (estricto)
+    -- pais_destino: país de la EXPORTACIÓN (para el PyG por país). Los gastos de exportación se
+    -- cargan a proveedores logísticos COLOMBIANOS (TRANSTAINER, DHL…), así que `pais` los deja en
+    -- Colombia; el país real está en el analítico o en el nombre del centro [EXPO]. Cascada:
+    --   1) sufijo del código del cliente analítico (plan 22): [CLI-ZAR-EC] → Ecuador
+    --   2) nombre del centro [EXPO] (donde vive el país de los gastos)
+    --   3) país del tercero, si no es Colombia (cubre las ventas)
+    COALESCE(
+        CASE substring(f.cliente_analitico from '\[CLI-[A-Z]+-([A-Z]{2})\]')
+             WHEN 'EC' THEN 'Ecuador'
+             WHEN 'PE' THEN 'Peru'
+             WHEN 'US' THEN 'United States'
+             WHEN 'DO' THEN 'República Dominicana'
+             WHEN 'CO' THEN 'Colombia'
+        END,
+        CASE WHEN cc.nombre ILIKE '%ECUADOR%' OR cc.nombre ILIKE '%ECU %' THEN 'Ecuador'
+             WHEN cc.nombre ILIKE '%PERU%'       THEN 'Peru'
+             WHEN cc.nombre ILIKE '%USA%'        THEN 'United States'
+             WHEN cc.nombre ILIKE '%DOMINICANA%' THEN 'República Dominicana'
+        END,
+        NULLIF(f.pais, 'Colombia')
+    )                       AS pais_destino,
     f.categoria,
     cc.codigo               AS centro_codigo,
     cc.nombre               AS centro_nombre,
