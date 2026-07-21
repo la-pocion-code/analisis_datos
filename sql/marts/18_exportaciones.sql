@@ -44,7 +44,7 @@ SELECT
     --   2) nombre del centro [EXPO] (donde vive el país de los gastos)
     --   3) país del tercero, si no es Colombia (cubre las ventas)
     COALESCE(
-        CASE substring(f.cliente_analitico from '\[CLI-[A-Z]+-([A-Z]{2})\]')
+        CASE substring(f.cliente_analitico from '\[CLI-[A-Z]+-([A-Z]{2})[0-9]*\]')
              WHEN 'EC' THEN 'Ecuador'
              WHEN 'PE' THEN 'Peru'
              WHEN 'US' THEN 'United States'

@@ -95,9 +95,14 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   = todo lo `EXPORTACION` (o con `cliente_analitico`) para auditar y proyectar el PyG por país×cliente.
   **PyG por país: agrupar por `v_exportaciones.pais_destino`**, NO por `pais`: los gastos de
   exportación se cargan a proveedores logísticos colombianos, así que `pais` los deja en Colombia.
-  `pais_destino` = sufijo del cliente analítico (`[CLI-ZAR-EC]`→Ecuador) → país en el nombre del centro
-  `[EXPO]` → `pais` si no es Colombia. Validado 2026: Ecuador 947M/26M, USA 273M/8M, Dominicana
-  261M/18M, Perú 174M/9M (ingresos/gastos); solo `[EXPO] EPO-08-2026 FEX 7` (14,4M) quedó sin país.
+  El país sale del **plan 22 (cliente)**, no del tercero: `pais_destino` = sufijo del cliente analítico
+  (`[CLI-ZAR-EC]`→Ecuador) → país en el nombre del centro `[EXPO]` → `pais` si no es Colombia.
+  **Toda línea con plan 22 de un cliente NO-CO es `EXPORTACION`** (regla en `consolidar_categoria`):
+  así entran los **costos** (clase 6) y los gastos de terceros que el analítico asocia a la exportación
+  aunque el tercero sea colombiano — sin esa regla quedaban como `EXTERIOR` y el PyG perdía ~395M.
+  Validado 2026 (ingresos/costo/gastos): Ecuador 947M/324M/26M · USA 273M/30M/8M · Dominicana
+  261M/41M/18M · Perú 175M/**0**/9M. Pendientes de fuente: Perú sin costo tagueado y
+  `[EXPO] EPO-08-2026 FEX 7` (14,4M) sin país en el nombre.
 - ⚠ **`EXPORTACION` ≠ `EXTERIOR`** (Odoo usa la MISMA etiqueta `EXTERIOR` para clientes de exportación
   y para proveedores extranjeros): `EXPORTACION` = lo que **vendemos** afuera (+ logística `[EXPO]`);
   `EXTERIOR` = lo que **compramos** afuera (AWS, Odoo Inc, Apple…, clases 5/6 ≈ 3.465M). La regla manda

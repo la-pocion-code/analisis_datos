@@ -135,9 +135,12 @@ alguno de esos Excel). Requiere el DDL `sql/marts/16_mapeos_ventas.sql` aplicado
   **ventas** a clientes EXTERIOR + gastos en centros `[EXPO]`). Para el **PyG por país agrupar por
   `pais_destino`** (NO por `pais`): los gastos de exportación se cargan a proveedores logísticos
   **colombianos**, así que `pais` (país estricto del tercero) los deja en Colombia. `pais_destino`
-  resuelve el país real en cascada: sufijo del cliente analítico (`[CLI-ZAR-EC]`→Ecuador) → nombre del
-  centro `[EXPO]` → país del tercero si no es Colombia. Lo que quede en `(sin país)` = centro `[EXPO]`
-  sin país en el nombre → corregir en Odoo. `cliente_analitico` (plan 22) sirve además para clientes
+  resuelve el país real en cascada **desde el plan 22 (cliente), no desde el tercero**: sufijo del
+  cliente analítico (`[CLI-ZAR-EC]`→Ecuador) → nombre del centro `[EXPO]` → país del tercero si no es
+  Colombia. Además **toda línea con plan 22 de un cliente NO-CO se marca `EXPORTACION`**, así entran
+  los **costos** (clase 6) y los gastos de terceros asociados a la exportación aunque el tercero sea
+  colombiano (TRANSTAINER, puertos…). Lo que quede en `(sin país)` = centro `[EXPO]` sin país en el
+  nombre → corregir en Odoo. `cliente_analitico` (plan 22) sirve además para clientes
   clave domésticos (Novaventa, Copidrogas, Farmatodo, Pasteur).
 - ⚠ **`EXPORTACION` ≠ `EXTERIOR`** (son conceptos opuestos, Odoo usa la misma etiqueta para ambos):
   `EXPORTACION` = lo que **vendemos** afuera (+ su logística); `EXTERIOR` = lo que **compramos** afuera

@@ -838,12 +838,15 @@ def aplicar_correcciones(loader):
 # (por eso Shopify gana sobre CLIENTE). Cierra con el default 'CALL CENTER' del Excel.
 # Al final se normaliza el vocabulario con marts.map_categoria (editable sin tocar código).
 # Nota: dim_tercero.pais guarda el NOMBRE del país ("Colombia"), no el código 'CO' del Excel.
-_SQL_CATEGORIA = """
+_SQL_CATEGORIA = r"""
 WITH base AS (
     SELECT f.linea_id, f.es_venta,
            COALESCE(t.tipo_cliente, f.canal) AS cat0,   -- tipo_cliente manda; el analítico rellena
            t.tipo_cliente, t.etiqueta, t.pais, f.equipo,
-           cc.codigo AS centro_codigo
+           cc.codigo AS centro_codigo,
+           -- país del CLIENTE del plan 22 (sufijo del código: [CLI-ZAR-EC] → EC). Si no es CO, la
+           -- línea pertenece a una EXPORTACIÓN aunque el tercero sea un proveedor colombiano.
+           substring(f.cliente_analitico from '\[CLI-[A-Z]+-([A-Z]{2})[0-9]*\]') AS pais_cli
     FROM marts.fact_movimiento_contable f
     LEFT JOIN marts.dim_tercero      t  ON t.tercero_id      = f.tercero_id
     LEFT JOIN marts.dim_centro_costo cc ON cc.centro_costo_id = f.centro_costo_id
@@ -851,9 +854,13 @@ WITH base AS (
 resuelta AS (
     SELECT linea_id, pais,
            CASE
-               -- EXPORTACION = VENTAS a clientes EXTERIOR + gastos de exportación (centros [EXPO]).
+               -- EXPORTACION = VENTAS a clientes EXTERIOR + gastos de exportación (centros [EXPO])
+               -- + TODO lo marcado con el plan 22 "Cliente" de un cliente del exterior (sufijo <> CO):
+               -- así entran los costos y los gastos de terceros (logística, proveedores) que la
+               -- distribución analítica asocia a esa exportación, aunque el tercero sea colombiano.
                -- es_venta evita meter gastos de PROVEEDORES extranjeros (AWS, Odoo Inc, agencias de
                -- marketing) que también están etiquetados EXTERIOR pero no son exportación.
+               WHEN pais_cli IS NOT NULL AND pais_cli <> 'CO' THEN 'EXPORTACION'
                WHEN es_venta AND (tipo_cliente = 'EXTERIOR' OR etiqueta ILIKE '%EXTERIOR%') THEN 'EXPORTACION'
                WHEN centro_codigo = 'EXPO'                  THEN 'EXPORTACION'
                WHEN equipo = 'Shopify'                      THEN 'SHOPIFY'
