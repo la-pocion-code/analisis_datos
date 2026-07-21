@@ -969,6 +969,85 @@ def backfill_cliente_analitico(od, loader):
     logging.info(f"  cliente_analitico (plan 22): {len(pares)} líneas, {n} actualizadas")
 
 
+# ══ Puente NOTA CRÉDITO → FACTURA original (para que la NC reste en el mes de la factura) ══
+# El enlace vive SOLO en la conciliación (`account.partial.reconcile`): muchas NC no traen `ref` ni
+# `reversed_entry_id` (ej. NCR1858 → FEVY80693). Se acumula lo conciliado contra FACTURAS de venta y
+# se reparte proporcionalmente (una NC puede corregir varias facturas). Ver sql/marts/19_nc_factura.sql.
+def enlazar_notas_credito(od, loader, desde="2024-01-01"):
+    ncs, off = [], 0
+    while True:
+        page = od.search_read("account.move",
+                              [["move_type", "=", "out_refund"], ["state", "=", "posted"],
+                               ["invoice_date", ">=", desde]],
+                              ["id", "invoice_date"], limit=5000, offset=off, context=CTX_ALL)
+        if not page:
+            break
+        ncs += page
+        off += len(page)
+    if not ncs:
+        logging.info("  nc->factura: sin notas crédito de venta")
+        return
+    nc_ids = [n["id"] for n in ncs]
+
+    # Líneas de CxC de las NC y sus conciliaciones (matched_debit_ids = contra qué débito concilian).
+    lns, off = [], 0
+    while True:
+        page = od.search_read("account.move.line",
+                              [["move_id", "in", nc_ids], ["account_type", "=", "asset_receivable"]],
+                              ["move_id", "matched_debit_ids"], limit=20000, offset=off, context=CTX_ALL)
+        if not page:
+            break
+        lns += page
+        off += len(page)
+    linea_a_nc = {l["id"]: m2o_id(l.get("move_id")) for l in lns}
+    pr_ids = [p for l in lns for p in (l.get("matched_debit_ids") or [])]
+    if not pr_ids:
+        logging.info("  nc->factura: sin conciliaciones")
+        return
+    pr = od.read("account.partial.reconcile", pr_ids, ["amount", "debit_move_id", "credit_move_id"])
+
+    # La contrapartida (débito) es una línea: hay que subir a su move y quedarse solo con out_invoice.
+    deb_ids = list({m2o_id(p["debit_move_id"]) for p in pr})
+    deb_move = {l["id"]: m2o_id(l.get("move_id"))
+                for l in od.read("account.move.line", deb_ids, ["move_id"])}
+    facturas = {m["id"]: m for m in od.read("account.move", list({v for v in deb_move.values() if v}),
+                                            ["move_type", "invoice_date", "journal_id"])}
+    # ⚠ Las NOTAS DÉBITO también son `out_invoice`: solo se distinguen por el DIARIO ("Nota Debito
+    # Nacional Yumbo", "Nota Debito Exportacion"). Se excluyen: la NC debe atribuirse a la FACTURA
+    # real, no a una nota débito (ej. NCR1858 concilia 49,9M con FEVY80693 y 2,3M con NDY21).
+    es_nota_debito = {jid for jid in {m2o_id(f.get("journal_id")) for f in facturas.values()} if jid}
+    if es_nota_debito:
+        diarios = od.read("account.journal", list(es_nota_debito), ["name"])
+        es_nota_debito = {j["id"] for j in diarios if _norm(j.get("name")).startswith("nota debito")}
+    acum = {}   # nc_id -> {factura_id: monto conciliado}
+    for p in pr:
+        nc_id = linea_a_nc.get(m2o_id(p["credit_move_id"]))
+        fid = deb_move.get(m2o_id(p["debit_move_id"]))
+        fac = facturas.get(fid) or {}
+        if (nc_id and fid and fac.get("move_type") == "out_invoice" and fac.get("invoice_date")
+                and m2o_id(fac.get("journal_id")) not in es_nota_debito):
+            acum.setdefault(nc_id, {})[fid] = acum.setdefault(nc_id, {}).get(fid, 0) + (p.get("amount") or 0)
+
+    filas = []
+    for nc_id, facs in acum.items():
+        total = sum(facs.values())
+        if total <= 0:
+            continue
+        for fid, monto in facs.items():
+            filas.append({"nc_factura_id": nc_id, "factura_id": fid,
+                          "proporcion": monto / total,
+                          "fecha_venta": str(facturas[fid]["invoice_date"])[:10]})
+    if not filas:
+        logging.info("  nc->factura: ninguna NC concilia contra facturas de venta")
+        return
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("TRUNCATE marts.map_nc_factura;")
+        conn.commit()
+    upsert(loader, pd.DataFrame(filas), "map_nc_factura", ["nc_factura_id", "factura_id"])
+    logging.info(f"  nc->factura: {len(acum)} notas crédito enlazadas ({len(filas)} pares)")
+
+
 def consolidar_categoria(loader):
     """Puebla fact.categoria (tipo de cliente) desde tipo_cliente + analítico plan 21, con las
     reglas de respaldo del Excel y normalizado por marts.map_categoria. En el mismo UPDATE denormaliza
@@ -1081,6 +1160,7 @@ def main(modo, desde, hasta=None):
     aplicar_correcciones(loader)  # limpieza de datos mal registrados en Odoo
     canonicalizar_puc(loader)     # unifica códigos 8 vs 9 díg de la misma cuenta (no destructivo)
     backfill_cliente_analitico(od, loader)  # plan 22 "Cliente" en líneas ya cargadas
+    enlazar_notas_credito(od, loader)       # NC → factura original (la NC resta en el mes de la factura)
     consolidar_categoria(loader)  # categoría (incl. EXPORTACION) + país por línea
 
     logging.info(f"OK {modo.upper()} completado: hecho={total_h} líneas.")

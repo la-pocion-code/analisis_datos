@@ -15,7 +15,10 @@
 
 -- Se recrean (no CREATE OR REPLACE): la lista de columnas cambia al exponer `equipo`.
 -- v_ventas_explotada depende de esta vista y se vuelve a crear en 15b_kits.sql.
+-- Orden importa: v_ventas_explotada y v_precio_componente dependen de v_ventas_producto.
+-- Ambas se vuelven a crear en 15b_kits.sql (aplicar 14 y luego 15b).
 DROP VIEW IF EXISTS marts.v_ventas_explotada;
+DROP VIEW IF EXISTS marts.v_precio_componente;
 DROP VIEW IF EXISTS marts.v_ventas_producto;
 
 CREATE VIEW marts.v_ventas_producto AS
@@ -28,8 +31,14 @@ SELECT
     f.empresa_id,
     e.nombre                AS empresa_nombre,
     f.fecha,
-    f.fecha_factura,
-    d.anio, d.mes, d.mes_nombre, d.periodo_aaaamm,
+    f.fecha_factura,                                     -- fecha propia del documento (la NC, la suya)
+    d.anio, d.mes, d.mes_nombre, d.periodo_aaaamm,       -- por fecha CONTABLE
+    -- ⭐ fecha_venta: fecha con la que se miden las VENTAS. Para una NC es la fecha de la FACTURA que
+    -- corrige (así la NC resta en el mes de la venta original, no en el suyo); para una factura es la
+    -- suya. Ej.: NCR1858 (mar-2026) corrige FEVY80693 (nov-2025) → resta en nov-2025.
+    COALESCE(m.fecha_venta, f.fecha_factura)             AS fecha_venta,
+    EXTRACT(YEAR  FROM COALESCE(m.fecha_venta, f.fecha_factura))::int AS anio_venta,
+    EXTRACT(MONTH FROM COALESCE(m.fecha_venta, f.fecha_factura))::int AS mes_venta,
     -- cliente
     f.tercero_id,
     t.nombre                AS cliente,
@@ -47,9 +56,10 @@ SELECT
     p.codigo                AS producto_codigo,
     p.nombre                AS producto,
     p.categoria             AS producto_categoria,
-    -- medidas (netas: NC restan)
-    (CASE WHEN f.tipo_movimiento = 'out_refund' THEN -f.cantidad ELSE f.cantidad END) AS cantidad_neta,
-    f.venta_neta            AS venta_subtotal,           -- crédito − débito (sin impuestos)
+    -- medidas (netas: NC restan). Prorrateadas si la NC corrige varias facturas.
+    (CASE WHEN f.tipo_movimiento = 'out_refund' THEN -f.cantidad ELSE f.cantidad END)
+        * COALESCE(m.proporcion, 1)                      AS cantidad_neta,
+    f.venta_neta * COALESCE(m.proporcion, 1) AS venta_subtotal,  -- crédito − débito (sin impuestos)
     f.precio_unitario
 FROM marts.fact_movimiento_contable f
 JOIN marts.dim_cuenta   c ON c.cuenta_id  = f.cuenta_id
@@ -58,6 +68,10 @@ LEFT JOIN marts.dim_tercero  t ON t.tercero_id  = f.tercero_id
 LEFT JOIN marts.dim_vendedor v ON v.vendedor_id = f.vendedor_id
 LEFT JOIN marts.dim_producto p ON p.producto_id = f.producto_id
 LEFT JOIN marts.dim_empresa  e ON e.empresa_id  = f.empresa_id
+-- Puente NC→factura: solo matchea NOTAS CRÉDITO (las facturas no están en el puente → 1 fila,
+-- proporcion 1). ⚠ Una NC que corrige VARIAS facturas genera VARIAS filas (76 de ~2.000 NC),
+-- así que `linea_id` deja de ser único en esta vista.
+LEFT JOIN marts.map_nc_factura m ON m.nc_factura_id = f.factura_id
 WHERE f.es_venta IS TRUE
   AND c.clase_codigo = '4'
   AND f.es_reverso IS NOT TRUE

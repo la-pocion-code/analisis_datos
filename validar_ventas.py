@@ -4,7 +4,9 @@ validar_ventas.py — Concilia marts.v_ventas_producto (DW) contra el base_venta
 
 Alineación necesaria para que cuadre (ver docs/GUIA_OPERACION.md §7):
   1. TODAS las empresas (el Excel no distingue; ene-2026 estaba en empresa 1, luego en la 8).
-  2. Por FECHA DE FACTURA (el Excel agrupa por invoice_date, no por fecha contable).
+  2. Por FECHA_VENTA (no la contable ni la propia de la NC): para una nota crédito es la fecha de la
+     FACTURA que corrige, así la NC resta en el mes de la venta original — igual que hace el Excel al
+     casar la NC con su factura. Ej.: NCR1858 (mar-2026) corrige FEVY80693 (nov-2025) → resta en nov.
   3. Producto comercial [PCN/[KD/[TNG/[B8 (ya filtrado en ambos lados).
 
 Nota: `es_reverso` = ANULACIÓN real (factura + NC de reversión ≥99%), NO `payment_state='reversed'`
@@ -69,10 +71,10 @@ def main():
     xl_mes = xl.groupby("mes").agg(excel=("total_cop", "sum"),
                                    lineas_xl=("total_cop", "size")).reset_index()
     dw_mes = lo.consultar("""
-        SELECT EXTRACT(MONTH FROM fecha_factura)::int mes,
+        SELECT mes_venta AS mes,
                SUM(venta_subtotal) dw, COUNT(*) lineas_dw
         FROM marts.v_ventas_producto
-        WHERE EXTRACT(YEAR FROM fecha_factura) = 2026
+        WHERE anio_venta = 2026
         GROUP BY 1 ORDER BY 1""")
     m = xl_mes.merge(dw_mes, on="mes", how="outer").sort_values("mes")
     m["dif"] = m["dw"] - m["excel"]
@@ -80,7 +82,7 @@ def main():
     m["mes"] = m["mes"].map(MESES)
     print("=" * 78)
     print("CONCILIACIÓN MENSUAL 2026 — v_ventas_producto (DW) vs base_ventas (Excel)")
-    print("Todas las empresas · por FECHA DE FACTURA · producto comercial · neto")
+    print("Todas las empresas · por FECHA_VENTA (la NC resta en el mes de su factura) · comercial · neto")
     print("=" * 78)
     print(_fmt(m))
     tot_xl, tot_dw = m["excel"].sum(), m["dw"].sum()
@@ -97,7 +99,7 @@ def main():
         dwc = lo.consultar(f"""
             SELECT COALESCE(categoria,'(nulo)') categoria, SUM(venta_subtotal) dw
             FROM marts.v_ventas_producto
-            WHERE EXTRACT(YEAR FROM fecha_factura)=2026 AND EXTRACT(MONTH FROM fecha_factura)={mesn}
+            WHERE anio_venta=2026 AND mes_venta={mesn}
             GROUP BY 1""")
         c = xlc.merge(dwc, on="categoria", how="outer").fillna(0)
         c["dif"] = c["dw"] - c["excel"]
@@ -116,11 +118,11 @@ def main():
     # Ej.: FE9565/FE9570/FE9576 (mar-2026) salen en el Excel por su valor COMPLETO aunque estén 100%
     # anuladas por RINV/2026/0098/0100/0101; en el DW factura + NC netean 0.
     dwb = lo.consultar("""
-        SELECT EXTRACT(MONTH FROM fecha_factura)::int mes,
+        SELECT mes_venta AS mes,
                SUM(venta_subtotal) FILTER (WHERE tipo_movimiento='out_invoice') dw_bruto,
                SUM(venta_subtotal) dw_neto
         FROM marts.v_ventas_producto
-        WHERE EXTRACT(YEAR FROM fecha_factura)=2026
+        WHERE anio_venta=2026
         GROUP BY 1 ORDER BY 1""")
     nc = m[["mes", "dif"]].copy()
     nc["mesn"] = nc["mes"].map(inv)
@@ -139,9 +141,9 @@ def main():
 
     # Documentos de NC que el DW resta (lo accionable: son los que el Excel no alcanzó a netear)
     nc_docs = lo.consultar("""
-        SELECT EXTRACT(MONTH FROM fecha_factura)::int mes, numero_factura, SUM(venta_subtotal) monto
+        SELECT mes_venta AS mes, numero_factura, SUM(venta_subtotal) monto
         FROM marts.v_ventas_producto
-        WHERE EXTRACT(YEAR FROM fecha_factura)=2026 AND tipo_movimiento='out_refund'
+        WHERE anio_venta=2026 AND tipo_movimiento='out_refund'
         GROUP BY 1, 2 ORDER BY 3 LIMIT 12""")
     if not nc_docs.empty:
         nc_docs = nc_docs.copy()

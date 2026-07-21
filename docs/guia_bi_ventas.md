@@ -74,7 +74,21 @@ No hay que replicarlas en DAX; están dentro de `v_ventas_producto`:
 
 1. **Combina las dos empresas.** Ene-2026 se facturó en la **empresa 1** (HFA) y desde feb en la **8**
    (PCN). Filtrar una sola parte el año. Usa slicer de `empresa_id` solo si quieres verlas separadas.
-2. **Agrupa por fecha de factura** (`fecha_factura`), no por la contable, si vas a comparar con el Excel.
+2. **Agrupa las ventas por `fecha_venta`** (o `anio_venta`/`mes_venta`), **no** por `fecha_factura`.
+
+   ### Las tres fechas y para qué sirve cada una
+   | Columna | Qué es | Cuándo usarla |
+   |---|---|---|
+   | **`fecha_venta`** | Fecha de la **factura original**. Para una NC es la fecha de la factura que corrige. | **Ventas** (la venta neta real) |
+   | `fecha_factura` | Fecha propia del documento (la NC lleva la suya) | Informe de **notas crédito por mes** |
+   | `fecha` | Fecha **contable** del asiento | Conciliación contable / PyG |
+
+   **Por qué:** una NC de marzo que corrige una factura de noviembre debe **restar en noviembre**, no en
+   marzo. Ejemplo real: `NCR1858` (04-mar-2026) corrige `FEVY80693` (06-nov-2025) → resta en nov-2025.
+   Medido en 2025-2026: **777 NC** caían en un mes distinto al de su factura, por **~6.584 millones**.
+   El enlace se toma de la **conciliación** de Odoo (`marts.map_nc_factura`), porque la mayoría de NC no
+   traen `ref` ni `reversed_entry_id`. Si una NC corrige varias facturas, su valor se **prorratea**
+   (por eso `linea_id` no es único en la vista: afecta a ~76 de ~2.200 NC).
 3. **`categoria` ≠ `producto_categoria`**:
    - `categoria` = categoría del **CLIENTE** (CALL CENTER, MAYORISTA NV, SHOPIFY, EXPORTACION…),
      consolidada de `partner_type_id` + analítico plan 21 + reglas de respaldo.
@@ -118,9 +132,15 @@ como se vende, usa **`Ventas`**.
 `python validar_ventas.py` concilia mes a mes y las cuantifica. Las dos causas normales:
 
 1. **Notas crédito.** El Excel ya viene **neto**, pero su cruce solo resta la NC cuyo `ref` casa con
-   una factura-producto; **las que no casan se descartan**. El DW resta todas → queda más bajo y es el
-   correcto. Ej. jun-2026: el DW resta 213,9M (`RFEX2` 200,8M…) que el Excel no restó.
-2. **Timing**: el CSV es una foto; el DW sigue cargando cada hora.
+   una factura-producto; **las que no casan se descartan** (no quedan en ningún mes). El DW resta
+   todas → queda más bajo y es el correcto. Ej. jun-2026: el DW resta 213,9M (`RFEX2` 200,8M…) que el
+   Excel no restó.
+2. **Mes de la nota crédito.** El DW atribuye la NC al mes de **su factura** (`fecha_venta`); el Excel
+   no lo hace de forma consistente. Por eso al conciliar por `fecha_venta` los meses con muchas NC
+   cruzadas (mar/abr-2026) **divergen más** del Excel: no es un error del DW, es que el Excel omite
+   esas NC. Si quieres una comparación "manzana con manzana" contra el Excel, agrupa por
+   `fecha_factura`; para el **número correcto de ventas**, usa `fecha_venta`.
+3. **Timing**: el CSV es una foto; el DW sigue cargando cada hora.
 
 Ejemplo de control: `FE9565`/`FE9570`/`FE9576` (mar-2026) están 100% anuladas por
 `RINV/2026/0101/0100/0098` → en el DW la factura suma y la NC resta (**neto 0**); en el Excel salen por

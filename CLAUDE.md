@@ -63,6 +63,16 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   factura. Se guarda como columna degenerada del hecho (patrón de `vendedor_id`). Kits: `dim_kit_componente` desde
   `mrp.bom` phantom (`cargar_kits`) + `v_ventas_explotada`. Poblado: `python etl_dw_marts.py --dims`.
   **Ventas en BI: ver `docs/guia_bi_ventas.md`** (las 2 formas de ver los kits + medidas DAX).
+- **La NOTA CRÉDITO resta en el mes de SU FACTURA (`fecha_venta`)** — `19_nc_factura.sql` +
+  `enlazar_notas_credito`. Antes una NC restaba en su propio mes: `NCR1858` (mar-2026) corrige
+  `FEVY80693` (nov-2025) y deprimía marzo e inflaba noviembre. Medido 2025-2026: **777 NC** en un mes
+  distinto al de su factura, ~**6.584M** mal atribuidos. El enlace **solo existe en la CONCILIACIÓN**
+  (`account.partial.reconcile`): la mayoría de NC no traen `ref` ni `reversed_entry_id`. El puente
+  `marts.map_nc_factura` guarda `proporcion` (una NC puede corregir varias facturas → se **prorratea**;
+  por eso `linea_id` no es único en la vista, ~76 de ~2.200 NC) y `fecha_venta`.
+  ⚠ Se **excluyen las notas débito**: también son `out_invoice` y solo se distinguen por el **diario**
+  (`Nota Debito Nacional Yumbo`/`Exportacion`). **3 fechas en `v_ventas_producto`:** `fecha_venta`
+  (⭐ para VENTAS) · `fecha_factura` (propia del doc, para informe de NC por mes) · `fecha` (contable).
 - **KITS — dos presentaciones y reparto de valor:** `v_ventas_producto` = **kits vendidos** (el kit es
   la unidad, tal como se factura); `v_ventas_explotada` = **unidades de producto** (kit repartido en
   componentes). ⚠ **No sumar ambas**: es el mismo dinero (los totales coinciden exacto).
