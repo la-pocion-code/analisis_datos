@@ -839,17 +839,44 @@ def aplicar_correcciones(loader):
 # Al final se normaliza el vocabulario con marts.map_categoria (editable sin tocar código).
 # Nota: dim_tercero.pais guarda el NOMBRE del país ("Colombia"), no el código 'CO' del Excel.
 _SQL_CATEGORIA = r"""
-WITH base AS (
+-- Lookups del país por NOMBRE del cliente (marts.map_cliente_pais). Se resuelven UNA vez sobre
+-- conjuntos pequeños (terceros y valores distintos del analítico) para no hacer un ILIKE por cada
+-- una de las millones de líneas del hecho, y para que el LEFT JOIN no multiplique filas.
+WITH cpais_t AS (            -- tercero_id → país (por el nombre del tercero)
+    SELECT t.tercero_id, MIN(m.pais) AS pais
+    FROM marts.dim_tercero t
+    JOIN marts.map_cliente_pais m ON t.nombre ILIKE m.cliente_patron
+    GROUP BY t.tercero_id
+),
+cpais_a AS (                 -- cliente_analitico → país (por el nombre dentro del analítico)
+    SELECT d.cliente_analitico, MIN(m.pais) AS pais
+    FROM (SELECT DISTINCT cliente_analitico FROM marts.fact_movimiento_contable
+          WHERE cliente_analitico IS NOT NULL) d
+    JOIN marts.map_cliente_pais m ON d.cliente_analitico ILIKE m.cliente_patron
+    GROUP BY d.cliente_analitico
+),
+base AS (
     SELECT f.linea_id, f.es_venta,
            COALESCE(t.tipo_cliente, f.canal) AS cat0,   -- tipo_cliente manda; el analítico rellena
            t.tipo_cliente, t.etiqueta, t.pais, f.equipo,
-           cc.codigo AS centro_codigo,
-           -- país del CLIENTE del plan 22 (sufijo del código: [CLI-ZAR-EC] → EC). Si no es CO, la
-           -- línea pertenece a una EXPORTACIÓN aunque el tercero sea un proveedor colombiano.
-           substring(f.cliente_analitico from '\[CLI-[A-Z]+-([A-Z]{2})[0-9]*\]') AS pais_cli
+           cc.codigo AS centro_codigo, f.cliente_analitico,
+           -- País del CLIENTE de la línea: el NOMBRE manda sobre el código del plan 22, así un código
+           -- mal puesto en -CO no saca la línea de exportaciones (al inicio el país quedaba en Colombia).
+           COALESCE(
+               ca.pais, ct.pais,
+               CASE substring(f.cliente_analitico from '\[CLI-[A-Z]+-([A-Z]{2})[0-9]*\]')
+                    WHEN 'EC' THEN 'Ecuador'
+                    WHEN 'PE' THEN 'Peru'
+                    WHEN 'US' THEN 'United States'
+                    WHEN 'DO' THEN 'República Dominicana'
+                    WHEN 'CO' THEN 'Colombia'
+               END
+           ) AS pais_cliente
     FROM marts.fact_movimiento_contable f
     LEFT JOIN marts.dim_tercero      t  ON t.tercero_id      = f.tercero_id
     LEFT JOIN marts.dim_centro_costo cc ON cc.centro_costo_id = f.centro_costo_id
+    LEFT JOIN cpais_t ct ON ct.tercero_id        = f.tercero_id
+    LEFT JOIN cpais_a ca ON ca.cliente_analitico = f.cliente_analitico
 ),
 resuelta AS (
     SELECT linea_id, pais,
@@ -860,7 +887,11 @@ resuelta AS (
                -- distribución analítica asocia a esa exportación, aunque el tercero sea colombiano.
                -- es_venta evita meter gastos de PROVEEDORES extranjeros (AWS, Odoo Inc, agencias de
                -- marketing) que también están etiquetados EXTERIOR pero no son exportación.
-               WHEN pais_cli IS NOT NULL AND pais_cli <> 'CO' THEN 'EXPORTACION'
+               -- Línea marcada con el plan 22: es exportación si el país del cliente no es Colombia.
+               -- El alcance lo sigue dando el analítico (no el tercero) para no arrastrar reembolsos,
+               -- diferencia en cambio, etc.; el NOMBRE solo decide el PAÍS (blindaje del código).
+               WHEN cliente_analitico IS NOT NULL AND pais_cliente IS NOT NULL
+                    AND pais_cliente <> 'Colombia' THEN 'EXPORTACION'
                WHEN es_venta AND (tipo_cliente = 'EXTERIOR' OR etiqueta ILIKE '%EXTERIOR%') THEN 'EXPORTACION'
                WHEN centro_codigo = 'EXPO'                  THEN 'EXPORTACION'
                WHEN equipo = 'Shopify'                      THEN 'SHOPIFY'

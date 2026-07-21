@@ -17,6 +17,17 @@ ALTER TABLE marts.fact_movimiento_contable ADD COLUMN IF NOT EXISTS pais        
 
 CREATE INDEX IF NOT EXISTS ix_fact_cliente_analitico ON marts.fact_movimiento_contable (cliente_analitico);
 
+-- ── map_cliente_pais: país por NOMBRE del cliente del exterior ───────────────
+-- Blindaje: al inicio el país se clasificaba mal y quedaba en Colombia (fue el caso de
+-- `x_plan20_id` = [PAIS-CO]). El NOMBRE del cliente es la fuente estable, así que MANDA sobre el
+-- código del plan 22 y sobre `dim_tercero.pais`. Editable sin tocar código: al sumar un cliente del
+-- exterior se inserta una fila. Se siembra con `python cargar_mapeos.py`.
+-- `cliente_patron` se compara con ILIKE (tolera los typos de Odoo, p.ej. "Distribuidpra Lepharma").
+CREATE TABLE IF NOT EXISTS marts.map_cliente_pais (
+    cliente_patron TEXT PRIMARY KEY,   -- patrón ILIKE, p.ej. '%ZAR IMPORT%'
+    pais           TEXT NOT NULL       -- nombre del país como en dim_tercero.pais
+);
+
 -- ── v_exportaciones: auditoría + insumo para el PyG por país×cliente ─────────
 -- Todo lo marcado como EXPORTACION (clientes EXTERIOR o gastos en centros [EXPO]).
 -- Se recrea (no CREATE OR REPLACE): la lista de columnas cambia al añadir `pais_destino`.
@@ -40,10 +51,18 @@ SELECT
     -- pais_destino: país de la EXPORTACIÓN (para el PyG por país). Los gastos de exportación se
     -- cargan a proveedores logísticos COLOMBIANOS (TRANSTAINER, DHL…), así que `pais` los deja en
     -- Colombia; el país real está en el analítico o en el nombre del centro [EXPO]. Cascada:
-    --   1) sufijo del código del cliente analítico (plan 22): [CLI-ZAR-EC] → Ecuador
-    --   2) nombre del centro [EXPO] (donde vive el país de los gastos)
-    --   3) país del tercero, si no es Colombia (cubre las ventas)
+    --   1) NOMBRE del cliente (marts.map_cliente_pais) → manda, blinda contra código/país mal puestos
+    --   2) sufijo del código del cliente analítico (plan 22): [CLI-ZAR-EC] → Ecuador
+    --   3) nombre del centro [EXPO] (donde vive el país de los gastos)
+    --   4) país del tercero, si no es Colombia (cubre las ventas)
     COALESCE(
+        -- subconsulta escalar (NO join): si un nombre matchea 2 patrones del mapa (p.ej. el analítico
+        -- de Leopharma contiene "Lepharma" y "LEOPHARMA"), un JOIN duplicaría la línea y doblaría los
+        -- importes. Con LIMIT 1 se devuelve un solo país y la fila nunca se multiplica.
+        (SELECT m.pais FROM marts.map_cliente_pais m
+          WHERE f.cliente_analitico ILIKE m.cliente_patron
+             OR t.nombre           ILIKE m.cliente_patron
+          LIMIT 1),
         CASE substring(f.cliente_analitico from '\[CLI-[A-Z]+-([A-Z]{2})[0-9]*\]')
              WHEN 'EC' THEN 'Ecuador'
              WHEN 'PE' THEN 'Peru'

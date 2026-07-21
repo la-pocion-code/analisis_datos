@@ -95,8 +95,14 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   = todo lo `EXPORTACION` (o con `cliente_analitico`) para auditar y proyectar el PyG por país×cliente.
   **PyG por país: agrupar por `v_exportaciones.pais_destino`**, NO por `pais`: los gastos de
   exportación se cargan a proveedores logísticos colombianos, así que `pais` los deja en Colombia.
-  El país sale del **plan 22 (cliente)**, no del tercero: `pais_destino` = sufijo del cliente analítico
-  (`[CLI-ZAR-EC]`→Ecuador) → país en el nombre del centro `[EXPO]` → `pais` si no es Colombia.
+  El país sale del **plan 22 (cliente)**, no del tercero: `pais_destino` = **nombre del cliente**
+  (`marts.map_cliente_pais`) → sufijo del cliente analítico (`[CLI-ZAR-EC]`→Ecuador) → país en el nombre
+  del centro `[EXPO]` → `pais` si no es Colombia. El **nombre manda** porque al inicio el país se
+  clasificaba mal y quedaba en Colombia: si un código quedara en `-CO` por error, el nombre lo corrige.
+  `map_cliente_pais` es editable (patrón `ILIKE` → país; se siembra con `cargar_mapeos.py`); al sumar un
+  cliente del exterior basta agregar la fila. ⚠ Se consulta con **subconsulta escalar `LIMIT 1`, no
+  con JOIN**: un nombre puede matchear 2 patrones (el analítico de Leopharma contiene "Lepharma" y
+  "LEOPHARMA") y un JOIN duplicaría la línea, doblando los importes.
   **Toda línea con plan 22 de un cliente NO-CO es `EXPORTACION`** (regla en `consolidar_categoria`):
   así entran los **costos** (clase 6) y los gastos de terceros que el analítico asocia a la exportación
   aunque el tercero sea colombiano — sin esa regla quedaban como `EXTERIOR` y el PyG perdía ~395M.

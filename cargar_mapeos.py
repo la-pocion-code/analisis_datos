@@ -50,6 +50,19 @@ CATEGORIAS_RENOMBRAR = {
     "Catálogo": "CATÁLOGO",
 }
 
+# País por NOMBRE del cliente del exterior → marts.map_cliente_pais.
+# MANDA sobre el código del plan 22 y sobre dim_tercero.pais: al inicio el país se clasificaba mal y
+# quedaba en Colombia ([PAIS-CO]), y el nombre es la fuente estable. Hoy hay 1 cliente por país.
+# Al sumar un cliente del exterior: agregar aquí (o insertar la fila directo en la tabla) y re-correr.
+# El patrón se compara con ILIKE y tolera los typos de Odoo ("Distribuidpra Lepharma").
+CLIENTES_EXTERIOR_PAIS = {
+    "%ZAR IMPORT%":       "Ecuador",
+    "%LEOPHARMA%":        "República Dominicana",
+    "%LEPHARMA%":         "República Dominicana",   # typo del nombre en el analítico de Odoo
+    "%CORPORACION LIFE%": "Peru",
+    "%C&L SOLUTION%":     "United States",
+}
+
 
 def _norm(df, columnas):
     """Selecciona/renombra columnas Excel→destino, castea a texto y descarta filas con clave nula."""
@@ -103,6 +116,11 @@ def cargar_mapeos():
     cat = pd.DataFrame({"categoria_origen": list(CATEGORIAS_RENOMBRAR),
                         "categoria_bi": list(CATEGORIAS_RENOMBRAR.values())})
     _recargar(loader, cat, "map_categoria", "categoria_origen")
+
+    # 6) PAÍS por nombre del cliente del exterior (blindaje del país de exportación)
+    cli = pd.DataFrame({"cliente_patron": list(CLIENTES_EXTERIOR_PAIS),
+                        "pais": list(CLIENTES_EXTERIOR_PAIS.values())})
+    _recargar(loader, cli, "map_cliente_pais", "cliente_patron")
 
     logging.info("OK: mapeos de ventas cargados en marts.")
 
