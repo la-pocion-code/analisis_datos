@@ -25,6 +25,88 @@ Cómo recrear cada hoja del board deck (`Pocion_BoardDeck_Mayo2026`) en el model
 
 ---
 
+## Definiciones del P&G — gastos y depreciación (validado vs Odoo 2026-07-15)
+
+El P&G replica el **reporte de Odoo id 38 "Estado de Resultados Mensual"** (es_CO). Estructura del
+reporte: `51\(5160,5165)` = admin, `52` = ventas, `5160 + 5165` = línea de depreciación/amortización
+aparte, `53` = no operacionales (incluye financieros 5305), `61` = costo de ventas.
+
+**REGLA:** las medidas de gasto/depreciación se clasifican **por código PUC**
+(`dim_cuenta[grupo_codigo]` + `[cuenta_codigo]`), **NO** por `dim_cuenta[nivel_movimiento]`.
+Motivo: `nivel_movimiento`/`concepto`/`seccion` (derivados del reporte 38) **solo están poblados
+para empresa 8 (PCN)**; las cuentas de empresa 1 (HFA) usan otro PUC y quedan sin clasificar, así
+que basar las medidas en `nivel_movimiento` deja HFA en blanco. Por código funciona en ambas.
+(Dato: HFA no tiene cuentas de grupo 51 — todo su gasto operativo va en grupo 52; su "admin" sale
+en blanco y es correcto.)
+
+Definiciones vigentes (tabla `_medidas_odoo`):
+
+| Medida | Definición (filtro sobre `SUM(fact[saldo])`) |
+|---|---|
+| `marts gastos admin` | `grupo_codigo="51"` y `cuenta_codigo ∉ {5160,5165}` (excluye depreciación/amortización) |
+| `marts gastos ventas` | `grupo_codigo="52"` (incluye dep/amort de ventas 5260/5265, igual que el reporte) |
+| `marts depreciacion + amortizacion` | `cuenta_codigo ∈ {5160,5165}` — **línea del reporte** (solo admin) |
+| `marts D&A total` | `cuenta_codigo ∈ {5160,5165,5260,5265}` — toda la D&A, para el **addback de EBITDA** |
+| `marts gastos no operacionales` | `concepto_contable="GASTOS NO OPERACIONALES"` (grupo 53, **incluye** 5305) |
+
+Fórmulas derivadas (coherentes con lo anterior):
+- **Utilidad operativa** = (ingresos − costos) − gastos admin − gastos ventas − **línea D&A** (la dep
+  admin se restó aparte al sacarla de gastos admin; el total no cambia).
+- **EBITDA** = utilidad operativa + `marts D&A total` (readiciona TODA la D&A: admin 5160/5165 +
+  ventas 5260/5265).
+- **UAI** (`marts UT antes impuesto`) = UO − `gastos no operacionales` (grupo 53) + `ingresos no
+  operacionales`. ⚠ **No** restar `marts gasto financiero` (5305) por separado: el grupo 53 ya lo
+  incluye; hacerlo lo contaba dos veces (bug corregido).
+
+**Validado (PCN empresa 8, ene–jun 2026):** gastos admin, gastos ventas, línea depreciación, EBITDA
+y UAI cuadran al centavo con el reporte de Odoo.
+
+### Líneas de subtotal, impuesto y utilidad neta (agregadas 2026-07-16)
+
+El P&G (`[odoo real pyg]`) y su gemelo para % (`[marts real dinamico]`) resuelven cada renglón por
+`SELECTEDVALUE(dim_cuenta[concepto_contable])` en un `SWITCH`. Renglones agregados:
+
+| Renglón (concepto_contable) | Medida / valor |
+|---|---|
+| `GASTOS OP. Y DE VENTAS` | `[Gastos op. y de ventas]` = admin + ventas |
+| `TOTAL OTROS INGRESOS` | `[marts total otros ingresos]` = `[marts ingresos no operacionales]` (grupo 42) |
+| `TOTAL GASTOS NO OPERACIONALES` | `[marts total gastos no operacionales]` = grupo 53 completo |
+| `IMPUESTO DE RENTA Y COMPLEMENTARIOS` | `[marts impuesto renta]` (impuesto REAL contabilizado, grupo 54) |
+| `PROVISIÓN DEL IMPUESTO DE RENTA` | `[marts provision impuesto renta]` (estimación, ver abajo) |
+| `UTILIDAD (PÉRDIDA) DEL PERIODO` | `[marts resultado del ejercicio]` = UAI − impuesto real |
+| `UTILIDAD/NETA` | `[marts utilidad neta]` = UAI − provisión estimada |
+
+Se muestran **los dos** impuestos (real grupo 54 + provisión estimada) y sus dos utilidades netas: el
+impuesto de renta se paga **anual**, así que el grupo 54 suele estar vacío en meses intermedios y la
+provisión estimada da la lectura mensual.
+
+**Filas virtuales:** los renglones de subtotal/estimación no son cuentas de Odoo; son filas
+"virtuales" (código en blanco) que se anexan a `dim_cuenta` vía la consulta M `concepto_cont_odoo`
+(subtotales base) y `concepto_cont_extra` (`PROVISIÓN DEL IMPUESTO DE RENTA`, `UTILIDAD/NETA`), unidas
+en la partición con `Table.Combine`. Su posición la da `dim_cuenta[orden_informe]` (columna calculada,
+**tipo Decimal**): 5.1 Gastos op. y de ventas · 9.1 Total otros ingresos · 10.1 Total gastos no op. ·
+12.5 Provisión · 15.5 Utilidad/Neta.
+
+**Provisión del impuesto de renta — por empresa, con tope en 0:**
+```
+marts provision impuesto renta =
+SUMX(VALUES('marts dim_empresa'[empresa_id]),
+     VAR _uai = [marts UT antes impuesto]
+     VAR _tasa = SWITCH('marts dim_empresa'[empresa_id], 1, 0.39, 8, 0.35, 0.35)
+     RETURN IF(_uai > 0, _uai * _tasa, 0))
+```
+- **HFA (empresa 1) = 39%**, **PCN (empresa 8) = 35%** de la utilidad antes de impuestos.
+- Si la UAI ≤ 0 → provisión = 0 (no hay provisión sobre pérdidas).
+- El `SUMX` por empresa hace que el consolidado sume cada empresa con SU tasa (no mezcla).
+
+**Guard de meses sin actividad:** `[odoo real pyg]` y `[marts real dinamico]` envuelven el `SWITCH`
+en `IF(<ingreso operacional del periodo> > 0, SWITCH(...), BLANK())`. Sin esto, `provisión`
+(`IF(_uai>0,...,0)`) y `utilidad neta` (`BLANK − 0 = 0`) devolvían **0** en meses sin datos y hacían
+aparecer columnas de meses vacíos. Con el guard, en meses con ingreso operacional ≤ 0 **todas** las
+filas quedan BLANK y la columna del mes desaparece.
+
+---
+
 ## Hoja 1 — Estado de Resultados (P&G)
 - **Visual:** matriz.
 - **Filas:** `dim_cuenta[concepto_contable]` (ordenado por `orden_informe`). Filtrar filas P&G.
@@ -65,6 +147,9 @@ Cómo recrear cada hoja del board deck (`Pocion_BoardDeck_Mayo2026`) en el model
 - **Valores:** `[marts gastos admin] + [marts gastos ventas]` (o una medida `gastos op` combinada),
   acumulado `YTD`, %part, y variación con `[marts var abs mes]` / `[marts var % mes]`.
 - **Nota:** la categoría sale del 4º-5º dígito PUC (5135=Servicios, 5105=Personal, 5160=Depreciación…).
+  ⚠ `[marts gastos admin]` **excluye** 5160/5165 (van en la línea de depreciación aparte); para ver
+  la depreciación/amortización usar `[marts depreciacion + amortizacion]` o la categoría `Depreciaciones`/
+  `Amortizaciones`.
 
 ## Hoja 7 — Detalle Top Proveedores
 - **Visual:** matriz.
@@ -80,7 +165,9 @@ Cómo recrear cada hoja del board deck (`Pocion_BoardDeck_Mayo2026`) en el model
 ## Hoja 9 — Gastos Financieros y Otros Gastos
 - **Visual:** matriz.
 - **Filas:** `dim_cuenta[nombre]` filtrando `concepto_contable="GASTOS NO OPERACIONALES"` (grupo 53).
-- **Valores:** `[marts gastos no operacionales]`; separar financiero (`[marts gasto financiero]`, código 5305).
+- **Valores:** `[marts gastos no operacionales]` (grupo 53 completo, **ya incluye** el financiero 5305).
+  `[marts gasto financiero]` (código 5305) es solo un desglose informativo — ⚠ NO sumarlo aparte al
+  total de no operacionales ni restarlo por separado en la UAI (se contaría dos veces).
 
 ## Hoja 10 — Estado de Situación Financiera (Balance)
 - **Visual:** matriz.
@@ -113,8 +200,17 @@ Cómo recrear cada hoja del board deck (`Pocion_BoardDeck_Mayo2026`) en el model
    diarios `NDEXP`/`NDY`) + descuentos financieros y NC sin producto (~3M), todos excluidos a propósito de
    la visión comercial. `marts ventas comerciales` solo cuenta líneas de producto (out_invoice/out_refund)
    y **excluye los diarios cuyo nombre empieza por "Nota Debito"**.
-3. **Depreciación + amortización:** se calcula por código (cuentas 5160/5260/5265); vive dentro de
-   gastos admin/ventas (no se resta aparte salvo para EBITDA).
+   ⚠ **Actualizado:** esa exclusión **ya la hace el SQL** (`v_ventas_producto` filtra los diarios
+   `NDY`/`NDEXP`, salvo las ND que anulan una nota crédito, que cuentan en el mes de la factura que
+   reviven — ver `docs/guia_bi_ventas.md` §6.5). El filtro DAX queda **redundante** (inofensivo, pero ya
+   no es el que manda). La visión contable (`v_balance_comprobacion`, ingresos operacionales) **sí** las
+   sigue llevando: la diferencia entre ambas visiones es esperada y es exactamente esto.
+3. **Depreciación + amortización (CORREGIDO 2026-07-15):** la línea del reporte = **5160/5165 (admin)**,
+   `[marts depreciacion + amortizacion]`, mostrada **aparte** de gastos admin (que ya la excluye), tal
+   como el reporte de Odoo id 38. La dep/amort de ventas (5260/5265) queda dentro de gastos ventas
+   (grupo 52). Para EBITDA se readiciona TODA la D&A con `[marts D&A total]` (5160/5165/5260/5265).
+   Antes la medida usaba `{5160,5260,5265}` (omitía 5165 e incluía ventas) → causaba diferencias con
+   Odoo en meses anteriores. Ver sección "Definiciones del P&G".
 
 ## Recordatorios técnicos
 - Tras crear/editar columnas calculadas: **recalcular el modelo** (`Refresh → Calculate`).

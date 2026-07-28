@@ -10,10 +10,23 @@ Alineación necesaria para que cuadre (ver docs/GUIA_OPERACION.md §7):
   3. Producto comercial [PCN/[KD/[TNG/[B8 (ya filtrado en ambos lados).
 
 Nota: `es_reverso` = ANULACIÓN real (factura + NC de reversión ≥99%), NO `payment_state='reversed'`
-(que en este Odoo lo pone el FACTORING y las NC PARCIALES → ventas reales que SÍ cuentan). Con eso el
-total 2026 Excel vs DW ≈ 0%. Diferencias residuales esperadas:
+(que en este Odoo lo pone el FACTORING y las NC PARCIALES → ventas reales que SÍ cuentan). Cuando Odoo
+deja `reversed_entry_id` NULL, la anulación se detecta por el puente NC (`marcar_reversos_puente`).
+
+TOTAL 2026 Excel vs DW = **−1,3%** (DW 53.823,9M vs Excel 54.527,7M), y NO es un error del DW: está
+explicado documento por documento, y todos los meses quedan del mismo lado (el DW por debajo):
+  - **mar −339M (−4,0%)**: facturas ANULADAS que el Excel sigue contando por su valor completo
+    (`FE7301` 662,2M + `FE9576`/`FE9570` 278M ≈ 941M), compensadas por `NDY1` (+612,9M), que anula la NC
+    que anuló `FE7281` y por tanto REVIVE esa venta de marzo.
+  - **abr −219M (−2,0%)**: ~200M de NC de exportación que el DW sí resta (`RFEX2`, enlazada por
+    `reversed_entry_id`) y el Excel no.
+  - **ene −69M**: `NDY14` (113M) anula una NC de una factura de dic-2025 → sale de 2026.
+Las NOTAS DÉBITO ya no cuentan como venta, salvo las que anulan una nota crédito (y esas van al mes de
+la factura que reviven): ver `marts.map_nd_factura` y `marts.v_notas_debito_excluidas`.
+Otras diferencias residuales esperadas:
   - Timing: un CSV viejo vs el DW recién cargado (más facturas) → el DW puede quedar más alto.
-  - NC/anulaciones fechadas en un mes distinto al de la factura.
+  - NC que el Excel descarta porque su `ref` no casa con una factura-producto.
+⭐ Para auditar la columna `fecha_venta` y las NC: `python diagnosticar_fecha_venta.py`.
 
 Uso:  python validar_ventas.py
 """

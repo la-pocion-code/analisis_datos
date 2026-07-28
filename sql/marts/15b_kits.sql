@@ -46,6 +46,8 @@ HAVING SUM(v.cantidad_neta) > 0;
 
 -- ── v_ventas_explotada ──────────────────────────────────────────────────────
 -- Se recrea (no CREATE OR REPLACE): cambia la lista de columnas.
+-- v_ventas_bi (21) cuelga de esta vista: soltarla primero o el DROP falla. Aplicar 21 después.
+DROP VIEW IF EXISTS marts.v_ventas_bi;
 DROP VIEW IF EXISTS marts.v_ventas_explotada;
 
 CREATE VIEW marts.v_ventas_explotada AS

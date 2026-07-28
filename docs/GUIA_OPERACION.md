@@ -69,6 +69,30 @@ Cundinamarca, Bogotá), **clientes padres** y **categorías**, y recrea las tabl
 (TRUNCATE + insert). Es el **único insumo NO-Odoo** del DW y se corre **a demanda** (cuando cambie
 alguno de esos Excel). Requiere el DDL `sql/marts/16_mapeos_ventas.sql` aplicado.
 
+### 2.6b Datasets del BI (NO-Odoo) — `cargar_bi_datasets.py`
+`python cargar_bi_datasets.py` sube a `marts.bi_*` los datasets que el BI todavía leía de archivos
+locales, para **desconectar Power BI del PC**. Lee de Google Drive (`DriveLoader`) y recarga completa
+(`if_exists='replace'`). Se corre **a demanda** (cuando cambie un archivo en Drive). Tablas:
+
+| Tabla | Origen (Drive) |
+|---|---|
+| `bi_lineas` | LINEAS Y CATEGORIAS.xlsx |
+| `bi_ofertas` | OFERTAS.xlsx |
+| `bi_presupuesto` | PRESUPUESTO GENERAL.xlsx |
+| `bi_clientes_impulso` | Clientes Impulso.xlsx (shortcut de Drive; se resuelve) |
+| `bi_cuentas_clave` | cuentas_clave/base_cuentas_clave.xlsx |
+| `bi_cartera` | cartera_procesada.csv |
+| `bi_cliente_credito` | cliente_cartera.xlsx |
+| `bi_nielsen` | consolida los 9 Excel de la carpeta `nielseiq` (⚠ columnas `unnamed_*`: los Excel no traen encabezado limpio) |
+
+**Pendiente / decisiones:**
+- `bi_base_pyg` (base_consolidada.csv, ~1.09M filas) **NO se migra por defecto**: es redundante con el
+  modelo contable del DW (`fact_movimiento_contable` / `v_balance_comprobacion`). El BI debería leer el
+  PyG del DW, no un CSV duplicado. Está definido en el script (`BASE_PYG`) pero fuera del run por defecto.
+- **Cuentas clave — combinados** (ventas por retailer, inventarios, tiendas): su lógica vive en un
+  notebook exploratorio incompleto (`archivado/cuentas_clave.ipynb`, solo 4 de ~9 retailers, mezclada
+  con un modelo de reposición). Falta definir la fuente limpia antes de portarlos a `bi_*`.
+
 ### 2.7 Recetas rápidas (síntoma → comando)
 | Situación | Qué correr |
 |---|---|
@@ -77,6 +101,8 @@ alguno de esos Excel). Requiere el DDL `sql/marts/16_mapeos_ventas.sql` aplicado
 | Cambié la clasificación de cuentas (estados financieros) | aplicar el DDL si tocó columnas + `python etl_dw_marts.py --dims` |
 | Poblar enriquecimiento de ventas / kits (tel/email/etiqueta/es_kit) | aplicar DDL 15/15b + `python etl_dw_marts.py --dims` |
 | Cambió un Excel de zonas / clientes padres / categorías | `python cargar_mapeos.py` |
+| Cambió un dataset del BI (líneas/ofertas/presupuesto/nielsen/cartera/…) | `python cargar_bi_datasets.py` |
+| Cambió un archivo de CUENTAS CLAVE (ventas/inventarios por retailer) | `python cargar_cuentas_clave.py cargar` · `... inventarios` · `... tiendas` |
 | Un **mes no cuadra** (partida doble ≠ 0) | `python etl_dw_marts.py --rebuild --desde AAAA-MM-01 --hasta AAAA-MM-31` |
 | El **año en curso** trae datos raros/borrados | `python etl_dw_marts.py --rebuild` |
 | Reconstruir **todo** desde cero | `python etl_dw_marts.py --full` |
@@ -160,13 +186,28 @@ El cron corre `run_dw.py` (`railway.toml` + `Procfile`):
 - **Partida doble:** `SUM(debito) = SUM(credito)` por empresa (debe ≈ 0). Si un período falla →
   `--rebuild` de ese rango (ver receta 2.5).
 - **Ventas:** `SUM(venta_neta)` en `v_ventas` (clase 4, sin reversos) vs ingresos de Odoo.
+- **Auditoría de `fecha_venta`:** `python diagnosticar_fecha_venta.py` (solo lectura). Comprueba que
+  ninguna FACTURA cambie de mes, cuantifica la reubicación de NC mes a mes, lista las NC responsables
+  con su `metodo_enlace`, detecta anulaciones totales sin marcar y aísla las **notas débito**. Es el
+  primer sitio al que ir cuando un mes "no cuadra" contra el Excel.
 - **Ventas vs Excel (base_ventas del pipeline):** `python validar_ventas.py` concilia
   `v_ventas_producto` contra los CSV de `CLEAN DATA`. Para que cuadre hay que **alinear 3 cosas**:
   (1) **combinar empresas** (el Excel no distingue; ene-2026 estaba en empresa 1, luego en la 8),
-  (2) por **fecha de factura** (no la contable), (3) producto comercial. Con eso **TOTAL 2026
-  Excel vs DW ≈ 0%**. **`es_reverso` = anulación real** (factura + NC de reversión ≥99%), **NO**
-  `payment_state='reversed'` (que en este Odoo lo pone el factoring y las NC parciales — ventas reales
-  que sí cuentan).
+  (2) por **`fecha_venta`** (la NC resta en el mes de SU factura; ⚠ agrupar por `fecha_factura` sirve
+  para comparar contra el Excel pero **reproduce su error**), (3) producto comercial.
+  **`es_reverso` = anulación real** (factura + NC de reversión ≥99%), **NO** `payment_state='reversed'`
+  (que en este Odoo lo pone el factoring y las NC parciales — ventas reales que sí cuentan). Cuando
+  Odoo deja `reversed_entry_id` NULL, la anulación se detecta por el **puente NC**
+  (`marcar_reversos_puente`) y también sale de ventas.
+  **TOTAL 2026 Excel vs DW = −1,3%** (DW 53.823,9M vs Excel 54.527,7M), explicado documento por
+  documento y con todos los meses del mismo lado: **mar −339M (−4,0%)** = facturas **anuladas** que el
+  Excel sigue contando (`FE7301` 662,2M + `FE9576`/`FE9570` 278M) menos `NDY1` (+612,9M, que revive
+  `FE7281`); **abr −219M (−2,0%)** = ~200M de NC de exportación que el DW sí resta (`RFEX2`);
+  **ene −69M** = `NDY14` (113M) se va a dic-2025, el mes de su factura.
+- **NOTAS DÉBITO:** no son venta, salvo las que **anulan una nota crédito** (esas cuentan en el mes de la
+  factura que reviven, vía `marts.map_nd_factura`). Las excluidas quedan en
+  `marts.v_notas_debito_excluidas`. ⚠ La visión CONTABLE (`v_ventas`, `v_balance_comprobacion`,
+  `v_exportaciones`) **sí** las lleva: ahí una ND es ingreso.
   **Diferencia mensual principal = NOTAS CRÉDITO.** El Excel ya viene **neto** (el pipeline resta la
   NC dentro de la fila de la factura al agrupar por `NUMERO_FACTURA-PRODUCTO`), por eso no tiene filas
   negativas; pero **solo resta la NC cuyo `ref` casa** con una factura-producto existente y **descarta

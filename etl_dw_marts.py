@@ -407,13 +407,14 @@ def get_watermark(loader, modelo):
 
 
 # ══ Catálogos pequeños (se cargan una vez por corrida) ══
-def cargar_catalogos_pequenos(od, loader):
-    # Clasificación de estados financieros (seccion/concepto/nivel_movimiento) derivada de los
-    # reportes de Odoo (account.report), y nombres de la jerarquía PUC desde account.group (es_CO).
-    # Todo fiel a Odoo; sin diccionarios manuales.
-    clasificar = cargar_clasificacion_reportes(od)
-    nombre_puc = cargar_puc_nombres(od)
-    cuentas = od.search_read("account.account", [], ["id", "code", "name", "account_type"], context=CTX_ALL)
+# Campos leídos de Odoo por catálogo (compartidos por la carga masiva y el self-heal por-id).
+CUENTA_FIELDS = ["id", "code", "name", "account_type"]
+DIARIO_FIELDS = ["id", "code", "name", "type"]
+CENTRO_FIELDS = ["id", "name", "code", "plan_id", "root_plan_id", "company_id", "active"]
+
+
+# ── Row-builders compartidos: mismos registros de Odoo → filas de la dim ──
+def _filas_cuentas(cuentas, clasificar, nombre_puc):
     filas = []
     for c in cuentas:
         cod = c.get("code")
@@ -429,38 +430,97 @@ def cargar_catalogos_pequenos(od, loader):
             "naturaleza": NATURALEZA_N1.get(puc(cod)[0]),
             "tipo_cuenta": c.get("account_type"),
         })
-    dc = pd.DataFrame(filas)
+    return filas
+
+
+def _filas_diarios(diarios):
+    return [{"diario_id": as_int(d["id"]), "codigo": d.get("code"),
+             "nombre": d.get("name"), "tipo": d.get("type")} for d in diarios]
+
+
+def _filas_empresas(empresas):
+    return [{"empresa_id": as_int(e["id"]), "nombre": e.get("name")} for e in empresas]
+
+
+def _filas_centros(aa, plan_rol):
+    # dim_centro_costo 100% Odoo (account.analytic.account); solo planes con rol 'centro'.
+    return [{"centro_costo_id": as_int(a["id"]), "codigo": a.get("code"), "nombre": a.get("name"),
+             "plan": m2o_nombre(a.get("plan_id")), "activo": bool(a.get("active")),
+             "empresa_id": m2o_id(a.get("company_id"))}
+            for a in aa if plan_rol.get(m2o_id(a.get("root_plan_id"))) == "centro"]
+
+
+# ── Loaders por-id (para el self-heal): traen de Odoo solo los ids indicados ──
+def cargar_cuentas(od, loader, ids, clasificar, nombre_puc):
+    ids = [i for i in set(ids) if i]
+    if not ids:
+        return
+    filas = _filas_cuentas(od.read("account.account", ids, CUENTA_FIELDS, context=CTX_ALL),
+                           clasificar, nombre_puc)
+    if filas:
+        upsert(loader, pd.DataFrame(filas), "dim_cuenta", "cuenta_id")
+
+
+def cargar_diarios(od, loader, ids):
+    ids = [i for i in set(ids) if i]
+    if not ids:
+        return
+    filas = _filas_diarios(od.read("account.journal", ids, DIARIO_FIELDS, context=CTX_ALL))
+    if filas:
+        upsert(loader, pd.DataFrame(filas), "dim_diario", "diario_id")
+
+
+def cargar_empresas(od, loader, ids):
+    ids = [i for i in set(ids) if i]
+    if not ids:
+        return
+    filas = _filas_empresas(od.read("res.company", ids, ["id", "name"], context=CTX_ALL))
+    if filas:
+        upsert(loader, pd.DataFrame(filas), "dim_empresa", "empresa_id")
+
+
+def cargar_centros(od, loader, ids, plan_rol):
+    ids = [i for i in set(ids) if i]
+    if not ids:
+        return
+    filas = _filas_centros(od.read("account.analytic.account", ids, CENTRO_FIELDS, context=CTX_ALL),
+                           plan_rol)
+    if filas:
+        upsert(loader, pd.DataFrame(filas), "dim_centro_costo", "centro_costo_id")
+
+
+def cargar_catalogos_pequenos(od, loader):
+    # Clasificación de estados financieros (seccion/concepto/nivel_movimiento) derivada de los
+    # reportes de Odoo (account.report), y nombres de la jerarquía PUC desde account.group (es_CO).
+    # Todo fiel a Odoo; sin diccionarios manuales. Devuelve las clausuras clasificar/nombre_puc
+    # para que el self-heal (asegurar_dims_hecho) pueda cargar cuentas faltantes con igual criterio.
+    clasificar = cargar_clasificacion_reportes(od)
+    nombre_puc = cargar_puc_nombres(od)
+    cuentas = od.search_read("account.account", [], CUENTA_FIELDS, context=CTX_ALL)
+    dc = pd.DataFrame(_filas_cuentas(cuentas, clasificar, nombre_puc))
     upsert(loader, dc, "dim_cuenta", "cuenta_id")
 
-    diarios = od.search_read("account.journal", [], ["id", "code", "name", "type"], context=CTX_ALL)
-    dd = pd.DataFrame([{"diario_id": as_int(d["id"]), "codigo": d.get("code"),
-                        "nombre": d.get("name"), "tipo": d.get("type")} for d in diarios])
+    diarios = od.search_read("account.journal", [], DIARIO_FIELDS, context=CTX_ALL)
+    dd = pd.DataFrame(_filas_diarios(diarios))
     upsert(loader, dd, "dim_diario", "diario_id")
 
     # Rol de cada plan analítico derivado del NOMBRE del plan en Odoo (no IDs fijos).
     planes = od.search_read("account.analytic.plan", [], ["id", "name"], context=CTX_ALL)
     plan_rol = derivar_plan_rol(planes)
 
-    aa = od.search_read("account.analytic.account", [],
-                        ["id", "name", "code", "plan_id", "root_plan_id", "company_id", "active"],
-                        context=CTX_ALL)
+    aa = od.search_read("account.analytic.account", [], CENTRO_FIELDS, context=CTX_ALL)
     an_plan = {a["id"]: m2o_id(a.get("root_plan_id")) for a in aa}
     an_nombre = {a["id"]: a.get("name") for a in aa}
-    # dim_centro_costo 100% Odoo (account.analytic.account); NADA de fuentes locales.
-    dcc = pd.DataFrame([{
-        "centro_costo_id": as_int(a["id"]), "codigo": a.get("code"), "nombre": a.get("name"),
-        "plan": m2o_nombre(a.get("plan_id")), "activo": bool(a.get("active")),
-        "empresa_id": m2o_id(a.get("company_id")),
-    } for a in aa if plan_rol.get(m2o_id(a.get("root_plan_id"))) == "centro"])
+    dcc = pd.DataFrame(_filas_centros(aa, plan_rol))
     upsert(loader, dcc, "dim_centro_costo", "centro_costo_id")
 
     empresas = od.search_read("res.company", [], ["id", "name"], context=CTX_ALL)
-    de = pd.DataFrame([{"empresa_id": as_int(e["id"]), "nombre": e.get("name")} for e in empresas])
+    de = pd.DataFrame(_filas_empresas(empresas))
     upsert(loader, de, "dim_empresa", "empresa_id")
 
     logging.info(f"Catálogos: {len(dc)} cuentas, {len(dd)} diarios, {len(dcc)} centros de costo, "
                  f"{len(de)} empresas")
-    return an_plan, an_nombre, plan_rol
+    return an_plan, an_nombre, plan_rol, clasificar, nombre_puc
 
 
 # ══ Terceros (dim_tercero) — usado por el hecho y por cartera ══
@@ -485,6 +545,19 @@ def cargar_terceros(od, loader, part_ids, tipo_tercero):
     } for p in partners])
     # tipo_cliente vía COALESCE: no borrar el existente si esta fuente no lo trae.
     upsert(loader, dt, "dim_tercero", "tercero_id", coalesce=["tipo_cliente"])
+
+
+def cargar_productos(od, loader, prod_ids):
+    # es_kit lo fija cargar_kits (BOM phantom); aquí no, para no pisarlo con bom_count.
+    prod_ids = [p for p in prod_ids if p]
+    if not prod_ids:
+        return
+    productos = od.read("product.product", prod_ids,
+                        ["id", "default_code", "name", "categ_id"], context=CTX_ALL)
+    dp = pd.DataFrame([{"producto_id": as_int(p["id"]), "codigo": p.get("default_code"),
+                        "nombre": p.get("name"), "categoria": m2o_nombre(p.get("categ_id"))}
+                       for p in productos])
+    upsert(loader, dp, "dim_producto", "producto_id")
 
 
 # ══ Refresco de dimensiones por su propio write_date (clientes/productos/vendedores) ══
@@ -618,6 +691,36 @@ def cargar_kits(od, loader):
                  f"es_kit corregido en {n_kit} productos")
 
 
+# ══ Nombre COMERCIAL del producto (product.template.name en es_CO) → dim_producto.nombre_comercial ══
+def enriquecer_nombre_comercial(od, loader):
+    """dim_producto.nombre = product.product.name en el idioma BASE (p. ej. PCN19 = "Kit anticaída y
+    crecimiento capilar"). El nombre por el que se reconoce comercialmente el producto (PCN19 =
+    "DUTONIC (TONICO CAPILAR)") es la TRADUCCIÓN es_CO del `name` de la PLANTILLA product.template:
+    ese campo es traducible y en es_CO trae el nombre comercial (verificado). Por eso se lee con
+    context lang='es_CO' (no display_name, que trae el [código] delante). 100% Odoo, pocos miles."""
+    ctx_es = {**CTX_ALL, "lang": "es_CO"}
+    prods, off = [], 0
+    while True:  # por páginas (patrón anti-IncompleteRead, como refrescar_dimensiones)
+        page = od.search_read("product.product", [], ["id", "product_tmpl_id"],
+                              limit=PAGINA, offset=off, context=CTX_ALL)
+        if not page:
+            break
+        prods += page
+        off += len(page)
+    tmpl_ids = list({m2o_id(p["product_tmpl_id"]) for p in prods if p.get("product_tmpl_id")})
+    if not tmpl_ids:
+        logging.info("  nombre_comercial: sin plantillas")
+        return
+    nombre_tmpl = {t["id"]: t.get("name")
+                   for t in od.read("product.template", tmpl_ids, ["name"], context=ctx_es)}
+    filas = [{"producto_id": as_int(p["id"]),
+              "nombre_comercial": nombre_tmpl.get(m2o_id(p["product_tmpl_id"]))}
+             for p in prods if p.get("product_tmpl_id")]
+    # upsert solo SETea las columnas del DataFrame → no pisa codigo/nombre/categoria/es_kit.
+    n = upsert(loader, pd.DataFrame(filas), "dim_producto", "producto_id")
+    logging.info(f"  nombre_comercial: {n} productos enriquecidos (product.template.name)")
+
+
 # ══ tipo_cliente en dim_tercero por UPDATE (sin releer res.partner de Odoo) ══
 def actualizar_tipo_cliente(loader, tipo_tercero):
     filas = [(pid, tc) for pid, tc in tipo_tercero.items() if pid and tc]
@@ -634,6 +737,106 @@ def actualizar_tipo_cliente(loader, tipo_tercero):
         conn.commit()
 
 
+# ══ Ids de un lote que NO están aún en su dimensión (para auto-sanar FKs) ══
+def ids_faltantes(loader, tabla, pk, ids):
+    ids = [i for i in set(ids) if i]
+    if not ids:
+        return []
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT {pk} FROM marts.{tabla} WHERE {pk} = ANY(%s);", (ids,))
+        existentes = {r[0] for r in cur.fetchall()}
+    return [i for i in ids if i not in existentes]
+
+
+# ══ Generar filas de calendario (dim_fecha) faltantes ══
+# dim_fecha es un calendario generado (2024-2034; ver 01_star_schema.sql). Guardia para el self-heal:
+# si el hecho referencia una fecha fuera de ese rango, se crea su fila (mismo cálculo que el DDL).
+def generar_fechas(loader, fkeys):
+    fechas = []
+    for k in fkeys:
+        s = str(int(k))
+        if len(s) == 8:
+            fechas.append(f"{s[:4]}-{s[4:6]}-{s[6:8]}")
+    if not fechas:
+        return
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO marts.dim_fecha
+            SELECT
+                (EXTRACT(YEAR FROM d)*10000 + EXTRACT(MONTH FROM d)*100 + EXTRACT(DAY FROM d))::int,
+                d::date,
+                EXTRACT(YEAR FROM d)::smallint, EXTRACT(QUARTER FROM d)::smallint,
+                EXTRACT(MONTH FROM d)::smallint, INITCAP(TO_CHAR(d,'TMMonth')),
+                EXTRACT(DAY FROM d)::smallint, EXTRACT(ISODOW FROM d)::smallint,
+                INITCAP(TO_CHAR(d,'TMDay')), EXTRACT(WEEK FROM d)::smallint,
+                (EXTRACT(ISODOW FROM d) >= 6),
+                (EXTRACT(YEAR FROM d)*100 + EXTRACT(MONTH FROM d))::int
+            FROM unnest(%s::date[]) AS g(d)
+            ON CONFLICT (fecha_key) DO NOTHING;
+        """, (fechas,))
+        conn.commit()
+
+
+# ══ Auto-sanar TODAS las dims referenciadas por el hecho pero faltantes ══
+# Las dims/catálogos se cargan UNA vez al inicio; algo CREADO en Odoo mientras corre el ETL (un
+# tercero/producto nuevo, una cuenta/diario/centro nuevo…) no está en su dim → viola la FK del hecho.
+# Aquí, con el DataFrame del hecho ya construido, se traen de Odoo SOLO los ids faltantes de CADA
+# dimensión (el hueco normal es 0 → sin lecturas extra). Corre siempre (incremental y full/rebuild).
+def _col_ids(dfh, col):
+    if col not in dfh.columns:
+        return []
+    return [int(x) for x in dfh[col].dropna().unique().tolist()]
+
+
+def asegurar_dims_hecho(od, loader, dfh, moves, clasificar, nombre_puc, plan_rol):
+    if dfh.empty:
+        return
+    tipo_tercero, usuarios = {}, {}
+    for m in moves:
+        pid = m2o_id(m.get("partner_id"))
+        if pid and m.get("partner_type_id"):
+            tipo_tercero[pid] = m2o_nombre(m.get("partner_type_id"))
+        uid = m2o_id(m.get("invoice_user_id"))
+        if uid:
+            usuarios[uid] = m2o_nombre(m.get("invoice_user_id"))
+
+    ter = ids_faltantes(loader, "dim_tercero", "tercero_id", _col_ids(dfh, "tercero_id"))
+    if ter:
+        cargar_terceros(od, loader, ter, tipo_tercero)
+    prod = ids_faltantes(loader, "dim_producto", "producto_id", _col_ids(dfh, "producto_id"))
+    if prod:
+        cargar_productos(od, loader, prod)
+    ven = ids_faltantes(loader, "dim_vendedor", "vendedor_id", _col_ids(dfh, "vendedor_id"))
+    if ven:
+        dv = pd.DataFrame([{"vendedor_id": as_int(k), "nombre": usuarios.get(k)} for k in ven])
+        upsert(loader, dv, "dim_vendedor", "vendedor_id")
+    cta = ids_faltantes(loader, "dim_cuenta", "cuenta_id", _col_ids(dfh, "cuenta_id"))
+    if cta:
+        cargar_cuentas(od, loader, cta, clasificar, nombre_puc)
+    dia = ids_faltantes(loader, "dim_diario", "diario_id", _col_ids(dfh, "diario_id"))
+    if dia:
+        cargar_diarios(od, loader, dia)
+    emp = ids_faltantes(loader, "dim_empresa", "empresa_id", _col_ids(dfh, "empresa_id"))
+    if emp:
+        cargar_empresas(od, loader, emp)
+    cen = ids_faltantes(loader, "dim_centro_costo", "centro_costo_id", _col_ids(dfh, "centro_costo_id"))
+    if cen:
+        cargar_centros(od, loader, cen, plan_rol)
+    fkeys = set()
+    for col in ("fecha_key", "fecha_factura_key", "fecha_vencimiento_key"):
+        fkeys.update(_col_ids(dfh, col))
+    fec = ids_faltantes(loader, "dim_fecha", "fecha_key", list(fkeys))
+    if fec:
+        generar_fechas(loader, fec)
+
+    sanadas = [(ter, "terceros"), (prod, "productos"), (ven, "vendedores"), (cta, "cuentas"),
+               (dia, "diarios"), (emp, "empresas"), (cen, "centros"), (fec, "fechas")]
+    if any(g for g, _ in sanadas):
+        logging.info("  dims auto-sanadas: " + ", ".join(f"{len(g)} {n}" for g, n in sanadas if g))
+
+
 # ══ Dimensiones referenciadas por un lote (partners, products, vendedores) ══
 def cargar_dims_lote(od, loader, moves, part_ids, prod_ids, catalogos_completos=False):
     # tipo de cliente por tercero (de la cabecera del asiento)
@@ -647,6 +850,8 @@ def cargar_dims_lote(od, loader, moves, part_ids, prod_ids, catalogos_completos=
         # full/rebuild: dims ya cargadas por refrescar_dimensiones →
         # NO releer res.partner/product/res.users de Odoo (menos 502, más rápido).
         # Solo actualizar tipo_cliente (viene de la cabecera, no de res.partner).
+        # Lo CREADO en Odoo durante la corrida lo auto-sana asegurar_dims_hecho (sobre el hecho ya
+        # construido, cubre TODAS las dims), justo antes del upsert del hecho.
         actualizar_tipo_cliente(loader, tipo_tercero)
         return
 
@@ -658,15 +863,7 @@ def cargar_dims_lote(od, loader, moves, part_ids, prod_ids, catalogos_completos=
         upsert(loader, dv, "dim_vendedor", "vendedor_id")
 
     cargar_terceros(od, loader, part_ids, tipo_tercero)
-
-    if prod_ids:
-        # es_kit lo fija cargar_kits (BOM phantom); aquí no, para no pisarlo con bom_count.
-        productos = od.read("product.product", prod_ids,
-                            ["id", "default_code", "name", "categ_id"], context=CTX_ALL)
-        dp = pd.DataFrame([{"producto_id": as_int(p["id"]), "codigo": p.get("default_code"),
-                            "nombre": p.get("name"), "categoria": m2o_nombre(p.get("categ_id"))}
-                           for p in productos])
-        upsert(loader, dp, "dim_producto", "producto_id")
+    cargar_productos(od, loader, prod_ids)
 
 
 # ══ Construir filas del hecho para un lote de líneas ══
@@ -742,7 +939,8 @@ MOVE_FIELDS = ["id", "name", "move_type", "invoice_user_id", "partner_type_id", 
 
 
 # ══ Bucle principal por lotes ══
-def cargar_hecho(od, loader, domain, an_plan, an_nombre, plan_rol, catalogos_completos=False):
+def cargar_hecho(od, loader, domain, an_plan, an_nombre, plan_rol, clasificar, nombre_puc,
+                 catalogos_completos=False):
     offset, total, max_write = 0, 0, None
     while True:
         lineas = od.search_read("account.move.line", domain, LINE_FIELDS,
@@ -759,6 +957,8 @@ def cargar_hecho(od, loader, domain, an_plan, an_nombre, plan_rol, catalogos_com
                          catalogos_completos=catalogos_completos)
 
         dfh = construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol)
+        # Auto-sanar TODA dim referenciada por el hecho pero aún ausente (evita FK; normalmente 0).
+        asegurar_dims_hecho(od, loader, dfh, moves, clasificar, nombre_puc, plan_rol)
         upsert(loader, dfh, "fact_movimiento_contable", "linea_id")
 
         for l in lineas:
@@ -830,6 +1030,68 @@ def marcar_reversos(loader):
         n = cur.rowcount
         conn.commit()
     logging.info(f"Reversos (anulaciones reales) marcados: {n} líneas cambiadas")
+
+
+# ══ 2ª pasada de reversos: anulaciones que Odoo NO enlazó con `reversed_entry_id` ══
+# `_SQL_REVERSOS` solo puede parear por `reversed_factura_id`; cuando Odoo lo deja NULL, la anulación
+# total queda SIN marcar y factura+NC se quedan dentro de v_ventas_producto. Netean bien (+X y −X),
+# pero inflan el BRUTO y cuentan las unidades dos veces en ambos sentidos.
+# Caso real: FE7301 (09-mar-2026, 662,2M) ↔ RINV254 (28-abr-2026, −662,2M) — mismas 18 líneas, sin
+# `reversed_entry_id`; su gemela del mismo día (FE7281 ↔ RINV/2026/0062) sí lo trae y sí se marcaba.
+# Aquí el pareo lo aporta el puente `map_nc_factura` (conciliación de CxC). Para no barrer
+# DEVOLUCIONES totales legítimas se exigen 3 condiciones a la vez:
+#   1. proporcion > 0.999  → la NC se atribuye por completo a esa única factura;
+#   2. cobertura clase 4 en [0.99, 1.01]  → mismo umbral que `_SQL_REVERSOS`;
+#   3. firma de líneas idéntica (mismo set producto:cantidad) → es la MISMA factura al revés.
+# ⚠ Debe correr DESPUÉS de `marcar_reversos` (que asigna es_reverso en ambos sentidos y desharía esto)
+# y DESPUÉS de `enlazar_notas_credito` (necesita el puente ya construido). Solo marca TRUE, nunca FALSE.
+_SQL_REVERSOS_PUENTE = """
+WITH c4 AS (
+    SELECT f.factura_id, f.tipo_movimiento, f.producto_id,
+           SUM(f.credito - f.debito) AS val, SUM(f.cantidad) AS cant
+    FROM marts.fact_movimiento_contable f JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
+    WHERE c.clase_codigo = '4' AND f.es_venta IS TRUE
+    GROUP BY 1, 2, 3
+),
+val AS (
+    SELECT factura_id, tipo_movimiento, SUM(val) AS m FROM c4 GROUP BY 1, 2
+),
+firma AS (   -- huella del documento: producto:cantidad ordenado (solo líneas con producto)
+    SELECT factura_id,
+           string_agg(producto_id || ':' || ROUND(ABS(cant)::numeric, 3)::text, ',' ORDER BY producto_id) AS s
+    FROM c4 WHERE producto_id IS NOT NULL GROUP BY 1
+),
+espejo AS (
+    SELECT m.nc_factura_id AS nc_id, m.factura_id AS fa_id
+    FROM marts.map_nc_factura m
+    JOIN val   i ON i.factura_id = m.factura_id    AND i.tipo_movimiento = 'out_invoice'
+    JOIN val   n ON n.factura_id = m.nc_factura_id AND n.tipo_movimiento = 'out_refund'
+    JOIN firma fi ON fi.factura_id = m.factura_id
+    JOIN firma fn ON fn.factura_id = m.nc_factura_id
+    WHERE m.proporcion > 0.999
+      AND i.m > 0
+      AND (-n.m) BETWEEN 0.99 * i.m AND 1.01 * i.m   -- la NC cubre el total de la factura
+      AND fi.s = fn.s                                -- mismas líneas: es la factura al revés
+),
+docs AS (
+    SELECT nc_id AS factura_id FROM espejo UNION SELECT fa_id FROM espejo
+)
+UPDATE marts.fact_movimiento_contable f
+SET es_reverso = TRUE
+WHERE f.es_reverso IS NOT TRUE
+  AND f.factura_id IN (SELECT factura_id FROM docs);
+"""
+
+
+def marcar_reversos_puente(loader):
+    """2ª pasada: anulaciones totales que Odoo dejó sin `reversed_entry_id`, pareadas vía
+    marts.map_nc_factura. Correr después de marcar_reversos() y de enlazar_notas_credito()."""
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(_SQL_REVERSOS_PUENTE)
+        n = cur.rowcount
+        conn.commit()
+    logging.info(f"Reversos sin reversed_entry_id (vía puente NC): {n} líneas marcadas")
 
 
 def aplicar_correcciones(loader):
@@ -970,16 +1232,49 @@ def backfill_cliente_analitico(od, loader):
 
 
 # ══ Puente NOTA CRÉDITO → FACTURA original (para que la NC reste en el mes de la factura) ══
-# El enlace vive SOLO en la conciliación (`account.partial.reconcile`): muchas NC no traen `ref` ni
-# `reversed_entry_id` (ej. NCR1858 → FEVY80693). Se acumula lo conciliado contra FACTURAS de venta y
-# se reparte proporcionalmente (una NC puede corregir varias facturas). Ver sql/marts/19_nc_factura.sql.
+# CASCADA DE EVIDENCIA (de la más fuerte a la más débil). El método usado queda en `metodo_enlace`:
+#   1. `reversed_entry_id`  — Odoo dice explícitamente qué factura reversa. Evidencia directa.
+#   2. `ref`                — el número de la factura aparece en la referencia de la NC (mismo cliente
+#                             y un único candidato válido; si hay varios es ambiguo → se pasa al 3).
+#   3. `conciliacion`       — `account.partial.reconcile`. Es lo único disponible para la mayoría
+#                             (NCR1858 tiene `ref` y `reversed_entry_id` NULL y aun así concilia
+#                             49.944.031 contra FEVY80693), pero es el más débil: conciliar significa
+#                             "se aplicó contra" y no siempre "corrige a" (una NC puede abonarse a la
+#                             factura abierta más antigua). Con la cascada, ese riesgo queda acotado a
+#                             las NC sin ninguna otra evidencia y es auditable por `metodo_enlace`.
+# Una NC puede corregir varias facturas: se reparte por `proporcion` (suma 1 por NC); los métodos 1 y 2
+# apuntan a una sola factura → proporcion 1. Ver sql/marts/19_nc_factura.sql.
+_RE_NUM_DOC = re.compile(r"[A-Za-z]{1,6}[0-9][A-Za-z0-9/\-]*")
+
+
+def _facturas_destino(od, move_ids):
+    """Lee los account.move dados y devuelve solo los válidos como FACTURA destino de una NC:
+    `out_invoice`, con `invoice_date` y que NO sean NOTA DÉBITO.
+    ⚠ Las notas débito también son `out_invoice`: solo se distinguen por el DIARIO ("Nota Debito
+    Nacional Yumbo", "Nota Debito Exportacion"). Se excluyen para que la NC se atribuya a la FACTURA
+    real (ej. NCR1858 concilia 49,9M con FEVY80693 y 2,3M con NDY21)."""
+    move_ids = [i for i in move_ids if i]
+    if not move_ids:
+        return {}
+    moves = {m["id"]: m for m in od.read("account.move", list(set(move_ids)),
+                                        ["move_type", "invoice_date", "journal_id", "partner_id"])}
+    diarios = {jid for jid in {m2o_id(m.get("journal_id")) for m in moves.values()} if jid}
+    if diarios:
+        nd = od.read("account.journal", list(diarios), ["name"])
+        diarios = {j["id"] for j in nd if _norm(j.get("name")).startswith("nota debito")}
+    return {i: m for i, m in moves.items()
+            if m.get("move_type") == "out_invoice" and m.get("invoice_date")
+            and m2o_id(m.get("journal_id")) not in diarios}
+
+
 def enlazar_notas_credito(od, loader, desde="2024-01-01"):
     ncs, off = [], 0
     while True:
         page = od.search_read("account.move",
                               [["move_type", "=", "out_refund"], ["state", "=", "posted"],
                                ["invoice_date", ">=", desde]],
-                              ["id", "invoice_date"], limit=5000, offset=off, context=CTX_ALL)
+                              ["id", "invoice_date", "reversed_entry_id", "ref", "partner_id"],
+                              limit=5000, offset=off, context=CTX_ALL)
         if not page:
             break
         ncs += page
@@ -988,64 +1283,199 @@ def enlazar_notas_credito(od, loader, desde="2024-01-01"):
         logging.info("  nc->factura: sin notas crédito de venta")
         return
     nc_ids = [n["id"] for n in ncs]
+    enlace = {}   # nc_id -> {factura_id: peso}
+    metodo = {}   # nc_id -> 'reversed_entry' | 'ref' | 'conciliacion'
 
-    # Líneas de CxC de las NC y sus conciliaciones (matched_debit_ids = contra qué débito concilian).
-    lns, off = [], 0
-    while True:
-        page = od.search_read("account.move.line",
-                              [["move_id", "in", nc_ids], ["account_type", "=", "asset_receivable"]],
-                              ["move_id", "matched_debit_ids"], limit=20000, offset=off, context=CTX_ALL)
-        if not page:
-            break
-        lns += page
-        off += len(page)
-    linea_a_nc = {l["id"]: m2o_id(l.get("move_id")) for l in lns}
-    pr_ids = [p for l in lns for p in (l.get("matched_debit_ids") or [])]
-    if not pr_ids:
-        logging.info("  nc->factura: sin conciliaciones")
+    # ── Método 1: `reversed_entry_id` (Odoo dice qué factura reversa) ───────────────────────────
+    rev = {n["id"]: m2o_id(n.get("reversed_entry_id")) for n in ncs if m2o_id(n.get("reversed_entry_id"))}
+    val_rev = _facturas_destino(od, list(rev.values()))
+    for nc_id, fid in rev.items():
+        if fid in val_rev:
+            enlace[nc_id] = {fid: 1.0}
+            metodo[nc_id] = "reversed_entry"
+
+    # ── Método 2: número de factura dentro de `ref` (mismo cliente, candidato único) ────────────
+    por_token, pendientes = {}, [n for n in ncs if n["id"] not in enlace]
+    for n in pendientes:
+        for tok in set(_RE_NUM_DOC.findall(n.get("ref") or "")):
+            por_token.setdefault(tok, []).append(n["id"])
+    if por_token:
+        cand, off = [], 0
+        toks = list(por_token)
+        while off < len(toks):                      # por lotes: el dominio `in` no debe crecer sin fin
+            lote = toks[off:off + 500]
+            cand += od.search_read("account.move",
+                                   [["name", "in", lote], ["move_type", "=", "out_invoice"],
+                                    ["state", "=", "posted"]],
+                                   ["id", "name", "partner_id"], context=CTX_ALL)
+            off += len(lote)
+        val_ref = _facturas_destino(od, [c["id"] for c in cand])
+        por_nombre = {}
+        for c in cand:
+            if c["id"] in val_ref:
+                por_nombre.setdefault(c["name"], []).append(c["id"])
+        cliente_nc = {n["id"]: m2o_id(n.get("partner_id")) for n in ncs}
+        halla = {}                                  # nc_id -> set de facturas candidatas
+        for tok, ncs_tok in por_token.items():
+            for fid in por_nombre.get(tok, []):
+                for nc_id in ncs_tok:
+                    if m2o_id(val_ref[fid].get("partner_id")) == cliente_nc.get(nc_id):
+                        halla.setdefault(nc_id, set()).add(fid)
+        for nc_id, fids in halla.items():
+            if len(fids) == 1:                      # ambiguo (>1) → se deja para la conciliación
+                enlace[nc_id] = {next(iter(fids)): 1.0}
+                metodo[nc_id] = "ref"
+
+    # ── Método 3: conciliación de CxC (lo único disponible para la mayoría de las NC) ───────────
+    fechas = {fid: str(m["invoice_date"])[:10] for fid, m in val_rev.items()}
+    if por_token:
+        fechas.update({fid: str(m["invoice_date"])[:10] for fid, m in val_ref.items()})
+
+    restantes = [i for i in nc_ids if i not in enlace]
+    if restantes:
+        # Líneas de CxC de las NC y sus conciliaciones (matched_debit_ids = contra qué débito concilian).
+        lns, off = [], 0
+        while True:
+            page = od.search_read("account.move.line",
+                                  [["move_id", "in", restantes], ["account_type", "=", "asset_receivable"]],
+                                  ["move_id", "matched_debit_ids"], limit=20000, offset=off, context=CTX_ALL)
+            if not page:
+                break
+            lns += page
+            off += len(page)
+        linea_a_nc = {l["id"]: m2o_id(l.get("move_id")) for l in lns}
+        pr_ids = [p for l in lns for p in (l.get("matched_debit_ids") or [])]
+        if pr_ids:
+            pr = od.read("account.partial.reconcile", pr_ids,
+                         ["amount", "debit_move_id", "credit_move_id"])
+            # La contrapartida (débito) es una LÍNEA: hay que subir a su move y validarlo como factura.
+            deb_ids = list({m2o_id(p["debit_move_id"]) for p in pr})
+            deb_move = {l["id"]: m2o_id(l.get("move_id"))
+                        for l in od.read("account.move.line", deb_ids, ["move_id"])}
+            facturas = _facturas_destino(od, list(deb_move.values()))
+            fechas.update({fid: str(m["invoice_date"])[:10] for fid, m in facturas.items()})
+            acum = {}   # nc_id -> {factura_id: monto conciliado}
+            for p in pr:
+                nc_id = linea_a_nc.get(m2o_id(p["credit_move_id"]))
+                fid = deb_move.get(m2o_id(p["debit_move_id"]))
+                if nc_id and fid in facturas:
+                    acum.setdefault(nc_id, {})[fid] = \
+                        acum.setdefault(nc_id, {}).get(fid, 0) + (p.get("amount") or 0)
+            for nc_id, facs in acum.items():
+                total = sum(facs.values())
+                if total > 0:
+                    enlace[nc_id] = {fid: monto / total for fid, monto in facs.items()}
+                    metodo[nc_id] = "conciliacion"
+
+    if not enlace:
+        logging.info("  nc->factura: ninguna NC se pudo enlazar a una factura de venta")
         return
-    pr = od.read("account.partial.reconcile", pr_ids, ["amount", "debit_move_id", "credit_move_id"])
-
-    # La contrapartida (débito) es una línea: hay que subir a su move y quedarse solo con out_invoice.
-    deb_ids = list({m2o_id(p["debit_move_id"]) for p in pr})
-    deb_move = {l["id"]: m2o_id(l.get("move_id"))
-                for l in od.read("account.move.line", deb_ids, ["move_id"])}
-    facturas = {m["id"]: m for m in od.read("account.move", list({v for v in deb_move.values() if v}),
-                                            ["move_type", "invoice_date", "journal_id"])}
-    # ⚠ Las NOTAS DÉBITO también son `out_invoice`: solo se distinguen por el DIARIO ("Nota Debito
-    # Nacional Yumbo", "Nota Debito Exportacion"). Se excluyen: la NC debe atribuirse a la FACTURA
-    # real, no a una nota débito (ej. NCR1858 concilia 49,9M con FEVY80693 y 2,3M con NDY21).
-    es_nota_debito = {jid for jid in {m2o_id(f.get("journal_id")) for f in facturas.values()} if jid}
-    if es_nota_debito:
-        diarios = od.read("account.journal", list(es_nota_debito), ["name"])
-        es_nota_debito = {j["id"] for j in diarios if _norm(j.get("name")).startswith("nota debito")}
-    acum = {}   # nc_id -> {factura_id: monto conciliado}
-    for p in pr:
-        nc_id = linea_a_nc.get(m2o_id(p["credit_move_id"]))
-        fid = deb_move.get(m2o_id(p["debit_move_id"]))
-        fac = facturas.get(fid) or {}
-        if (nc_id and fid and fac.get("move_type") == "out_invoice" and fac.get("invoice_date")
-                and m2o_id(fac.get("journal_id")) not in es_nota_debito):
-            acum.setdefault(nc_id, {})[fid] = acum.setdefault(nc_id, {}).get(fid, 0) + (p.get("amount") or 0)
-
-    filas = []
-    for nc_id, facs in acum.items():
-        total = sum(facs.values())
-        if total <= 0:
-            continue
-        for fid, monto in facs.items():
-            filas.append({"nc_factura_id": nc_id, "factura_id": fid,
-                          "proporcion": monto / total,
-                          "fecha_venta": str(facturas[fid]["invoice_date"])[:10]})
-    if not filas:
-        logging.info("  nc->factura: ninguna NC concilia contra facturas de venta")
-        return
+    filas = [{"nc_factura_id": nc_id, "factura_id": fid, "proporcion": peso,
+              "fecha_venta": fechas[fid], "metodo_enlace": metodo[nc_id]}
+             for nc_id, facs in enlace.items() for fid, peso in facs.items() if fid in fechas]
     with loader.get_connection() as conn:
         cur = conn.cursor()
         cur.execute("TRUNCATE marts.map_nc_factura;")
         conn.commit()
     upsert(loader, pd.DataFrame(filas), "map_nc_factura", ["nc_factura_id", "factura_id"])
-    logging.info(f"  nc->factura: {len(acum)} notas crédito enlazadas ({len(filas)} pares)")
+    por_metodo = pd.Series([metodo[n] for n in enlace]).value_counts().to_dict()
+    logging.info(f"  nc->factura: {len(enlace)} notas crédito enlazadas ({len(filas)} pares) "
+                 f"por método {por_metodo}")
+
+
+# ══ Puente NOTA DÉBITO → FACTURA que revive ══
+# Una ND NO es venta ("ventas menos devoluciones"), SALVO cuando ANULA una NOTA CRÉDITO: si la
+# devolución se anuló, no hubo devolución → hay que reponer ese valor EN EL MES DE LA FACTURA original.
+# Cadena ND → NC → FACTURA, vía el `ref` de la ND ("<numero_documento>, <motivo>", formato fijo):
+#   FE7281 (09-mar-2026) ← RINV/2026/0062 la anula ← NDY1 (24-abr) anula la NC → NDY1 va a MARZO.
+# Las ND que apuntan a una FACTURA (cargo extra, ej. NDY4 "FE7281, Ajuste por precio") o sin `ref` NO
+# entran → quedan fuera de ventas. Ver sql/marts/25_nd_factura.sql.
+CODIGOS_ND = ("NDY", "NDEXP")
+
+
+def enlazar_notas_debito(od, loader):
+    """Puebla marts.map_nd_factura. Correr DESPUÉS de enlazar_notas_credito (usa map_nc_factura)."""
+    diarios = od.search_read("account.journal", [["code", "in", list(CODIGOS_ND)]], ["id"])
+    if not diarios:
+        logging.info("  nd->factura: no hay diarios de nota débito")
+        return
+    nds, off = [], 0
+    while True:
+        page = od.search_read("account.move",
+                              [["move_type", "=", "out_invoice"], ["state", "=", "posted"],
+                               ["journal_id", "in", [d["id"] for d in diarios]]],
+                              ["id", "ref", "partner_id", "company_id"],
+                              limit=5000, offset=off, context=CTX_ALL)
+        if not page:
+            break
+        nds += page
+        off += len(page)
+    # Token referenciado = lo anterior a la primera coma del `ref`.
+    ref_de = {n["id"]: (n.get("ref") or "").split(",")[0].strip() for n in nds}
+    tokens = sorted({t for t in ref_de.values() if t})
+    if not tokens:
+        logging.info("  nd->factura: ninguna nota débito trae `ref`")
+        return
+
+    # Resolver los tokens a NOTAS CRÉDITO (out_refund). Si el token es una factura → NO es revivir.
+    ncs, off = [], 0
+    while off < len(tokens):
+        lote = tokens[off:off + 500]
+        ncs += od.search_read("account.move",
+                              [["name", "in", lote], ["move_type", "=", "out_refund"],
+                               ["state", "=", "posted"]],
+                              ["id", "name", "partner_id", "company_id", "reversed_entry_id"],
+                              context=CTX_ALL)
+        off += len(lote)
+    if not ncs:
+        logging.info("  nd->factura: ninguna nota débito anula una nota crédito")
+        return
+    por_nombre = {}
+    for c in ncs:
+        por_nombre.setdefault(c["name"], []).append(c)
+
+    # Factura de cada NC: 1º el puente NC (la de mayor proporcion), 2º su propio reversed_entry_id.
+    puente = loader.consultar("""
+        SELECT DISTINCT ON (nc_factura_id) nc_factura_id, factura_id, fecha_venta
+        FROM marts.map_nc_factura ORDER BY nc_factura_id, proporcion DESC
+    """)
+    del_puente = {} if puente is None else {
+        int(r.nc_factura_id): (int(r.factura_id), str(r.fecha_venta)[:10])
+        for r in puente.itertuples()}
+    faltan = [m2o_id(c["reversed_entry_id"]) for c in ncs
+              if c["id"] not in del_puente and m2o_id(c["reversed_entry_id"])]
+    val_rev = _facturas_destino(od, faltan)
+
+    filas = []
+    for nd in nds:
+        tok = ref_de[nd["id"]]
+        for c in por_nombre.get(tok, []):
+            # Mismo cliente y misma empresa: el número de documento no es único entre empresas.
+            if (m2o_id(c.get("partner_id")) != m2o_id(nd.get("partner_id"))
+                    or m2o_id(c.get("company_id")) != m2o_id(nd.get("company_id"))):
+                continue
+            if c["id"] in del_puente:
+                fid, fecha = del_puente[c["id"]]
+                met = "puente_nc"
+            else:
+                fid = m2o_id(c["reversed_entry_id"])
+                if fid not in val_rev:
+                    continue
+                fecha, met = str(val_rev[fid]["invoice_date"])[:10], "reversed_entry"
+            filas.append({"nd_factura_id": nd["id"], "nc_factura_id": c["id"],
+                          "factura_id": fid, "fecha_venta": fecha, "metodo_enlace": met})
+            break
+    if not filas:
+        logging.info("  nd->factura: ninguna nota débito se pudo enlazar a una factura")
+        return
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("TRUNCATE marts.map_nd_factura;")
+        conn.commit()
+    upsert(loader, pd.DataFrame(filas), "map_nd_factura", ["nd_factura_id"])
+    por_metodo = pd.Series([f["metodo_enlace"] for f in filas]).value_counts().to_dict()
+    logging.info(f"  nd->factura: {len(filas)} notas débito son venta (de {len(nds)}) "
+                 f"por método {por_metodo}; el resto queda FUERA de ventas")
 
 
 def consolidar_categoria(loader):
@@ -1110,12 +1540,13 @@ def main(modo, desde, hasta=None):
     od = Odoo(db, uid, pw, models)
     loader = DBLoader()
 
-    an_plan, an_nombre, plan_rol = cargar_catalogos_pequenos(od, loader)
+    an_plan, an_nombre, plan_rol, clasificar, nombre_puc = cargar_catalogos_pequenos(od, loader)
 
     # Refresco de dimensiones (clientes/productos/vendedores) por su propio write_date.
     # full/rebuild → refresco total; incremental/dims → solo cambios.
     refrescar_dimensiones(od, loader, full=(modo in ("full", "rebuild")))
     cargar_kits(od, loader)   # dim_kit_componente (BOM phantom) para v_ventas_explotada
+    enriquecer_nombre_comercial(od, loader)   # dim_producto.nombre_comercial (product.template.name)
     if modo == "dims":
         logging.info("OK DIMS: catálogos y dimensiones refrescados.")
         return
@@ -1126,7 +1557,8 @@ def main(modo, desde, hasta=None):
         if marca_l:
             dom.append(["write_date", ">", marca_l])
         logging.info(f"INCREMENTAL (líneas > {marca_l})")
-        total_h, mw_h = cargar_hecho(od, loader, dom, an_plan, an_nombre, plan_rol)
+        total_h, mw_h = cargar_hecho(od, loader, dom, an_plan, an_nombre, plan_rol,
+                                     clasificar, nombre_puc)
     else:
         # full / rebuild: cargar por AÑO, más reciente primero (2026 se completa antes).
         if modo == "rebuild":
@@ -1147,7 +1579,8 @@ def main(modo, desde, hasta=None):
         total_h, mw_h = 0, None
         for anio, ini, fin in _anios_desc(desde, hasta):
             dom = [["parent_state", "=", "posted"], ["date", ">=", ini], ["date", "<=", fin]]
-            t, mw = cargar_hecho(od, loader, dom, an_plan, an_nombre, plan_rol, catalogos_completos=True)
+            t, mw = cargar_hecho(od, loader, dom, an_plan, an_nombre, plan_rol,
+                                 clasificar, nombre_puc, catalogos_completos=True)
             total_h += t
             if mw and (mw_h is None or mw > mw_h):
                 mw_h = mw
@@ -1161,6 +1594,8 @@ def main(modo, desde, hasta=None):
     canonicalizar_puc(loader)     # unifica códigos 8 vs 9 díg de la misma cuenta (no destructivo)
     backfill_cliente_analitico(od, loader)  # plan 22 "Cliente" en líneas ya cargadas
     enlazar_notas_credito(od, loader)       # NC → factura original (la NC resta en el mes de la factura)
+    enlazar_notas_debito(od, loader)        # ⚠ tras el puente NC: ND que anula una NC = venta revivida
+    marcar_reversos_puente(loader)          # ⚠ tras el puente: anulaciones sin reversed_entry_id
     consolidar_categoria(loader)  # categoría (incl. EXPORTACION) + país por línea
 
     logging.info(f"OK {modo.upper()} completado: hecho={total_h} líneas.")
