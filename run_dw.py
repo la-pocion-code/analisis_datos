@@ -6,6 +6,7 @@ Reemplaza al antiguo sync raw `etl_odoo_incremental.py` (archivado en archivado/
 Odoo directo por XML-RPC, no de `raw`. En cada disparo decide qué correr según la fecha/hora:
 
 - Siempre:            carga INCREMENTAL (hecho + cartera + dimensiones por write_date).
+- Siempre, al final:  REFRESCO de las vistas materializadas de los dashboards de la intranet.
 - Días 3 y 24, 03h:   además RECREACIÓN del año actual (--rebuild) → refleja borrados.
 
 El cron es HORARIO a propósito: el rebuild se decide por `hour==3`; con `*/15` se dispararía varias
@@ -17,6 +18,7 @@ DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD.
 import logging
 from datetime import datetime
 import etl_dw_marts as etl
+import refrescar_mv_dashboards as mvd
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
@@ -43,6 +45,15 @@ def main():
             etl.main("rebuild", None)
         except Exception:
             logging.exception("Fallo en la recreación (rebuild)")
+
+    # 3) Refresco de las vistas materializadas que leen los dashboards de la
+    #    intranet. Va AL FINAL para que recoja también lo que trajo el rebuild.
+    #    Envuelto en try/except: si un tablero no se puede refrescar, el ETL
+    #    igual terminó bien (y el fallo queda en marts.bi_mv_refresh).
+    try:
+        mvd.refrescar()
+    except Exception:
+        logging.exception("Fallo al refrescar las MV de dashboards")
 
 
 if __name__ == "__main__":
