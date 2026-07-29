@@ -109,7 +109,7 @@ instalado en el VPS y el **mismo nombre de DSN** que usa el `.pbix`.
 2. **Conexión de puerta de enlace** → seleccionar el gateway y mapear el origen ODBC → *Aplicar*.
 3. **Credenciales del origen de datos**: si pide, volver a autenticar (Básica, Organizational).
 4. **Actualización programada → Activada** → añadir horarios. En Pro son **8 franjas/día máx.**;
-   ponerlas **~15 min después de cada hora del cron** para leer datos frescos, p.ej.:
+   ponerlas **~10-15 min después de la hora en punto** para leer datos ya consolidados, p.ej.:
    `06:15, 09:15, 12:15, 15:15, 18:15, 21:15` (+2 si se quiere).
    ⚠ El cron del DW pasó a **`*/15 * * * *`**, así que ya no hace falta esperar a la hora en punto:
    cualquier franja sirve. Eso sí, el **cierre** (categoría, puentes NC/ND, reversos) solo corre en el

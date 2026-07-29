@@ -1,6 +1,6 @@
-# CLAUDE.md — Proyecto BI La Poción (analisis_datos)
+# AGENTS.md — Proyecto BI La Poción (analisis_datos)
 
-Guía para Claude Code. Repo de scripts ETL/BI del analista de datos de La Poción.
+Guía para Codex. Repo de scripts ETL/BI del analista de datos de La Poción.
 Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 
 ## Qué es este repo
@@ -12,17 +12,13 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 - Entrypoint: **`run_dw.py`**. Disparado por Railway Cron (`railway.toml` → **`*/15 * * * *`**).
   Mismo comando en `Procfile` (worker: `python run_dw.py`).
 - **Reparto LIGERO/COMPLETO** (el coste de una corrida es casi todo FIJO, no proporcional al delta):
-  - tick **:00** → corrida **COMPLETA**: catálogos + dims + kits + nombre comercial + hecho + **todos
-    los pasos de cierre** (reversos, puentes NC/ND, categoría, PUC) + refresco de MV.
-  - ticks **:15/:30/:45** → **ligera**: dimensiones por `write_date` + `cargar_hecho` + MV
-    (`etl_dw_marts.main(..., cierre=False)`, o `--sin-cierre` a mano).
-  - ⚠ En los ticks ligeros las líneas nuevas quedan **sin `categoria`, sin `es_reverso` y sin puente
-    NC/ND** hasta el cierre de la hora. Es el precio de la frescura.
-- **rebuild** del año actual los días 3 y 24 a las 03h, **solo en el tick :00** (`MINUTO_CIERRE`).
-  ⚠ Sin esa guarda, `hour==3` se cumplía en :00/:15/:30/:45 → 4 rebuilds solapados, cada uno con un
-  DELETE del año. La hora es la del contenedor = **UTC** (≈22:00 del día anterior en Colombia).
-- **Advisory lock** (`pg_try_advisory_lock`, clave `8152026`) en `run_dw.py`: si la corrida anterior
-  sigue viva, el tick se **omite** y sale con código 0. Es lo que hace seguro el `*/15`.
+  tick **:00** = corrida COMPLETA (catálogos + dims + kits + hecho + **todos los pasos de cierre**);
+  ticks **:15/:30/:45** = **ligera** (dimensiones por `write_date` + `cargar_hecho`), ~55 s.
+  ⚠ En los ticks ligeros las líneas nuevas quedan **sin `categoria`, sin `es_reverso` y sin puente
+  NC/ND** hasta el cierre de la hora.
+- **rebuild** del año actual los días 3 y 24 a las 03h, **solo en el tick :00** (`MINUTO_CIERRE`);
+  la hora es **UTC**. **Advisory lock** (clave `8152026`): si la corrida anterior sigue viva, el tick
+  se omite. Detalles del ETL en la sección "Data Warehouse" abajo.
 - El sync antiguo a `raw.odoo_apuntes` (`etl_odoo_incremental.py`) quedó **archivado**
   (`archivado/`, ya no corre); el DW lee de Odoo directo, no de `raw`. `raw.odoo_apuntes` sigue
   existiendo para el BI legacy pero ya no se actualiza por cron.
@@ -32,47 +28,12 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 - `etl_dw_marts.py` — ETL del DW (ver sección Data Warehouse).
 - `cargar_mapeos.py` — carga los mapeos NO-Odoo de ventas (zona/cliente_padre/categoría) de Drive a
   `marts.map_*`. A demanda (ver sección Data Warehouse).
-- `cargar_bi_datasets.py` — sube a `marts.bi_*` los datasets que el BI de Power BI leía de archivos
-  LOCALES (Drive → PG). A demanda (ver sección "BI Power BI").
-- `cargar_cuentas_clave.py` — reproduce en `marts.bi_cuentas_clave_ventas/bi_inventario_cclave/
-  bi_tiendas_cclave` las tablas de CUENTAS CLAVE (ventas/inventarios por retailer + países) desde Drive.
-- `refrescar_mv_dashboards.py` — refresca las MV que consumen los **dashboards de la intranet**
-  (lo llama `run_dw.py` al final de cada corrida). Ver sección "Dashboards de la INTRANET".
 - `classes/db_loader.py` — `DBLoader`: conexión PG, auto-DDL, UPSERT, carga incremental.
 - `classes/drive_loader.py` — `DriveLoader`: lee Excel/CSV de Google Drive.
 - `classes/send_mail.py` — `MailSender`: correos SMTP con adjuntos.
 - `classes/clase_reportes_new.py` — `ReportClassNew` (~2500 líneas): motor BI manual.
 - `archivado/` — código legacy (incl. `etl_odoo_incremental.py`, el antiguo sync raw ya retirado
   del cron, y `etl_odoo_historico.py`, que solo dropea tablas).
-
-## BI Power BI — modelo `DASHBOARD POCION` (desconexión de archivos locales)  ⭐
-Se trabaja **en vivo** contra el modelo abierto en Power BI Desktop vía **MCP `powerbi-modeling-mcp`**
-(ListLocalInstances → Connect → `partition_operations`/`measure_operations`/`dax_query_operations`…).
-Conexión PG del modelo: **DSN ODBC `pocion_marts`** (driver *PostgreSQL Unicode(x64)*, `SSLmode=require`),
-base `railway`, esquema `marts`. ⚠ Se migró del conector nativo
-`PostgreSQL.Database("switchback.proxy.rlwy.net:37790","railway")` a **ODBC** para que el refresco en el
-Service no falle: el Postgres de Railway presenta un cert `CN=localhost` que rompe *verify-full*;
-`SSLmode=require` cifra sin verificar hostname. Tablas → `Odbc.DataSource` (navegación `railway→marts→tabla`);
-vistas `v_*` → `Odbc.Query` (el driver no las lista en la navegación). Ver `docs/bi_conexiones_marts.md`
-(código M de cada consulta) y `docs/bi_refresco_gateway.md` (crear el DSN local/VPS + gateway).
-- **Objetivo cumplido (2026-07-23):** el modelo ya **no lee archivos locales `G:\`**. 11 tablas repuntadas:
-  - 9 a `marts.bi_*` (por `cargar_bi_datasets.py` + `cargar_cuentas_clave.py`): LINEAS, OFERTAS,
-    BASE_CUENTAS_CLAVE, Clientes Impulso, PRESUPUESTO GENERAL, cliente_credito, CUENTAS_CLAVE ANEXO,
-    INV CCLAVE ANEXO, TIENDAS_CCLAVE.
-  - **NIELSEIQ** → `marts.bi_nielsen` (FECHA sale de `periods` "…fin dd/mm/yy"; MARCAS reclasificado en el loader).
-  - **Cartera** → vista **`marts.v_cartera`** (agrupada por `numero`; RANGO MORA/ORDEN calculados en M).
-  - Único que sigue no-local: `respuestas_cartera` (Google Sheets, web) — fuera de alcance.
-- **⚠ Los cambios por MCP NO persisten:** hay que **Guardar el .pbix** (Ctrl+S). Reabrir sin guardar
-  **borra todos los repuntes**.
-- **Gotchas al repuntar** (ver memoria `pbi_desconexion_local`): nombres de columna en `bi_*` =
-  `DBLoader._limpiar_columnas` (minúsculas, sin tildes/ñ, espacios→`_`) + `_loaded_at`/`_source_file` +
-  `id SERIAL`; **NO quitar `id` en el M**; forzar cultura **`"en-US"`** en conversiones numéricas/fecha
-  (el locale es-CO lee el punto decimal como miles e infla ×10/×1000); `partition Update` en batch a
-  veces da "base version negative" (transitorio → reintentar); descubrir columnas reales con una
-  tabla-sonda `Table.FromList(Table.ColumnNames(x),…)` + refresh + EVALUATE.
-- **Deck financiero** (PyG/Balance): medidas `marts …` en `_medidas_odoo` sobre `fact_movimiento_contable`;
-  clasificación por **código PUC** (no `nivel_movimiento`); la tabla legacy `Medidas PYG`/`base pyg`
-  (CSV `base_consolidada`) fue **eliminada** (0 refs). Ver `docs/guia_bi_reporting.md` y memoria `pbi_pyg_clasificacion`.
 
 ## Data Warehouse — modelo estrella (esquema `marts`)  ⭐ trabajo activo
 Nuevo pipeline separado del cron `raw`. **Un solo hecho** a grano de línea contable que sirve
@@ -93,8 +54,7 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   destructivo), `12_estados_financieros.sql` (`seccion/concepto/nivel_movimiento` para estados
   financieros, desde `account.report`) y `13_puc_nombres.sql` (`clase/grupo/cuenta/subcuenta_nombre`
   desde `account.group`). `09_nivel_movimiento.sql` quedó **superseded** por 12. Todos idempotentes.
-  **Ventas (14–16):** `14_ventas.sql` (`v_ventas_producto`, ventas netas a grano de producto, +
-  `v_nc_sin_asignar` = NC sin factura enlazada, excluidas de ventas),
+  **Ventas (14–16):** `14_ventas.sql` (`v_ventas_producto`, ventas netas a grano de producto),
   `15_dims_ventas.sql` (enriquece `dim_tercero`: telefono/email/etiqueta/cliente_padre;
   `dim_producto.es_kit`; y `fact.equipo`), `15b_kits.sql` (`dim_kit_componente` + `v_ventas_explotada`) y
   `16_mapeos_ventas.sql` (mapeos NO-Odoo `map_zona/map_zona_cundinamarca/map_zona_bogota/
@@ -111,36 +71,7 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `mrp.bom` phantom (`cargar_kits`) + `v_ventas_explotada`. Poblado: `python etl_dw_marts.py --dims`.
   **Ventas en BI: ver `docs/guia_bi_ventas.md`** (las 2 formas de ver los kits + medidas DAX).
 - **La NOTA CRÉDITO resta en el mes de SU FACTURA (`fecha_venta`)** — `19_nc_factura.sql` +
-  `enlazar_notas_credito`. ⭐ **Auditar con `python diagnosticar_fecha_venta.py`** (solo lectura).
-  El enlace NC→factura se arma con una **CASCADA DE EVIDENCIA** y el método queda en
-  `map_nc_factura.metodo_enlace`: 1) `reversed_entry` (`reversed_entry_id`, el más fuerte), 2) `ref`
-  (número de factura en la referencia, mismo cliente y candidato único), 3) `conciliacion`
-  (`account.partial.reconcile`, el más débil: "se aplicó contra" ≠ "corrige a"). Medido 2026:
-  2.617 NC enlazadas — **2.053 por `reversed_entry`**, 513 por conciliación, 51 por `ref`. La cascada
-  rescató ~394 NC que antes no tenían conciliación y quedaban FUERA de ventas (`v_nc_sin_asignar` bajó
-  de 45 NC/−304M a 11 NC/−31,9M en 2026; abril bajó 202M al entrar `RFEX2` −200,8M).
-  ⚠ **`es_reverso` no ve las anulaciones que Odoo deja sin `reversed_entry_id`** → 2ª pasada
-  `marcar_reversos_puente` (tras `enlazar_notas_credito` en `main`; exige `proporcion`>0,999 +
-  cobertura clase 4 ≥99% + **misma firma producto:cantidad**). Sin ella, factura y NC netean a 0 pero
-  **inflan el bruto y las unidades**: `FE7301` (09-mar-2026, 662,2M) ↔ `RINV254` (28-abr, −662,2M)
-  dejaba marzo con bruto 8.252,9M en vez de 7.307,8M (neto igual). Ese par era el causante del salto
-  ±600M mar/abr que se veía al comparar `fecha_venta` vs `fecha_factura`.
-- **NOTA DÉBITO: NO es venta, salvo si ANULA una nota crédito** (`25_nd_factura.sql` +
-  `enlazar_notas_debito`, puente `marts.map_nd_factura`). Regla de negocio: ventas = facturas − devoluciones.
-  Si una devolución se anuló, no hubo devolución → se repone el valor **en el mes de la factura**, no en
-  el de la ND. Cadena **ND → NC → FACTURA** por el `ref` de la ND (formato fijo `"<documento>, <motivo>"`,
-  41 de 44 ND): `FE7281` (09-mar-2026) ← la anula `RINV/2026/0062` ← la anula `NDY1` (24-abr, 612,9M) →
-  **`NDY1` suma en MARZO**. Antes sumaba en abril e inflaba el mes (era la 2ª mitad del salto mar/abr).
-  Diarios ND = `dim_diario.codigo IN ('NDY','NDEXP')` (⚠ por **código**, no por nombre; son `tipo='sale'`
-  igual que una factura). Las ND que apuntan a una FACTURA (cargo extra: `NDY4` 49,2M "Ajuste por
-  precio") o sin `ref` quedan **fuera** → `marts.v_notas_debito_excluidas`. `es_nota_debito` sigue en
-  `v_ventas_producto`/`v_ventas_bi` pero ahora marca **solo las ND que sí son venta**.
-  Simetría útil: si la NC no se pudo enlazar a una factura, tampoco entra su ND → ninguna de las dos
-  cuenta (2026: 21 de 44 ND son venta; ~103M de ND que anulan NC sin factura quedan fuera con su NC).
-  ⚠ La visión **CONTABLE** sí lleva las ND (son ingreso): `v_ventas`, `v_balance_comprobacion` y
-  `v_exportaciones` **no** las excluyen a propósito.
-  ⚠ Al comparar contra el Excel, agrupar por `fecha_factura` **reproduce el error del Excel** (descarta
-  las NC que no casan por `ref`+producto): sirve para comparar, no para reportar. Antes una NC restaba en su propio mes: `NCR1858` (mar-2026) corrige
+  `enlazar_notas_credito`. Antes una NC restaba en su propio mes: `NCR1858` (mar-2026) corrige
   `FEVY80693` (nov-2025) y deprimía marzo e inflaba noviembre. Medido 2025-2026: **777 NC** en un mes
   distinto al de su factura, ~**6.584M** mal atribuidos. El enlace **solo existe en la CONCILIACIÓN**
   (`account.partial.reconcile`): la mayoría de NC no traen `ref` ni `reversed_entry_id`. El puente
@@ -149,11 +80,6 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   ⚠ Se **excluyen las notas débito**: también son `out_invoice` y solo se distinguen por el **diario**
   (`Nota Debito Nacional Yumbo`/`Exportacion`). **3 fechas en `v_ventas_producto`:** `fecha_venta`
   (⭐ para VENTAS) · `fecha_factura` (propia del doc, para informe de NC por mes) · `fecha` (contable).
-  ⚠ **NC SIN factura asignada NO cuentan en ventas:** una NC que no se pudo enlazar (no está en
-  `map_nc_factura`) queda **fuera** de `v_ventas_producto`/`v_ventas_bi` (`AND NOT (out_refund AND
-  m.nc_factura_id IS NULL)` en `14_ventas.sql`); se aíslan en **`v_nc_sin_asignar`** para conciliar a
-  mano. Medido 2026: 45 NC / ~−304M (~−233M con factura de 2026, el resto emitidas contra facturas de
-  años previos).
 - **KITS — dos presentaciones y reparto de valor:** `v_ventas_producto` = **kits vendidos** (el kit es
   la unidad, tal como se factura); `v_ventas_explotada` = **unidades de producto** (kit repartido en
   componentes). ⚠ **No sumar ambas**: es el mismo dinero (los totales coinciden exacto).
@@ -249,63 +175,6 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   subcuenta (6 díg) + mismo nombre normalizado. El **hecho conserva el `cuenta_id` real de Odoo**;
   en Power BI se agrupa por `codigo_canonico`. Docs: `docs/MODELO_ESTRELLA.md` §10.
 
-## Dashboards de la INTRANET (migración desde Power BI)  ⭐ nuevo 2026-07-28
-La intranet (**otro repo**: `proyecto pocion/intranet`, app `apps/dashboards`) está reemplazando los
-tableros de Power BI por gráficos web con ECharts, con permisos por tablero definidos por el admin.
-**Contrato de datos completo: [`docs/dashboards_intranet.md`](docs/dashboards_intranet.md).**
-
-- **⚠ REGLA: los dos repos NO se mezclan.** Todo lo de base de datos (DDL, MV, roles, refresco) vive
-  **aquí** y se documenta **aquí**; la intranet solo hace `SELECT`. Cada repo cumple una función puntual.
-- **Por qué hacen falta MV:** Power BI *importa* y agrega en memoria; un dashboard web consulta **en
-  vivo** en cada carga. `v_ventas_bi` es vista sobre `v_ventas_explotada` (window functions) sobre
-  `v_ventas_producto` (7 joins) → se reconstruye entera (910k filas) en CADA consulta. Medido
-  2026-07-28: *ventas por mes* **6.892 ms** y *top 10 clientes* **8.277 ms** → con las MV, 318 ms y
-  712 ms (**22× / 12×**). Con 5-6 paneles eran ~40 s de CPU de BD por usuario que abría el tablero.
-- **`sql/marts/23_mv_dashboards.sql`** (fase 1 = hoja **Ventas**): `mv_ventas_dia` (176.979 filas,
-  series temporales), `mv_ventas_mes` (851.515, desgloses y top-N — incluye producto),
-  `mv_ventas_kpi_mes` (296, conteos DISTINTOS: facturas/clientes/líneas), `mv_presupuesto_mes` (347,
-  tipa `bi_presupuesto` que es todo `VARCHAR`) y **`mv_ventas_presupuesto_mes`** (360, ventas vs
-  presupuesto por **mes × categoría**). Cada una con **índice ÚNICO** (lo exige
-  `REFRESH … CONCURRENTLY`) + índices por fecha/periodo y por cada FK de filtro. Cuadre verificado:
-  155.384.962.862 idéntico al origen, diferencia 0 mes a mes.
-  Idempotente vía DROP+CREATE ⇒ re-ejecutarlo **reconstruye** (~43 s); el refresco rutinario NO usa
-  este archivo.
-- **PRESUPUESTO ↔ categorías de Odoo (filtro dinámico)** ⭐: la categoría del presupuesto es
-  **`bi_presupuesto.canal`**, ⚠ **NO `categoria_cliente`** (esa es el NIVEL del cliente —
-  DIAMOND/SILVER/GOLD — y viene vacía en 302 de 347 filas). `mv_presupuesto_mes` expone ahora
-  **`categoria`** = `canal` normalizado con **`map_categoria`**, que es el vocabulario de
-  `fact.categoria`. Los dos vocabularios ya coincidían casi 1:1; solo hubo que añadir a
-  `cargar_mapeos.py`: **`INTERNACIONAL`→`EXPORTACION`** y los typos de Odoo
-  **`CL,IENTE`/`CLENTE`/`CLIENTE`→`CALL CENTER`**. El cruce vive en
-  **`mv_ventas_presupuesto_mes`** (`FULL OUTER JOIN`, para que una categoría con presupuesto y sin
-  ventas —o al revés— siga apareciendo) con `venta/presupuesto/cumplimiento_pct/falta`.
-  ⚠ Se refresca **AL FINAL** (lee de `mv_ventas_mes` y `mv_presupuesto_mes`). Asimetrías: presupuesto
-  **solo 2026**, **sin empresa** (suma HFA+PCN) y `venta` por **`fecha_venta`** (no admite
-  `date_basis=factura`). Cuadre verificado: `SUM(venta)` idéntico a `v_ventas_bi`.
-- **`sql/marts/24_rol_intranet.sql`**: rol **`intranet_ro`** + vistas de lookup `v_lk_tercero`,
-  `v_lk_producto`, `v_lk_vendedor`, `v_lk_empresa`. Espejo de `20_agente.sql`: **NO** se concede
-  acceso al hecho, a `dim_*` crudas, a `v_ventas_bi` ni a las `bi_*`. `v_lk_tercero` **excluye
-  a propósito** NIT/teléfono/email (208k terceros; un tablero de ventas no necesita datos personales).
-  Verificado: lee los 9 objetos permitidos y recibe `permission denied` en los 6 prohibidos y en
-  `CREATE`/`INSERT`/`REFRESH`. La contraseña **no va en el repo** (`ALTER ROLE … PASSWORD` aparte).
-- **`refrescar_mv_dashboards.py`**: lo llama **`run_dw.py` al final** de cada corrida (después del
-  incremental **y** del rebuild), en `try/except` — si un tablero no se refresca, el ETL igual
-  termina bien. ~45 s las 4 MV. Registra cada refresco en **`marts.bi_mv_refresh`** (la intranet usa
-  `MAX(refreshed_at)` como versión de caché y para mostrar "datos actualizados hace X").
-  ⚠ `REFRESH … CONCURRENTLY` **no admite transacción** → la conexión va en `autocommit`; y exige la
-  vista ya poblada + índice único (si falla por eso, reintenta sin `CONCURRENTLY`).
-- **Reglas de uso** (detalle en el doc): el valor **siempre** con `venta`; ⚠ nunca `cantidad_neta`
-  (nivel KIT, se repite → infla ~30%); **`facturas` NO es aditivo** (usar `mv_ventas_kpi_mes`); la
-  fecha de negocio es `fecha_venta` (la NC resta en el mes de SU factura); ids nulos → `-1` y textos
-  → `'(sin …)'` por el índice único.
-- **Limitaciones del origen a tener en cuenta**: el presupuesto es **solo 2026** y **no tiene columna
-  de empresa** (no se puede separar HFA / PCN); las ventas empiezan **2024-06-01** (YoY 2025 vs 2024
-  parcial); todas las `bi_*` son `VARCHAR(512)` → si cambia el Excel origen, **revalidar los casts**.
-- **Fases siguientes** (cada hoja añade sus MV aquí + su `GRANT`): Nielsen → cuentas clave/KAM →
-  cartera (portar los buckets de mora que hoy calcula Power Query) → contabilidad (antes hay que
-  portar a SQL las columnas calculadas DAX de `dim_cuenta`: `concepto_contable`, `concepto_balance`,
-  `categoria_gasto`, `flujo_actividad`, `orden_*` — son `CASE` sobre código PUC).
-
 ## Variables de entorno (en `.env`, NO versionado — usar solo nombres, nunca valores)
 - Odoo: `url`, `db`, `username_odoo`, `password`.
 - PostgreSQL (Railway): `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
@@ -337,14 +206,6 @@ tableros de Power BI por gráficos web con ECharts, con permisos por tablero def
   "porque cabe": el payload creció al añadir campos y quedó al filo.
 - **`IncompleteRead`/`BadStatusLine` heredan de `http.client.HTTPException`, NO de `OSError`** → hay
   que nombrarlas explícitamente en el `except` de `Odoo._exec` o el ETL muere sin reintentar.
-- **Self-heal de dimensiones (`asegurar_dims_hecho`):** las dims/catálogos se cargan UNA vez al inicio;
-  algo CREADO en Odoo mientras corre el ETL (tercero/producto/cuenta/diario/centro nuevo…) no está en
-  su dim → viola la FK del hecho (pasaba con terceros en `--rebuild`, ~1h). Antes de cada `upsert` del
-  hecho, `asegurar_dims_hecho` mira las columnas FK del DataFrame ya construido y trae de Odoo **solo
-  los ids faltantes** de CADA dim (tercero/producto/vendedor/cuenta/diario/empresa/centro_costo +
-  genera `dim_fecha`), reutilizando los mismos row-builders de `cargar_catalogos_pequenos`. Corre
-  siempre (incremental y full/rebuild); el hueco normal es 0 → sin lecturas extra. La red de
-  aislamiento fila-a-fila del `upsert` queda como último recurso.
 
 ## PENDIENTES del DW (retomar aquí)
 - Carga inicial `--full` (TRUNCATE + todos los años) — al terminar, **validar**:

@@ -219,7 +219,7 @@ medida `[Ventas]` es la misma en ambos.
    esas NC. Si quieres una comparación "manzana con manzana" contra el Excel, agrupa por
    `fecha_factura`; para el **número correcto de ventas**, usa `fecha_venta`.
    > ⚠ **`fecha_factura` sirve para comparar, NO para reportar.** Reproduce el error del Excel.
-3. **Timing**: el CSV es una foto; el DW sigue cargando cada hora.
+3. **Timing**: el CSV es una foto; el DW sigue cargando **cada 15 min**.
 4. **Notas débito.** Ya **no cuentan como venta**, salvo las que **anulan una nota crédito** (y esas van
    al mes de la factura que reviven). No hay nada que decidir en el visual: el SQL ya aplica la regla.
    Ver §6.5.

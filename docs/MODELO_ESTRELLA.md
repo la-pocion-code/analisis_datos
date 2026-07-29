@@ -119,12 +119,13 @@ El hecho es idempotente por `linea_id`.
 
 Script que puebla `marts` desde Odoo (XML-RPC), **por lotes** de 5.000 líneas para no agotar
 memoria. Reutiliza el patrón del antiguo `etl_odoo_incremental.py` (hoy archivado) y `DBLoader`.
-En Railway lo dispara el cron `run_dw.py` (horario). Modos:
+En Railway lo dispara el cron `run_dw.py` (**cada 15 min**; el cierre y el rebuild solo en el tick
+:00 — ver `docs/GUIA_OPERACION.md` §2.4). Modos:
 
 | Modo | Comando | Qué hace | Cuándo |
 |---|---|---|---|
 | Inicial | `python etl_dw_marts.py --full` | Carga histórica completa (sin truncar) | Primera población |
-| Incremental | `python etl_dw_marts.py --incremental` | Solo `write_date > marca_de_agua` (UPSERT idempotente) | Frecuente (p.ej. cada hora) |
+| Incremental | `python etl_dw_marts.py --incremental` | Solo `write_date > marca_de_agua` (UPSERT idempotente) | Frecuente (el cron, cada 15 min) |
 | Recreación | `python etl_dw_marts.py --rebuild [--desde AAAA-MM-DD]` | **DELETE del rango + recarga** → refleja **borrados**. Por defecto **solo el año actual** (años cerrados intactos); `--desde` elige otra fecha | ~2×/mes + manual |
 
 Cada corrida procesa **un solo hecho** `fact_movimiento_contable` (líneas contables), que sirve
@@ -135,8 +136,10 @@ ventas y cartera. Marca de agua: `account.move.line` (+ dims por su propio `writ
 - **Fidelidad ante borrados:** `write_date` no detecta eliminaciones/anulaciones en Odoo; por eso
   `--rebuild` (recreación total) se corre ~2 veces al mes (≈1 semana antes de fin de mes y unos días
   tras iniciar el mes) y bajo demanda, para mantener el marts fiel a Odoo.
-- **Programación sugerida (cron):** `0 3 24 * *` y `0 3 3 * *` → `--rebuild`; `0 * * * *` → `--incremental`.
-  Dónde corre (Railway vs Task Scheduler de Windows): a decidir; no se modifica `railway.toml`.
+- **Programación real (Railway):** `railway.toml` → **`*/15 * * * *`**, y `run_dw.py` decide qué hacer
+  en cada tick: corrida COMPLETA (con los pasos de cierre) en `:00`, LIGERA en `:15/:30/:45`, y
+  `--rebuild` del año actual los días 3 y 24 a las 03h **solo en el tick `:00`**. Un advisory lock
+  evita el solapamiento. Detalle en `docs/GUIA_OPERACION.md` §2.4.
 - **dim_centro_costo:** se puebla con `account.analytic.account` de los planes de centro de costo
   (root_plan_id ∈ {25 "Centro de costos", 3 "La Poción"}); enriquecer con la hoja `CC` de
   `base_cuentas.xlsx` queda pendiente (`adm_vtas`/`origen`/`tipo` en NULL por ahora).

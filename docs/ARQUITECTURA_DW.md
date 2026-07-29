@@ -9,7 +9,7 @@ data warehouse con modelo estrella.
 
 > **ACTUALIZACIÓN (2026-07):** el cron de Railway ya **no** corre el sync raw
 > `etl_odoo_incremental.py` (archivado en `archivado/`). El entrypoint del cron es ahora
-> **`run_dw.py`** (ETL del DW `marts`, horario). Las secciones 2–4 describen el sync raw histórico
+> **`run_dw.py`** (ETL del DW `marts`, **cada 15 min**: completa en el tick :00, ligera en los otros). Las secciones 2–4 describen el sync raw histórico
 > —hoy archivado— y se conservan como referencia. Operación vigente del DW:
 > `docs/MODELO_ESTRELLA.md` y `docs/GUIA_OPERACION.md`.
 
@@ -25,7 +25,7 @@ analisis_datos/
 ├── run_dw.py                   ★ ENTRYPOINT del cron: ETL del DW marts (incremental + rebuild)
 ├── etl_dw_marts.py             ETL del modelo estrella (Odoo XML-RPC → marts)
 ├── Procfile                    worker: python run_dw.py
-├── railway.toml                Railway: startCommand + cronSchedule "0 * * * *" (horario)
+├── railway.toml                Railway: startCommand + cronSchedule "*/15 * * * *"
 ├── archivado/etl_odoo_incremental.py   sync raw histórico (retirado del cron)
 ├── requirements.txt            pandas, numpy, psycopg2-binary, python-dotenv
 ├── requirements_local.txt      variante local
