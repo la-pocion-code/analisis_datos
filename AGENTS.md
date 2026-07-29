@@ -6,6 +6,11 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 ## Qué es este repo
 - Cron en **Railway** que carga el **Data Warehouse** (`Odoo → PostgreSQL marts`) **cada 15 min**.
 - Más scripts de BI manual (Excel, Google Drive, correo) en `classes/` y notebooks.
+- ⭐ **DIRECCIÓN DEL PROYECTO: los tableros pasan de Power BI a la INTRANET** (app interna de la
+  compañía) presentados como **HTML dinámico** (ECharts, consultando la BD en vivo). Power BI es
+  fuente **transitoria**, no destino: lo nuevo se hace para la intranet y **la lógica de negocio baja
+  al SQL** (lo que era medida DAX o paso de Power Query pasa a vistas/MV/columnas del hecho, porque la
+  intranet solo hace `SELECT`). Ver `docs/dashboards_intranet.md`.
 - Idioma del proyecto y de la comunicación: **español**.
 
 ## Componente principal: el cron del DW

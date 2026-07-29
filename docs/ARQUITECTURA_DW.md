@@ -162,6 +162,12 @@ string y `_pg_type` solo mapea a `TIMESTAMP` los dtypes `datetime64` reales.
 
 ## 6. Plan por fases *(propuesta)*
 
+> ⭐ **CONSUMIDOR OBJETIVO: la INTRANET, no Power BI.** Los tableros pasan a la **app interna de la
+> compañía**, presentados como **HTML dinámico** (ECharts, consultando la BD en vivo). Power BI es
+> **transitorio**. Esto cambia lo que el DW tiene que entregar: la app solo hace `SELECT`, así que
+> **la lógica de negocio debe quedar en SQL** (vistas, vistas materializadas, columnas del hecho) y no
+> en medidas DAX ni en Power Query. Contrato de datos: `dashboards_intranet.md`.
+
 Convención objetivo: esquema **`staging`** (crudo Odoo, 1 tabla por modelo) + esquema
 **`marts`** (`dim_*`, `fact_*` estrella). Reutilizar `descargar_modelo_paginado()` y
 `DBLoader`. Empezar por **ventas + contable**.

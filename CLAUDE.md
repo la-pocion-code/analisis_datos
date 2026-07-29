@@ -6,6 +6,11 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 ## Qué es este repo
 - Cron en **Railway** que carga el **Data Warehouse** (`Odoo → PostgreSQL marts`) **cada 15 min**.
 - Más scripts de BI manual (Excel, Google Drive, correo) en `classes/` y notebooks.
+- ⭐ **DIRECCIÓN DEL PROYECTO: los tableros pasan de Power BI a la INTRANET** (app interna de la
+  compañía) presentados como **HTML dinámico** (ECharts, consultando la BD en vivo). Power BI es
+  fuente **transitoria**, no destino: lo nuevo se hace para la intranet y **la lógica de negocio baja
+  al SQL** (lo que era medida DAX o paso de Power Query pasa a vistas/MV/columnas del hecho, porque la
+  intranet solo hace `SELECT`). Ver `docs/dashboards_intranet.md`.
 - Idioma del proyecto y de la comunicación: **español**.
 
 ## Componente principal: el cron del DW
@@ -45,7 +50,10 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 - `archivado/` — código legacy (incl. `etl_odoo_incremental.py`, el antiguo sync raw ya retirado
   del cron, y `etl_odoo_historico.py`, que solo dropea tablas).
 
-## BI Power BI — modelo `DASHBOARD POCION` (desconexión de archivos locales)  ⭐
+## BI Power BI — modelo `DASHBOARD POCION` (desconexión de archivos locales)
+⚠ **TRANSITORIO**: se está reemplazando por los dashboards de la **intranet** (HTML dinámico, ver la
+sección "Dashboards de la INTRANET" y `docs/dashboards_intranet.md`). Se mantiene mientras dure la
+migración; **no se amplía**. Lo que aquí sea DAX/Power Query debe **portarse a SQL** en el DW.
 Se trabaja **en vivo** contra el modelo abierto en Power BI Desktop vía **MCP `powerbi-modeling-mcp`**
 (ListLocalInstances → Connect → `partition_operations`/`measure_operations`/`dax_query_operations`…).
 Conexión PG del modelo: **DSN ODBC `pocion_marts`** (driver *PostgreSQL Unicode(x64)*, `SSLmode=require`),
@@ -249,10 +257,20 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   subcuenta (6 díg) + mismo nombre normalizado. El **hecho conserva el `cuenta_id` real de Odoo**;
   en Power BI se agrupa por `codigo_canonico`. Docs: `docs/MODELO_ESTRELLA.md` §10.
 
-## Dashboards de la INTRANET (migración desde Power BI)  ⭐ nuevo 2026-07-28
-La intranet (**otro repo**: `proyecto pocion/intranet`, app `apps/dashboards`) está reemplazando los
-tableros de Power BI por gráficos web con ECharts, con permisos por tablero definidos por el admin.
-**Contrato de datos completo: [`docs/dashboards_intranet.md`](docs/dashboards_intranet.md).**
+## Dashboards de la INTRANET — ⭐ EL DESTINO DE LOS TABLEROS (reemplazan a Power BI)
+**Decisión del proyecto:** los tableros dejan Power BI y pasan a la **intranet**, una **app interna de
+la compañía** (**otro repo**: `proyecto pocion/intranet`, app `apps/dashboards`), presentados como
+**HTML dinámico** (gráficos web con ECharts que consultan la BD en vivo, con permisos por tablero
+definidos por el admin). **Contrato de datos completo:
+[`docs/dashboards_intranet.md`](docs/dashboards_intranet.md).**
+
+- **Consecuencia de diseño: la lógica de negocio BAJA AL SQL.** La intranet solo hace `SELECT`, así que
+  todo lo que en Power BI era una medida DAX o un paso de Power Query tiene que quedar resuelto en el
+  DW (vistas, MV, columnas del hecho). Ya portados: exclusión de notas débito (era filtro DAX), mes de
+  la nota crédito (`fecha_venta`), cruce ventas vs presupuesto por categoría (era un join manual).
+  **Al añadir una regla nueva, va en SQL — no en DAX.**
+- Se quitan de encima el techo de refrescos de **Power BI Pro** (8/día) y el **gateway**: el cron corre
+  cada 15 min y la intranet lee directo.
 
 - **⚠ REGLA: los dos repos NO se mezclan.** Todo lo de base de datos (DDL, MV, roles, refresco) vive
   **aquí** y se documenta **aquí**; la intranet solo hace `SELECT`. Cada repo cumple una función puntual.

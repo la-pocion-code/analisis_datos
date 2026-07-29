@@ -1,8 +1,33 @@
 # Dashboards de la intranet — contrato de datos
 
 Este documento es el **contrato** entre este repo (datos) y el repo de la app
-(`proyecto pocion/intranet`, app `apps/dashboards`), que está reemplazando los
-tableros de Power BI por gráficos web con ECharts.
+(`proyecto pocion/intranet`, app `apps/dashboards`).
+
+## ⭐ DIRECCIÓN DEL PROYECTO: la intranet reemplaza a Power BI
+
+**Decisión tomada: los tableros dejan de vivir en Power BI y pasan a la INTRANET**,
+una **app interna de la compañía**, presentando los reportes como **HTML dinámico**
+(gráficos web con ECharts, filtros que consultan la BD en vivo).
+
+Qué implica, y por qué se ha construido lo que se ha construido:
+
+- **Power BI queda como fuente TRANSITORIA**, no como destino. El modelo
+  `DASHBOARD POCION` y sus docs (`guia_bi_reporting.md`,
+  `bi_conexiones_marts.md`, `bi_refresco_gateway.md`) siguen siendo válidos
+  mientras dure la migración, pero **no se invierte en ampliarlos**: lo nuevo se
+  hace para la intranet.
+- **La lógica de negocio baja al SQL.** Todo lo que hoy es una medida DAX o un
+  paso de Power Query tiene que quedar en el DW (vistas, MV, columnas del hecho),
+  porque la intranet solo hace `SELECT`. Ejemplos ya portados: la exclusión de
+  notas débito (era un filtro DAX), el mes de la nota crédito (`fecha_venta`), el
+  cruce ventas vs presupuesto por categoría (era un join manual).
+- **Por eso existen las vistas materializadas** (§1): un tablero web consulta en
+  vivo en cada carga, mientras Power BI importaba y agregaba en memoria.
+- **Por eso existe el rol `intranet_ro`** (§6): la app necesita un acceso de solo
+  lectura, mínimo y auditable, en vez de un `.pbix` en el PC de alguien.
+- **Sin dependencia de licencias ni de un PC encendido**: desaparecen el techo de
+  refrescos de Power BI Pro (8/día) y el gateway. El cron del DW corre cada
+  15 min y la intranet ve los datos frescos sin intermediarios.
 
 > **Regla del proyecto**: todo lo de base de datos (DDL, vistas materializadas,
 > roles, refresco) vive **aquí** y se documenta **aquí**. La intranet solo hace
