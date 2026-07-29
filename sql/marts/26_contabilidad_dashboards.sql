@@ -485,7 +485,76 @@ COMMENT ON MATERIALIZED VIEW marts.mv_balance_mes IS
 
 
 -- ════════════════════════════════════════════════════════════════════════════
--- mv_pyg_mes — ESTADO DE RESULTADOS. Clases 4/5/6/7.
+-- mv_contab_detalle_mes — el DETALLE del estado de resultados por dimensiones.
+-- Grano: empresa × periodo × cuenta × tercero × categoría × país × línea.
+--
+-- ¿Para qué? Dos cosas que el grano agregado no puede dar:
+--   1. El **despliegue de 4 niveles** del PYG del informe:
+--      concepto_contable → nombre de la cuenta → código de cuenta → TERCERO.
+--   2. Los **filtros** del tablero por tercero, canal, país y línea, que tienen
+--      que poder aplicarse al estado de resultados completo, no solo a un panel.
+--
+-- ⚠ Medido antes de fijar el grano (2026-07-29): empresa × periodo × cuenta ×
+-- tercero sobre las clases 4/5/6 son **632.418** filas, y añadir categoría, país
+-- y línea solo lo sube a **648.268** (+2,5 %). Esas tres dimensiones están casi
+-- determinadas por (cuenta, tercero), así que caben en la misma MV en vez de
+-- necesitar una por eje. Es del orden de `mv_ventas_mes` (851.515).
+--
+-- ⚠ COBERTURA DE LAS DIMENSIONES, medida POR VALOR sobre la clase 4 — importa
+-- porque un filtro con poca cobertura hace desaparecer ingresos:
+--      categoria .......... 100,0 %   ← el "canal" útil del negocio
+--      pais ...............  99,8 %
+--      tercero ............  99,9 %
+--      canal (plan 21) ....  23,5 %   ← NO se expone como filtro: inservible
+--      linea_producto .....  14,8 %   ← se expone, pero la intranet AVISA de la
+--                                       cobertura y agrupa el resto en
+--                                       '(sin linea)', para que el total nunca
+--                                       parezca que falta
+-- Se excluye la clase 7 del detalle igual que del PyG agregado.
+-- ════════════════════════════════════════════════════════════════════════════
+DROP MATERIALIZED VIEW IF EXISTS marts.mv_contab_detalle_mes CASCADE;
+
+CREATE MATERIALIZED VIEW marts.mv_contab_detalle_mes AS
+SELECT
+    f.empresa_id,
+    d.periodo_aaaamm,
+    d.anio,
+    d.mes,
+    date_trunc('month', d.fecha)::DATE                  AS fecha_mes,
+    f.cuenta_id,
+    COALESCE(f.tercero_id, -1)                          AS tercero_id,
+    COALESCE(NULLIF(btrim(f.categoria), ''), '(sin categoria)') AS categoria,
+    COALESCE(NULLIF(btrim(f.pais), ''),      '(sin pais)')      AS pais,
+    COALESCE(NULLIF(btrim(f.linea_producto), ''), '(sin linea)') AS linea,
+    SUM(f.debito - f.credito)                           AS movimiento,
+    SUM((f.debito - f.credito) * c.signo_pyg)           AS valor_pyg,
+    COUNT(*)                                            AS n_movimientos
+FROM marts.fact_movimiento_contable f
+JOIN marts.dim_fecha d       ON d.fecha_key = f.fecha_key
+JOIN marts.v_dim_cuenta_bi c ON c.cuenta_id = f.cuenta_id
+WHERE f.empresa_id IS NOT NULL
+  AND c.clase_codigo IN ('4','5','6')
+GROUP BY f.empresa_id, d.periodo_aaaamm, d.anio, d.mes, 5, f.cuenta_id, 7, 8, 9, 10;
+
+CREATE UNIQUE INDEX ux_mv_contab_detalle_mes
+    ON marts.mv_contab_detalle_mes
+       (empresa_id, periodo_aaaamm, cuenta_id, tercero_id, categoria, pais, linea);
+CREATE INDEX ix_mv_contab_detalle_mes_periodo
+    ON marts.mv_contab_detalle_mes (empresa_id, periodo_aaaamm);
+CREATE INDEX ix_mv_contab_detalle_mes_tercero
+    ON marts.mv_contab_detalle_mes (empresa_id, tercero_id);
+CREATE INDEX ix_mv_contab_detalle_mes_cuenta
+    ON marts.mv_contab_detalle_mes (empresa_id, cuenta_id);
+
+COMMENT ON MATERIALIZED VIEW marts.mv_contab_detalle_mes IS
+  'Detalle del estado de resultados por cuenta × tercero × categoría × país × '
+  'línea (clases 4/5/6). Alimenta el despliegue de 4 niveles del PYG y los '
+  'filtros del tablero. ⚠ `linea` solo cubre el 14,8 % del valor y `canal` (plan '
+  '21) el 23,5 %: por eso el canal del tablero es `categoria`, que cubre el 100 %.';
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- mv_pyg_mes — ESTADO DE RESULTADOS agregado. Clases 4/5/6/7.
 -- Grano: empresa × periodo × concepto_contable × cuenta_codigo (N4).
 --
 -- ⚠ EL N4 EN EL GRANO NO ES OPCIONAL. Sin él, 5160/5165 quedan dentro del grupo
@@ -495,7 +564,9 @@ COMMENT ON MATERIALIZED VIEW marts.mv_balance_mes IS
 -- ⚠ `clase_codigo` se conserva separable y la clase 7 (costos de producción) NO
 -- se suma al margen bruto: se capitaliza a inventario y sumarla con el 61
 -- duplicaría el costo. Hoy no tiene movimiento, pero el día que lo tenga el
--- error sería silencioso.
+-- error sería silencioso. Por eso el PyG SÍ incluye la clase 7 y el detalle no:
+-- el detalle es para desglosar ingresos y gastos por dimensión, y ahí la 7 no
+-- aporta (no tiene tercero ni canal).
 -- ════════════════════════════════════════════════════════════════════════════
 DROP MATERIALIZED VIEW IF EXISTS marts.mv_pyg_mes CASCADE;
 
@@ -718,6 +789,15 @@ CREATE OR REPLACE VIEW marts.v_lk_cuenta AS
 SELECT c.cuenta_id,
        c.codigo,
        c.nombre,
+       -- ⚠ `nombre_canonico` es lo que hay que usar para AGRUPAR cuentas por nombre
+       -- en el despliegue del estado de resultados. El mismo concepto existe con dos
+       -- códigos —`413538001` (9 díg., PUC de HFA) y `41353801` (8 díg., PCN)— y con
+       -- distinta capitalización («Venta de Cosmeticos gravado 19%» vs «VENTA DE
+       -- COSMETICOS GRAVADO 19%»). Agrupando por `nombre` saldrían dos renglones
+       -- distintos para la misma cosa; la canonicalización de 11_puc_canonico.sql ya
+       -- los unifica (401 grupos, 423 cuentas colapsadas).
+       COALESCE(NULLIF(btrim(c.nombre_canonico), ''), c.nombre) AS nombre_canonico,
+       c.codigo_canonico,
        c.cuenta_etiqueta,
        c.clase_codigo,
        c.grupo_codigo,
@@ -745,7 +825,7 @@ COMMENT ON VIEW marts.v_lk_cuenta IS
 -- ════════════════════════════════════════════════════════════════════════════
 INSERT INTO marts.bi_mv_refresh (mv_name, refreshed_at, filas, ok)
 SELECT m.mv, now(), NULL, TRUE
-FROM (VALUES ('mv_contab_cuenta_mes'), ('mv_balance_mes'), ('mv_pyg_mes'),
-             ('mv_flujo_mes'), ('mv_contab_tercero_mes'),
+FROM (VALUES ('mv_contab_cuenta_mes'), ('mv_contab_detalle_mes'), ('mv_balance_mes'),
+             ('mv_pyg_mes'), ('mv_flujo_mes'), ('mv_contab_tercero_mes'),
              ('mv_contab_centro_mes'), ('mv_contab_canal_mes')) AS m(mv)
 ON CONFLICT (mv_name) DO UPDATE SET refreshed_at = now(), ok = TRUE, error = NULL;

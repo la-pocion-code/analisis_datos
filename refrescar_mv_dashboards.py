@@ -55,7 +55,8 @@ MVS_VENTAS = (
 # un `refreshed_at` nuevo — la intranet invalidaría su caché y mostraría datos viejos
 # como si fueran frescos, sin que nada lo delate.
 MVS_CONTAB = (
-    "mv_contab_cuenta_mes",      # base: la única que escanea el hecho
+    "mv_contab_cuenta_mes",      # base: de ella derivan las tres siguientes
+    "mv_contab_detalle_mes",     # detalle por dimensiones (escanea el hecho)
     "mv_balance_mes",            # deriva de la anterior
     "mv_pyg_mes",                # deriva de la anterior
     "mv_flujo_mes",              # deriva de la anterior

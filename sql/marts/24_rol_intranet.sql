@@ -92,6 +92,7 @@ TO intranet_ro;
 -- detalle de cada asiento) y `dim_cuenta` siguen fuera del alcance del rol.
 GRANT SELECT ON
     marts.mv_contab_cuenta_mes,       -- movimiento por empresa × mes × cuenta
+    marts.mv_contab_detalle_mes,      -- detalle por cuenta × tercero × categoría × país × línea
     marts.mv_balance_mes,             -- estado de situación financiera (densa)
     marts.mv_pyg_mes,                 -- estado de resultados (grano N4)
     marts.mv_flujo_mes,               -- flujo de efectivo (renglones agregables)
