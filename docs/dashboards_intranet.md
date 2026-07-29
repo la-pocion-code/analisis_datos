@@ -228,8 +228,9 @@ python refrescar_mv_dashboards.py --no-concurrente   # si alguna nunca se pobló
 
 Duraciones medidas (2026-07-29): `mv_presupuesto_mes` 0,2 s ·
 `mv_ventas_kpi_mes` 11,4 s · `mv_ventas_dia` 15,7 s · `mv_ventas_mes` 23,4 s ·
-`mv_ventas_presupuesto_mes` 0,3 s → **~53 s en total**. Con una corrida ligera de
-~55 s, un tick de 15 min cierra en <2 min: holgado.
+`mv_ventas_presupuesto_mes` 0,3 s → **~53 s en total** (medido desde una máquina
+local; el `REFRESH` es trabajo del servidor, así que en Railway es parecido). Con
+el ETL en **~26 s** en Railway, un tick de 15 min cierra en ~1,5 min: holgado.
 
 ⚠ `mv_ventas_presupuesto_mes` se refresca **siempre al final**: lee de
 `mv_ventas_mes` y de `mv_presupuesto_mes`, así que si se adelanta mostraría el cruce

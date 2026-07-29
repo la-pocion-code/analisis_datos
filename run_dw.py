@@ -12,17 +12,24 @@ Odoo directo por XML-RPC, no de `raw`. En cada disparo decide qué correr según
 - Siempre, al final:                REFRESCO de las vistas materializadas de los dashboards.
 - Días 3 y 24, 03h (tick :00):      además RECREACIÓN del año actual (--rebuild) → refleja borrados.
 
-Por qué el reparto ligero/completo: de los ~6,5 min de una corrida incremental, casi todo es coste
-FIJO e independiente del delta (full scans del hecho en marcar_reversos / marcar_reversos_puente /
-consolidar_categoria / canonicalizar_puc, TRUNCATE+rebuild de los puentes NC/ND y de
-dim_kit_componente, full scan de product.product en Odoo). Repetirlo 4 veces por hora no trae ni una
-fila más. ⚠ El precio: en los ticks ligeros las líneas nuevas quedan sin `categoria`, sin
+Por qué el reparto ligero/completo: el coste de una corrida es casi todo FIJO e independiente del
+delta (full scans del hecho en marcar_reversos / marcar_reversos_puente / consolidar_categoria /
+canonicalizar_puc, TRUNCATE+rebuild de los puentes NC/ND y de dim_kit_componente, full scan de
+product.product en Odoo). Repetirlo 4 veces por hora no trae ni una fila más: lo que se evita es
+**4× el tráfico XML-RPC a Odoo y 4× los full scans del hecho**, no tiempo de reloj.
+⚠ Medido EN RAILWAY (2026-07-29): una corrida completa tarda **~26 s** (22-30 s en 6 corridas). Las
+cifras de minutos que se ven en `db_loader.log` son de una máquina local, donde la latencia a Odoo y
+a Postgres domina; no sirven para dimensionar el cron.
+⚠ El precio del reparto: en los ticks ligeros las líneas nuevas quedan sin `categoria`, sin
 `es_reverso` y sin puente NC/ND resuelto hasta el cierre de la hora.
 
 ⚠ DOS GUARDAS que hacen seguro el `*/15`:
-  1. `MINUTO_CIERRE`: el rebuild y el cierre solo disparan en el primer tick de la hora. Sin esto,
-     `hour == HORA_REBUILD` se cumpliría en :00, :15, :30 y :45 → 4 rebuilds solapados del año
-     actual, cada uno arrancando con un DELETE del año. Es corrupción, no solo coste.
+  1. El cierre y el rebuild corren UNA VEZ POR HORA, y se decide por **estado en la BD**
+     (`marts.etl_control`, clave `cierre_dw`), no por el minuto del reloj: el cron de Railway se
+     retrasa 0-4 min (medido: ticks a :00, :01, :02, :03), así que una guarda tipo `minute < 15`
+     depende de que la deriva no se coma la ventana — si un tick de :00 arrancara pasado el minuto 15,
+     esa hora perdería el cierre **en silencio**. Con el estado, la deriva deja de importar y el
+     rebuild de los días 3/24 tampoco puede duplicarse.
   2. ADVISORY LOCK de Postgres: si la corrida anterior sigue viva, este tick se omite y sale con 0.
      Los pasos de cierre reconstruyen tablas que otra corrida lee; solaparlas deja los puentes
      NC/ND incompletos.
@@ -46,33 +53,64 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # y unos días después de iniciar el mes).
 DIAS_REBUILD = {3, 24}
 HORA_REBUILD = 3
-# El cron corre cada 15 min: solo el primer tick de la hora hace el cierre y el rebuild.
-MINUTO_CIERRE = 15
+# Clave con la que se registra en marts.etl_control que el CIERRE ya corrió en la hora en curso.
+MODELO_CIERRE = "cierre_dw"
 # Clave del advisory lock (arbitraria pero fija: identifica "el ETL del DW").
 LOCK_KEY = 815_2026
 
 
-def main():
+def _toca_cierre(conn) -> bool:
+    """¿Este tick debe ser la corrida COMPLETA? Sí cuando el cierre todavía no ha corrido en la hora
+    en curso. Se decide por ESTADO (marts.etl_control) y con el reloj de la BD, no con el del
+    contenedor ni con el minuto del tick: así da igual que el cron de Railway se retrase."""
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT NOT EXISTS (
+            SELECT 1 FROM marts.etl_control
+            WHERE modelo = %s
+              AND date_trunc('hour', actualizado) >= date_trunc('hour', now())
+        )
+    """, (MODELO_CIERRE,))
+    return bool(cur.fetchone()[0])
+
+
+def _marcar_cierre(conn) -> None:
+    """Deja constancia de que el cierre de esta hora ya se hizo. Se llama SOLO si terminó bien: si
+    falla, el siguiente tick lo reintenta en vez de dejar la hora sin consolidar."""
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO marts.etl_control (modelo, actualizado) VALUES (%s, now())
+        ON CONFLICT (modelo) DO UPDATE SET actualizado = now()
+    """, (MODELO_CIERRE,))
+
+
+def main(conn):
     ahora = datetime.now()
-    # Corrida completa una vez por hora; los otros 3 ticks son ligeros.
-    completa = ahora.minute < MINUTO_CIERRE
+    completa = _toca_cierre(conn)
     logging.info(f"run_dw disparado: {ahora:%Y-%m-%d %H:%M} "
                  f"({'COMPLETA' if completa else 'ligera'})")
 
     # 1) Incremental (incluye refresco de dimensiones por write_date).
+    ok = True
     try:
         etl.main("incremental", None, cierre=completa)
     except Exception:
+        ok = False
         logging.exception("Fallo en la corrida incremental")
 
-    # 2) Recreación del año actual en los días/hora programados. Solo en el tick de la hora:
-    #    con `*/15` la condición de hora se cumpliría 4 veces y el rebuild dura mucho más de 15 min.
+    # 2) Recreación del año actual en los días/hora programados. Va dentro del tick de cierre para
+    #    que no pueda dispararse cuatro veces en la ventana 03:00-03:45 (cada rebuild arranca con un
+    #    DELETE del año en curso; solaparlos es corrupción, no solo coste).
     if completa and ahora.day in DIAS_REBUILD and ahora.hour == HORA_REBUILD:
         logging.info("Ventana de recreación: ejecutando --rebuild (año actual).")
         try:
             etl.main("rebuild", None)
         except Exception:
+            ok = False
             logging.exception("Fallo en la recreación (rebuild)")
+
+    if completa and ok:
+        _marcar_cierre(conn)
 
     # 3) Refresco de las vistas materializadas que leen los dashboards de la
     #    intranet. Va AL FINAL para que recoja también lo que trajo el rebuild.
@@ -98,7 +136,7 @@ def _con_lock():
             logging.warning("Corrida anterior aún activa: se omite este tick.")
             return
         try:
-            main()
+            main(conn)
         finally:
             cur.execute("SELECT pg_advisory_unlock(%s)", (LOCK_KEY,))
 

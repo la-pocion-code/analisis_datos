@@ -18,7 +18,9 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
   Mismo comando en `Procfile` (worker: `python run_dw.py`).
 - **Reparto LIGERO/COMPLETO** (el coste de una corrida es casi todo FIJO, no proporcional al delta):
   tick **:00** = corrida COMPLETA (catálogos + dims + kits + hecho + **todos los pasos de cierre**);
-  ticks **:15/:30/:45** = **ligera** (dimensiones por `write_date` + `cargar_hecho`), ~55 s.
+  ticks **:15/:30/:45** = **ligera** (dimensiones por `write_date` + `cargar_hecho`).
+  Medido en Railway: la corrida completa tarda **~26 s** (las cifras de minutos del log local están
+  infladas por la latencia de red). Lo que ahorra el reparto es 4× Odoo y 4× full scans, no reloj.
   ⚠ En los ticks ligeros las líneas nuevas quedan **sin `categoria`, sin `es_reverso` y sin puente
   NC/ND** hasta el cierre de la hora.
 - **rebuild** del año actual los días 3 y 24 a las 03h, **solo en el tick :00** (`MINUTO_CIERRE`);

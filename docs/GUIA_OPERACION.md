@@ -65,15 +65,24 @@ una fila más:
 
 | Tick | Qué corre | Duración medida |
 |---|---|---|
-| **:00** | corrida **COMPLETA**: catálogos + dims + kits + nombre comercial + hecho + **todos los pasos de cierre** + MV | 2–7,5 min + ~53 s de MV |
-| **:15 / :30 / :45** | **ligera**: dimensiones por `write_date` + `cargar_hecho` + MV | ~55 s + ~53 s de MV |
+| **:00** | corrida **COMPLETA**: catálogos + dims + kits + nombre comercial + hecho + **todos los pasos de cierre** + MV | **~26 s** + el refresco de MV |
+| **:15 / :30 / :45** | **ligera**: dimensiones por `write_date` + `cargar_hecho` + MV | menos de 26 s + el refresco de MV |
 | días 3 y 24, **03:00** | además `--rebuild` del año actual (**solo en el tick :00**) | mucho más de 15 min |
 
+- ⚠ **Las duraciones son las de RAILWAY** (medidas 2026-07-29 con el MCP: 22-30 s en 6 corridas).
+  Las de minutos que aparecen en `db_loader.log` son de una máquina local, donde manda la latencia a
+  Odoo y a Postgres — **no** sirven para dimensionar el cron. Lo que ahorra el reparto
+  ligero/completo es **4× tráfico XML-RPC a Odoo y 4× full scans del hecho**, no tiempo de reloj.
 - ⚠ En los ticks ligeros las líneas nuevas quedan **sin `categoria`, sin `es_reverso` y sin puente
   NC/ND** hasta el cierre de la hora. Es el precio de la frescura.
 - ⚠ **Advisory lock** (`pg_try_advisory_lock`, clave `8152026`): si la corrida anterior sigue viva, el
   tick se **omite** con un warning y sale con código 0. Sin esto, dos corridas solapadas dejarían los
   puentes NC/ND incompletos.
+- ⚠ **Qué tick hace el cierre se decide por ESTADO, no por el reloj**: se registra en
+  `marts.etl_control` (clave `cierre_dw`) y se hace el cierre si no ha corrido en la hora en curso.
+  El cron de Railway se retrasa 0-4 min (medido), así que una guarda por minuto podría dejar una hora
+  entera sin consolidar si la deriva se comiera la ventana. Si el cierre falla, el siguiente tick lo
+  reintenta (solo se marca cuando termina bien).
 - ⚠ La hora es la del **contenedor = UTC**, no Colombia: la ventana "días 3 y 24 a las 03h" cae en
   realidad a las ~22:00 del día anterior en hora local.
 
@@ -197,6 +206,31 @@ El cron corre `run_dw.py` (`railway.toml` + `Procfile`):
 - Variables de entorno requeridas: `url, db, username_odoo, password, DB_HOST, DB_PORT, DB_NAME,
   DB_USER, DB_PASSWORD`.
 - Al hacer **push a `main`**, Railway redepliega y el próximo tick (≤15 min) usa el código nuevo.
+- Proyecto **keen-wonder** · servicio **analisis_datos** · env **production**. La fuente es el repo
+  `la-pocion-code/analisis_datos` (builder RAILPACK), así que **el `cronSchedule` que manda es el del
+  `railway.toml` versionado**: si no se hace push, sigue corriendo la frecuencia anterior.
+
+### 6.1 Cuánto cuesta el cron (medido 2026-07-29 con el MCP de Railway)
+
+Tarifas oficiales (`docs.railway.com/pricing`), facturadas **por minuto** de uso real:
+**CPU $20/vCPU/mes · RAM $10/GB/mes · egress $0,05/GB · volumen $0,15/GB/mes**
+(mes de 30 días = 43.200 min → **$0,000463/vCPU-min** y **$0,000231/GB-min**).
+
+Consumo medido del servicio del cron: **0,10 vCPU pico y 0,07 GB** durante la corrida, egress ≈ 0.
+
+| Concepto | Horario, sin refresco de MV | `*/15` + refresco de MV |
+|---|---|---|
+| Minutos de cómputo del cron | 24 × ~26 s ≈ **10 min/día** | ≈ **113 min/día** |
+| Coste del servicio del cron | ~**$0,02/mes** | ~**$0,14/mes** |
+| CPU extra en Postgres (los `REFRESH`) | — | ~**$0,94/mes** |
+| **Diferencia total** | — | **≈ +1 USD/mes** |
+
+Dos cosas que conviene tener claras al decidir frecuencias:
+- **La mayor parte de ese dólar NO es por bajar a 15 min**, sino por refrescar las MV (96 refrescos/día
+  en vez de ninguno). Horario **con** refresco costaría ~+$0,25/mes; el `*/15` añade ~$0,80 sobre eso.
+- **El gasto real del proyecto es Postgres: ~$33/mes** (RAM 3,18 GB constantes = $31,8 + CPU $0,57 +
+  disco 7,5 GB = $1,12). El cron es calderilla al lado; si algún día hay que recortar factura, el sitio
+  donde mirar es la memoria de Postgres, no la frecuencia del ETL.
 
 ## 7. Conciliación / verificación
 - **Estado y cuadre:** `python estado_dw.py --odoo` (conteos por año vs Odoo + partida doble).
