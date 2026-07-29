@@ -65,14 +65,16 @@ una fila más:
 
 | Tick | Qué corre | Duración medida |
 |---|---|---|
-| **:00** | corrida **COMPLETA**: catálogos + dims + kits + nombre comercial + hecho + **todos los pasos de cierre** + MV | **~26 s** + el refresco de MV |
-| **:15 / :30 / :45** | **ligera**: dimensiones por `write_date` + `cargar_hecho` + MV | menos de 26 s + el refresco de MV |
+| **:00** | corrida **COMPLETA**: catálogos + dims + kits + nombre comercial + hecho + **todos los pasos de cierre** + las 12 MV | **~4,6 min** |
+| **:15 / :30 / :45** | **ligera**: dimensiones por `write_date` + `cargar_hecho` + las 5 MV de ventas | **~1,6 min** |
 | días 3 y 24, **03:00** | además `--rebuild` del año actual (**solo en el tick :00**) | mucho más de 15 min |
 
-- ⚠ **Las duraciones son las de RAILWAY** (medidas 2026-07-29 con el MCP: 22-30 s en 6 corridas).
-  Las de minutos que aparecen en `db_loader.log` son de una máquina local, donde manda la latencia a
-  Odoo y a Postgres — **no** sirven para dimensionar el cron. Lo que ahorra el reparto
-  ligero/completo es **4× tráfico XML-RPC a Odoo y 4× full scans del hecho**, no tiempo de reloj.
+- ⚠ **Las duraciones son las de RAILWAY**, medidas en la primera corrida del `*/15` (2026-07-29
+  19:15 UTC). Las de minutos que aparecen en `db_loader.log` son de una máquina local, donde manda la
+  latencia a Odoo y a Postgres — **no** sirven para dimensionar el cron: allí el ETL tarda minutos y en
+  Railway ~1,5 min con todo el cierre. Lo que ahorra el reparto ligero/completo es **4× tráfico
+  XML-RPC a Odoo, 4× full scans del hecho y 4× el refresco de las 7 MV de contabilidad**.
+  ⚠ Hoy **la fase dominante es el refresco de MV**, no el ETL (§6.1).
 - ⚠ En los ticks ligeros las líneas nuevas quedan **sin `categoria`, sin `es_reverso` y sin puente
   NC/ND** hasta el cierre de la hora. Es el precio de la frescura.
 - ⚠ **Advisory lock** (`pg_try_advisory_lock`, clave `8152026`): si la corrida anterior sigue viva, el
@@ -218,19 +220,34 @@ Tarifas oficiales (`docs.railway.com/pricing`), facturadas **por minuto** de uso
 
 Consumo medido del servicio del cron: **0,10 vCPU pico y 0,07 GB** durante la corrida, egress ≈ 0.
 
+**Duración real de un tick** (medida en la primera corrida del `*/15`, 2026-07-29 19:15 UTC):
+
+| Fase | COMPLETA (:00) | ligera (:15/:30/:45) |
+|---|---|---|
+| ETL (`etl_dw_marts`) | ~1,5 min (incluye todo el cierre) | segundos |
+| Refresco de MV | ~3,2 min (12 MV: ventas + contabilidad) | ~1,4 min (5 MV de ventas) |
+| **Total del tick** | **~4,6 min** | **~1,6 min** |
+
+El refresco de MV es ahora **la fase dominante**, no el ETL. La más cara es `mv_ventas_mes` (53 s,
+853k filas) y corre en **todos** los ticks; las 7 de contabilidad (`mv_contab_*`, `mv_balance_mes`,
+`mv_pyg_mes`, `mv_flujo_mes`) solo en el tick de la hora.
+
 | Concepto | Horario, sin refresco de MV | `*/15` + refresco de MV |
 |---|---|---|
-| Minutos de cómputo del cron | 24 × ~26 s ≈ **10 min/día** | ≈ **113 min/día** |
-| Coste del servicio del cron | ~**$0,02/mes** | ~**$0,14/mes** |
-| CPU extra en Postgres (los `REFRESH`) | — | ~**$0,94/mes** |
-| **Diferencia total** | — | **≈ +1 USD/mes** |
+| Minutos de cómputo del cron | 24 × ~26 s ≈ **10 min/día** | ≈ **225 min/día** |
+| Coste del servicio del cron | ~**$0,02/mes** | ~**$0,27/mes** |
+| CPU en Postgres (los `REFRESH`) | — | ~**$1,55/mes** (139 min/día de trabajo de BD) |
+| **Diferencia total** | — | **≈ +2 USD/mes** |
 
-Dos cosas que conviene tener claras al decidir frecuencias:
-- **La mayor parte de ese dólar NO es por bajar a 15 min**, sino por refrescar las MV (96 refrescos/día
-  en vez de ninguno). Horario **con** refresco costaría ~+$0,25/mes; el `*/15` añade ~$0,80 sobre eso.
+Tres cosas que conviene tener claras al decidir frecuencias:
+- **La mayor parte de esos 2 USD NO es por bajar a 15 min**, sino por refrescar las MV (antes el cron
+  no las refrescaba en absoluto). Lo que paga la frecuencia es la parte de ventas, que sí corre 4×/hora.
 - **El gasto real del proyecto es Postgres: ~$33/mes** (RAM 3,18 GB constantes = $31,8 + CPU $0,57 +
-  disco 7,5 GB = $1,12). El cron es calderilla al lado; si algún día hay que recortar factura, el sitio
-  donde mirar es la memoria de Postgres, no la frecuencia del ETL.
+  disco 7,5 GB = $1,12). El cron es calderilla al lado (~6%); si algún día hay que recortar factura, el
+  sitio donde mirar es la memoria de Postgres, no la frecuencia del ETL.
+- Si en el futuro se añaden más MV, **el coste crece por el refresco, no por el ETL**. Antes de meter
+  una MV nueva en el ciclo de cada 15 min, mirar su `duracion_ms` en `marts.bi_mv_refresh` y decidir si
+  le basta con el tick de la hora (como se hizo con las de contabilidad).
 
 ## 7. Conciliación / verificación
 - **Estado y cuadre:** `python estado_dw.py --odoo` (conteos por año vs Odoo + partida doble).
