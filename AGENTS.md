@@ -232,6 +232,14 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   arreglos aplicados a mano se **revierten en la siguiente hora**. Hasta el deploy no se sostienen ni
   la cascada NC, ni las anulaciones sin `reversed_entry_id`, ni el puente ND, ni el cron `*/15`.
   (`railway.toml`/`Procfile` ya están ajustados; el sync raw `etl_odoo_incremental.py` quedó archivado.)
+- ✅ HECHO (2026-07-29): **hoja de CONTABILIDAD de los tableros** — `26_contabilidad_dashboards.sql`
+  aplicado (`v_dim_cuenta_bi` + 7 MV + `bi_pyg_renglon`/`bi_tasa_renta` + `v_lk_cuenta`), `GRANT` en
+  `24_rol_intranet.sql`, y `MVS_CONTAB` en `refrescar_mv_dashboards.py` (solo el tick `:00`).
+  Verificado al peso contra el informe y con el balance cuadrando (`ACTIVO = PASIVO + PATRIMONIO +
+  resultado`, diferencia 0,00 en la empresa 8). ⚠ Portadas a SQL las **14** columnas calculadas DAX de
+  `dim_cuenta` —no las 5 que decía el plan— como **VISTA** (`v_dim_cuenta_bi`), no como columnas
+  materializadas: el `upsert` del ETL no las mantendría y cada cuenta nueva entraría en NULL.
+  Detalle en la sección de dashboards y en `docs/dashboards_intranet.md` §9.
 - DQ: cuentas usadas con `clase_codigo`/`grupo_codigo` nulo o inesperado.
 - **Ventas desde el DW (proyecto por fases):**
   - ✅ Fase 1: `v_ventas_producto` (netas, grano producto, comercial). Aplicada y validada (empresa 8 2026).

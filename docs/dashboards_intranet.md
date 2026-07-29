@@ -422,6 +422,12 @@ aportan nada, y en los ticks ligeros las líneas nuevas llegan aún **sin `categ
 así que el panel de canales mostraría un bucket `(sin categoria)` que se vacía al
 cierre de cada hora.
 
+**Duraciones medidas** (2026-07-29, refresco `CONCURRENTLY` de las siete):
+`mv_contab_cuenta_mes` 4,1 s · `mv_contab_tercero_mes` 6,7 s · `mv_contab_centro_mes` 2,5 s ·
+`mv_contab_canal_mes` 1,4 s · `mv_balance_mes` 0,5 s · `mv_pyg_mes` 0,2 s · `mv_flujo_mes` 0,2 s
+→ **15,6 s en total**. Sumado a los ~53 s de las de ventas, el tick `:00` sigue con margen de sobra
+(una corrida completa del ETL tarda ~26 s en Railway).
+
 ⚠ **El orden de `MVS_CONTAB` no es negociable**: `mv_contab_cuenta_mes` va primera y
 las tres siguientes derivan de ella. Al revés servirían los datos del refresco
 anterior con un `refreshed_at` nuevo — la intranet invalidaría su caché y mostraría

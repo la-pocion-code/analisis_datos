@@ -319,10 +319,82 @@ definidos por el admin). **Contrato de datos completo:
 - **Limitaciones del origen a tener en cuenta**: el presupuesto es **solo 2026** y **no tiene columna
   de empresa** (no se puede separar HFA / PCN); las ventas empiezan **2024-06-01** (YoY 2025 vs 2024
   parcial); todas las `bi_*` son `VARCHAR(512)` → si cambia el Excel origen, **revalidar los casts**.
+- **`sql/marts/26_contabilidad_dashboards.sql`** (fase 2 = hoja **Contabilidad**, aplicada
+  2026-07-29): sustituye las **seis** sub-páginas del informe (PYG · Situación Financiera · Flujo de
+  Efectivo · Comportamientos · Detalle · KPIs). ⚠ **Re-ejecutar `24_rol_intranet.sql` DESPUÉS** de
+  este (concede los `GRANT` y numéricamente va antes). El DDL entero se aplica en **12,7 s**.
+  - **`v_dim_cuenta_bi`** — las **14 columnas que en Power BI son calculadas DAX**
+    (`concepto_contable`, `orden_informe`, `categoria_gasto`, `concepto_balance`/`orden_balance`,
+    `clasif_liquidez`/`orden_liquidez`, `bal_nivel1`/`bal_nivel2` + sus `orden_*`, `cuenta_etiqueta`,
+    `flujo_renglon`/`flujo_actividad`/`orden_flujo_actividad`) más `es_dya`, `es_dya_linea`,
+    `signo_pyg`, `signo_bal`.
+    ⚠ **ES UNA VISTA, no columnas materializadas en `dim_cuenta`, y es deliberado**: el `upsert` del
+    ETL solo escribe las columnas del DataFrame, así que un `ALTER`+`UPDATE` sobreviviría en las
+    cuentas existentes pero **cada cuenta nueva entraría con las 14 en NULL** y caería a un bucket sin
+    etiqueta hasta que alguien re-ejecutara el UPDATE a mano. Y entran de continuo: `dim_cuenta` pasó
+    de **1.939 (1-jul) a 1.945 (29-jul)**. Son 1.945 filas: el `CASE` es gratis.
+    ⚠ La clasificación va por **CÓDIGO PUC**, nunca por `nivel_movimiento`/`seccion`/`concepto`: esos
+    solo están poblados para la **empresa 8**, así que basar las medidas en ellos deja a HFA en blanco.
+  - **`mv_contab_cuenta_mes`** (9.366 filas) — la **única** MV que escanea el hecho; grano
+    empresa × mes × cuenta, por **fecha CONTABLE**. Las tres siguientes **derivan de ella** (así se
+    pasa de 4 escaneos de 4,37 M a 1).
+  - **`mv_balance_mes`** (14.949) — clases 1/2/3, con `movimiento`, `saldo_acum` y
+    `saldo_presentacion`. ⚠ **DENSA** (`generate_series` × pares empresa/cuenta con `LEFT JOIN`):
+    una cuenta bancaria sin movimientos **sigue teniendo saldo**; sin la rejilla desaparecería en los
+    meses tranquilos y el acumulado saltaría sin hueco.
+  - **`mv_pyg_mes`** (972) — clases 4/5/6/7, grano empresa × mes × `concepto_contable` ×
+    **`cuenta_codigo` (N4)**. ⚠ **El N4 en el grano no es opcional**: sin él 5160/5165 caen dentro del
+    grupo 51 y EBITDA, resultado operativo y la línea de D&A **dejan de ser calculables**, y no se
+    recupera después.
+  - **`mv_flujo_mes`** (351) — solo los renglones **agregables**, con el signo ya resuelto (un aumento
+    de activo consume caja). Los derivados y los de stock (caja inicial/final) los arma la intranet.
+  - **`mv_contab_tercero_mes`** (250.526) — ⚠ **PIVOTADA a columnas** (`ingresos`, `costos`, `gastos`,
+    `ingresos_no_op`, `gastos_no_op`, `utilidad`): hay **137.612** terceros con movimiento contable, y
+    con el concepto en filas serían ~1,7 M. El top-N se resuelve con `LIMIT` **en SQL**.
+  - **`mv_contab_centro_mes`** (564, expone `plan` porque los centros mezclan centros reales con
+    proyectos `[EXPO]`) y **`mv_contab_canal_mes`** (611).
+  - **Semillas `bi_pyg_renglon`** (catálogo y **orden decimal** de los renglones derivados: 5.1, 9.1,
+    10.1, 12.5, 15.5) y **`bi_tasa_renta`** (`(1, 0.39)`, `(8, 0.35)`). Van en la base y no en el
+    código de la intranet: las tasas cambian con cada reforma y el orden no puede vivir duplicado.
+  - **`v_lk_cuenta`** para `intranet_ro`. El **hecho contable y `dim_cuenta` siguen NEGADOS**
+    (verificado con `has_table_privilege`).
+- **⚠ LAS DOS REGLAS DE GASTO NO SON SIMÉTRICAS** (lo más fácil de equivocar de la hoja):
+  admin = grupo **51 EXCLUYENDO** `cuenta_codigo` 5160/5165 · ventas = grupo **52 COMPLETO** (sí
+  incluye 5260/5265) · D&A del renglón = 5160/5165 · **addback del EBITDA** = 5160/5165/**5260/5265**.
+  Signo de presentación: `clase_codigo IN ('4','2','3') → −1`.
+  **Verificado al peso** contra el informe (PCN mayo-2026): ingresos 6.830.236.960, costo
+  2.801.095.140, admin 404.721.946, ventas 2.651.211.097, D&A 3.132.892, D&A total 6.469.192,
+  provisión al 35 % 340.956.034.
+- **⚠ Lo que se midió antes de escribir el DDL** (y que lo hace defendible): 33 meses de datos
+  contables (2023-12-31 → 2026-08-09), 4.375.278 líneas, y `SUM(debito)-SUM(credito) = **−0,01**` ⇒
+  la partida doble cuadra y el asiento de apertura está dentro del rango, así que **el saldo
+  acumulado se puede calcular**. Sin ese dato los saldos estarían desplazados por una constante y el
+  balance **seguiría "cuadrando"**: el error sería simétrico e invisible. Además: **0** cuentas sin
+  código en las clases 1-7 y las clases 8/9 **sin un solo movimiento**.
+- **⚠ Los estados financieros NUNCA se consolidan** (la intranet exige UNA empresa y responde 400 sin
+  ella). Cinco motivos: los dos PUC son casi disjuntos (**923 de 924** cuentas las usa una sola
+  empresa), HFA no tiene grupo 51 (todo su opex va al 52), la clasificación de Odoo solo está poblada
+  para la 8, las tasas de renta difieren, y hay **intercompañía** — el 4.º proveedor de PCN es la
+  propia empresa 1 con 714 mill., que un consolidado duplicaría sin que nada lo detecte.
+- **⚠ Tres cálculos del informe de Power BI están MAL y la intranet los CORRIGE** (decisión de
+  William): la Situación Financiera mostraba el **movimiento del mes** y lo llamaba balance, con las
+  cuentas de resultado dentro (de ahí que su `Total` diera 0,00 — era la partida doble completa);
+  el Flujo daba a «financiación» el mismo valor que a «inversión» (85.188.799,95) teniendo
+  obligaciones financieras de −1.702.189.935,80; y los KPIs salían en **días negativos**. Con
+  `saldo_acum` el balance cuadra: `ACTIVO = PASIVO + PATRIMONIO + resultado`, diferencia **0,00** en
+  la empresa 8. **No volver a "arreglarlo" para que cuadre con Power BI.**
+- **Refresco separado**: `refrescar_mv_dashboards.py` divide `MVS_VENTAS` (cada tick) de
+  `MVS_CONTAB` (**solo el tick `:00`**, cuando `run_dw` corre completo). Las contables son de grano
+  mensual y en los ticks ligeros las líneas nuevas llegan aún **sin `categoria`**.
+  ⚠ **El orden de `MVS_CONTAB` no es negociable**: `mv_contab_cuenta_mes` va primera y tres derivan
+  de ella; al revés se servirían datos del refresco anterior con un `refreshed_at` nuevo, y **nada lo
+  delataría**.
 - **Fases siguientes** (cada hoja añade sus MV aquí + su `GRANT`): Nielsen → cuentas clave/KAM →
-  cartera (portar los buckets de mora que hoy calcula Power Query) → contabilidad (antes hay que
-  portar a SQL las columnas calculadas DAX de `dim_cuenta`: `concepto_contable`, `concepto_balance`,
-  `categoria_gasto`, `flujo_actividad`, `orden_*` — son `CASE` sobre código PUC).
+  cartera (portar los buckets de mora que hoy calcula Power Query). Contabilidad y Ventas ya están.
+  ⚠ Tres KPIs de contabilidad quedaron **fuera del v1 por falta de fuente**: el **desperdicio de
+  materia prima no es derivable** (el DW no extrae `stock.move` ni manufactura) y los dos de
+  **anticipos** necesitan que contabilidad indique el código PUC exacto. En Power BI los tres dan
+  0,00, o sea que allí también están vacíos.
 
 ## Variables de entorno (en `.env`, NO versionado — usar solo nombres, nunca valores)
 - Odoo: `url`, `db`, `username_odoo`, `password`.
@@ -382,6 +454,14 @@ definidos por el admin). **Contrato de datos completo:
   arreglos aplicados a mano se **revierten en la siguiente hora**. Hasta el deploy no se sostienen ni
   la cascada NC, ni las anulaciones sin `reversed_entry_id`, ni el puente ND, ni el cron `*/15`.
   (`railway.toml`/`Procfile` ya están ajustados; el sync raw `etl_odoo_incremental.py` quedó archivado.)
+- ✅ HECHO (2026-07-29): **hoja de CONTABILIDAD de los tableros** — `26_contabilidad_dashboards.sql`
+  aplicado (`v_dim_cuenta_bi` + 7 MV + `bi_pyg_renglon`/`bi_tasa_renta` + `v_lk_cuenta`), `GRANT` en
+  `24_rol_intranet.sql`, y `MVS_CONTAB` en `refrescar_mv_dashboards.py` (solo el tick `:00`).
+  Verificado al peso contra el informe y con el balance cuadrando (`ACTIVO = PASIVO + PATRIMONIO +
+  resultado`, diferencia 0,00 en la empresa 8). ⚠ Portadas a SQL las **14** columnas calculadas DAX de
+  `dim_cuenta` —no las 5 que decía el plan— como **VISTA** (`v_dim_cuenta_bi`), no como columnas
+  materializadas: el `upsert` del ETL no las mantendría y cada cuenta nueva entraría en NULL.
+  Detalle en la sección de dashboards y en `docs/dashboards_intranet.md` §9.
 - DQ: cuentas usadas con `clase_codigo`/`grupo_codigo` nulo o inesperado.
 - **Ventas desde el DW (proyecto por fases):**
   - ✅ Fase 1: `v_ventas_producto` (netas, grano producto, comercial). Aplicada y validada (empresa 8 2026).
