@@ -320,7 +320,11 @@ def derivar_plan_rol(planes):
 
 
 # ══ Carga a Postgres (UPSERT por lote, con aislamiento de fila ofensora) ══
-def upsert(loader, df, tabla, pk, schema="marts", coalesce=None):
+def upsert(loader, df, tabla, pk, schema="marts", coalesce=None, reemplazar=False):
+    """`reemplazar=True` hace TRUNCATE + INSERT en la MISMA transacción: la tabla nunca se ve vacía
+    desde fuera. Se usa en las tablas puente (map_nc_factura/map_nd_factura), que se reconstruyen
+    enteras en cada corrida y que leen en vivo la intranet y Power BI: con el TRUNCATE en su propia
+    transacción había una ventana en la que las NC no restaban en el mes de su factura."""
     if df is None or df.empty:
         return 0
     coalesce = set(coalesce or [])
@@ -355,6 +359,8 @@ def upsert(loader, df, tabla, pk, schema="marts", coalesce=None):
             with loader.get_connection() as conn:
                 cur = conn.cursor()
                 try:
+                    if reemplazar:   # atómico: nadie ve la tabla vacía (mismo commit que el INSERT)
+                        cur.execute(f"TRUNCATE {schema}.{tabla};")
                     psycopg2.extras.execute_values(cur, sql, valores, page_size=1000)
                     conn.commit()
                     return len(valores)
@@ -1373,11 +1379,8 @@ def enlazar_notas_credito(od, loader, desde="2024-01-01"):
     filas = [{"nc_factura_id": nc_id, "factura_id": fid, "proporcion": peso,
               "fecha_venta": fechas[fid], "metodo_enlace": metodo[nc_id]}
              for nc_id, facs in enlace.items() for fid, peso in facs.items() if fid in fechas]
-    with loader.get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("TRUNCATE marts.map_nc_factura;")
-        conn.commit()
-    upsert(loader, pd.DataFrame(filas), "map_nc_factura", ["nc_factura_id", "factura_id"])
+    upsert(loader, pd.DataFrame(filas), "map_nc_factura", ["nc_factura_id", "factura_id"],
+           reemplazar=True)   # TRUNCATE+INSERT atómico: el puente nunca se ve vacío
     por_metodo = pd.Series([metodo[n] for n in enlace]).value_counts().to_dict()
     logging.info(f"  nc->factura: {len(enlace)} notas crédito enlazadas ({len(filas)} pares) "
                  f"por método {por_metodo}")
@@ -1468,11 +1471,8 @@ def enlazar_notas_debito(od, loader):
     if not filas:
         logging.info("  nd->factura: ninguna nota débito se pudo enlazar a una factura")
         return
-    with loader.get_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("TRUNCATE marts.map_nd_factura;")
-        conn.commit()
-    upsert(loader, pd.DataFrame(filas), "map_nd_factura", ["nd_factura_id"])
+    upsert(loader, pd.DataFrame(filas), "map_nd_factura", ["nd_factura_id"],
+           reemplazar=True)   # TRUNCATE+INSERT atómico: el puente nunca se ve vacío
     por_metodo = pd.Series([f["metodo_enlace"] for f in filas]).value_counts().to_dict()
     logging.info(f"  nd->factura: {len(filas)} notas débito son venta (de {len(nds)}) "
                  f"por método {por_metodo}; el resto queda FUERA de ventas")
@@ -1535,7 +1535,13 @@ def canonicalizar_puc(loader):
     logging.info("Canonicalización PUC aplicada (dim_cuenta.codigo_canonico).")
 
 
-def main(modo, desde, hasta=None):
+def main(modo, desde, hasta=None, cierre=True):
+    """`cierre=False` = corrida LIGERA: solo lo que escala con el delta (dimensiones por watermark +
+    cargar_hecho). Salta los pasos cuyo coste es FIJO (full scans del hecho, TRUNCATE+rebuild de los
+    puentes NC/ND y de dim_kit_componente, full scan de product.product en Odoo), que no aportan nada
+    si se repiten cada 15 minutos. Lo usa run_dw.py: completa en el tick de la hora, ligera en los otros.
+    ⚠ En una corrida ligera las líneas nuevas quedan SIN `categoria`, sin `es_reverso` y sin puente
+    NC/ND resueltos hasta el siguiente cierre."""
     db, uid, pw, models = conectar_odoo()
     od = Odoo(db, uid, pw, models)
     loader = DBLoader()
@@ -1545,8 +1551,9 @@ def main(modo, desde, hasta=None):
     # Refresco de dimensiones (clientes/productos/vendedores) por su propio write_date.
     # full/rebuild → refresco total; incremental/dims → solo cambios.
     refrescar_dimensiones(od, loader, full=(modo in ("full", "rebuild")))
-    cargar_kits(od, loader)   # dim_kit_componente (BOM phantom) para v_ventas_explotada
-    enriquecer_nombre_comercial(od, loader)   # dim_producto.nombre_comercial (product.template.name)
+    if cierre:
+        cargar_kits(od, loader)   # dim_kit_componente (BOM phantom) para v_ventas_explotada
+        enriquecer_nombre_comercial(od, loader)   # dim_producto.nombre_comercial (product.template.name)
     if modo == "dims":
         logging.info("OK DIMS: catálogos y dimensiones refrescados.")
         return
@@ -1589,16 +1596,20 @@ def main(modo, desde, hasta=None):
     if mw_h:
         set_watermark(loader, "account.move.line", mw_h, total_h)
 
-    marcar_reversos(loader)      # ventas: excluir reversos totales
-    aplicar_correcciones(loader)  # limpieza de datos mal registrados en Odoo
-    canonicalizar_puc(loader)     # unifica códigos 8 vs 9 díg de la misma cuenta (no destructivo)
-    backfill_cliente_analitico(od, loader)  # plan 22 "Cliente" en líneas ya cargadas
-    enlazar_notas_credito(od, loader)       # NC → factura original (la NC resta en el mes de la factura)
-    enlazar_notas_debito(od, loader)        # ⚠ tras el puente NC: ND que anula una NC = venta revivida
-    marcar_reversos_puente(loader)          # ⚠ tras el puente: anulaciones sin reversed_entry_id
-    consolidar_categoria(loader)  # categoría (incl. EXPORTACION) + país por línea
+    # ── Pasos de CIERRE. Coste FIJO (no dependen del delta) → solo en la corrida completa. ──
+    if cierre:
+        marcar_reversos(loader)      # ventas: excluir reversos totales
+        aplicar_correcciones(loader)  # limpieza de datos mal registrados en Odoo
+        canonicalizar_puc(loader)     # unifica códigos 8 vs 9 díg de la misma cuenta (no destructivo)
+        backfill_cliente_analitico(od, loader)  # plan 22 "Cliente" en líneas ya cargadas
+        enlazar_notas_credito(od, loader)       # NC → factura original (la NC resta en el mes de la factura)
+        enlazar_notas_debito(od, loader)        # ⚠ tras el puente NC: ND que anula una NC = venta revivida
+        marcar_reversos_puente(loader)          # ⚠ tras el puente: anulaciones sin reversed_entry_id
+        consolidar_categoria(loader)  # categoría (incl. EXPORTACION) + país por línea
+    else:
+        logging.info("Corrida LIGERA: se omiten los pasos de cierre (van en el tick de la hora).")
 
-    logging.info(f"OK {modo.upper()} completado: hecho={total_h} líneas.")
+    logging.info(f"OK {modo.upper()}{'' if cierre else ' (ligera)'} completado: hecho={total_h} líneas.")
 
 
 if __name__ == "__main__":
@@ -1614,7 +1625,11 @@ if __name__ == "__main__":
                     help="fecha mínima YYYY-MM-DD (--rebuild: default año actual; --full: opcional)")
     ap.add_argument("--hasta", default=None,
                     help="fecha máxima YYYY-MM-DD (acota el rango en --rebuild/--full)")
+    ap.add_argument("--sin-cierre", action="store_true",
+                    help="corrida LIGERA: solo dimensiones y hecho nuevo, sin los pasos de cierre "
+                         "(reversos, puentes NC/ND, categoría, PUC). Es lo que corre el cron en los "
+                         "ticks que no son la hora en punto.")
     args = ap.parse_args()
     modo = ("rebuild" if args.rebuild else "full" if args.full
             else "dims" if args.dims else "incremental")
-    main(modo, args.desde, args.hasta)
+    main(modo, args.desde, args.hasta, cierre=not args.sin_cierre)

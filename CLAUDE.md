@@ -4,21 +4,31 @@ Guía para Claude Code. Repo de scripts ETL/BI del analista de datos de La Poci�
 Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 
 ## Qué es este repo
-- Cron en **Railway** que carga el **Data Warehouse** (`Odoo → PostgreSQL marts`) cada hora.
+- Cron en **Railway** que carga el **Data Warehouse** (`Odoo → PostgreSQL marts`) **cada 15 min**.
 - Más scripts de BI manual (Excel, Google Drive, correo) en `classes/` y notebooks.
 - Idioma del proyecto y de la comunicación: **español**.
 
 ## Componente principal: el cron del DW
-- Entrypoint: **`run_dw.py`**. Disparado por Railway Cron (`railway.toml` → `0 * * * *`, horario).
+- Entrypoint: **`run_dw.py`**. Disparado por Railway Cron (`railway.toml` → **`*/15 * * * *`**).
   Mismo comando en `Procfile` (worker: `python run_dw.py`).
-- Cada disparo: **incremental** siempre (`etl_dw_marts.main("incremental")`) + **rebuild** del año
-  actual los días 3 y 24 a las 03h. Detalles del ETL en la sección "Data Warehouse" abajo.
+- **Reparto LIGERO/COMPLETO** (el coste de una corrida es casi todo FIJO, no proporcional al delta):
+  - tick **:00** → corrida **COMPLETA**: catálogos + dims + kits + nombre comercial + hecho + **todos
+    los pasos de cierre** (reversos, puentes NC/ND, categoría, PUC) + refresco de MV.
+  - ticks **:15/:30/:45** → **ligera**: dimensiones por `write_date` + `cargar_hecho` + MV
+    (`etl_dw_marts.main(..., cierre=False)`, o `--sin-cierre` a mano).
+  - ⚠ En los ticks ligeros las líneas nuevas quedan **sin `categoria`, sin `es_reverso` y sin puente
+    NC/ND** hasta el cierre de la hora. Es el precio de la frescura.
+- **rebuild** del año actual los días 3 y 24 a las 03h, **solo en el tick :00** (`MINUTO_CIERRE`).
+  ⚠ Sin esa guarda, `hour==3` se cumplía en :00/:15/:30/:45 → 4 rebuilds solapados, cada uno con un
+  DELETE del año. La hora es la del contenedor = **UTC** (≈22:00 del día anterior en Colombia).
+- **Advisory lock** (`pg_try_advisory_lock`, clave `8152026`) en `run_dw.py`: si la corrida anterior
+  sigue viva, el tick se **omite** y sale con código 0. Es lo que hace seguro el `*/15`.
 - El sync antiguo a `raw.odoo_apuntes` (`etl_odoo_incremental.py`) quedó **archivado**
   (`archivado/`, ya no corre); el DW lee de Odoo directo, no de `raw`. `raw.odoo_apuntes` sigue
   existiendo para el BI legacy pero ya no se actualiza por cron.
 
 ## Archivos clave
-- `run_dw.py` — **entrypoint del cron** (dispatcher DW: incremental horario + rebuild 3/24).
+- `run_dw.py` — **entrypoint del cron** (dispatcher DW: ligera cada 15 min, completa en :00, rebuild 3/24).
 - `etl_dw_marts.py` — ETL del DW (ver sección Data Warehouse).
 - `cargar_mapeos.py` — carga los mapeos NO-Odoo de ventas (zona/cliente_padre/categoría) de Drive a
   `marts.map_*`. A demanda (ver sección Data Warehouse).
@@ -73,8 +83,9 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `--rebuild [--desde --hasta]` (recrea por rango), `--dims` (solo dimensiones). Carga **por año,
   más reciente primero**; reintentos ante 502 de Odoo + reconexión de BD; refresco de dimensiones
   por su `write_date`; `marcar_reversos` y `aplicar_correcciones` al cierre.
-- `run_dw.py` — **entrypoint del cron de Railway** (`railway.toml` → `0 * * * *`): incremental por
-  hora + rebuild del año actual días 3 y 24 a las 03h. Reemplazó al antiguo sync raw (archivado).
+- `run_dw.py` — **entrypoint del cron de Railway** (`railway.toml` → `*/15 * * * *`): ligera cada
+  15 min, completa en el tick :00, rebuild del año actual días 3 y 24 a las 03h (solo :00), con
+  advisory lock anti-solapamiento. Reemplazó al antiguo sync raw (archivado).
 - `sql/marts/01..12_*.sql` — DDL: dims (`dim_fecha/cuenta/tercero/producto/diario/vendedor/
   empresa/centro_costo`), hecho `fact_movimiento_contable`, vistas (`v_ventas`, `v_cartera`,
   `v_balance_comprobacion`, `v_dq_analitica`), control (`etl_control`), calidad, `correcciones`,
@@ -252,12 +263,25 @@ tableros de Power BI por gráficos web con ECharts, con permisos por tablero def
   712 ms (**22× / 12×**). Con 5-6 paneles eran ~40 s de CPU de BD por usuario que abría el tablero.
 - **`sql/marts/23_mv_dashboards.sql`** (fase 1 = hoja **Ventas**): `mv_ventas_dia` (176.979 filas,
   series temporales), `mv_ventas_mes` (851.515, desgloses y top-N — incluye producto),
-  `mv_ventas_kpi_mes` (296, conteos DISTINTOS: facturas/clientes/líneas) y `mv_presupuesto_mes` (347,
-  tipa `bi_presupuesto` que es todo `VARCHAR`). Cada una con **índice ÚNICO** (lo exige
+  `mv_ventas_kpi_mes` (296, conteos DISTINTOS: facturas/clientes/líneas), `mv_presupuesto_mes` (347,
+  tipa `bi_presupuesto` que es todo `VARCHAR`) y **`mv_ventas_presupuesto_mes`** (360, ventas vs
+  presupuesto por **mes × categoría**). Cada una con **índice ÚNICO** (lo exige
   `REFRESH … CONCURRENTLY`) + índices por fecha/periodo y por cada FK de filtro. Cuadre verificado:
   155.384.962.862 idéntico al origen, diferencia 0 mes a mes.
   Idempotente vía DROP+CREATE ⇒ re-ejecutarlo **reconstruye** (~43 s); el refresco rutinario NO usa
   este archivo.
+- **PRESUPUESTO ↔ categorías de Odoo (filtro dinámico)** ⭐: la categoría del presupuesto es
+  **`bi_presupuesto.canal`**, ⚠ **NO `categoria_cliente`** (esa es el NIVEL del cliente —
+  DIAMOND/SILVER/GOLD — y viene vacía en 302 de 347 filas). `mv_presupuesto_mes` expone ahora
+  **`categoria`** = `canal` normalizado con **`map_categoria`**, que es el vocabulario de
+  `fact.categoria`. Los dos vocabularios ya coincidían casi 1:1; solo hubo que añadir a
+  `cargar_mapeos.py`: **`INTERNACIONAL`→`EXPORTACION`** y los typos de Odoo
+  **`CL,IENTE`/`CLENTE`/`CLIENTE`→`CALL CENTER`**. El cruce vive en
+  **`mv_ventas_presupuesto_mes`** (`FULL OUTER JOIN`, para que una categoría con presupuesto y sin
+  ventas —o al revés— siga apareciendo) con `venta/presupuesto/cumplimiento_pct/falta`.
+  ⚠ Se refresca **AL FINAL** (lee de `mv_ventas_mes` y `mv_presupuesto_mes`). Asimetrías: presupuesto
+  **solo 2026**, **sin empresa** (suma HFA+PCN) y `venta` por **`fecha_venta`** (no admite
+  `date_basis=factura`). Cuadre verificado: `SUM(venta)` idéntico a `v_ventas_bi`.
 - **`sql/marts/24_rol_intranet.sql`**: rol **`intranet_ro`** + vistas de lookup `v_lk_tercero`,
   `v_lk_producto`, `v_lk_vendedor`, `v_lk_empresa`. Espejo de `20_agente.sql`: **NO** se concede
   acceso al hecho, a `dim_*` crudas, a `v_ventas_bi` ni a las `bi_*`. `v_lk_tercero` **excluye

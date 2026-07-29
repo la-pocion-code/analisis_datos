@@ -81,7 +81,8 @@ GRANT SELECT ON
     marts.mv_ventas_dia,
     marts.mv_ventas_mes,
     marts.mv_ventas_kpi_mes,
-    marts.mv_presupuesto_mes
+    marts.mv_presupuesto_mes,
+    marts.mv_ventas_presupuesto_mes   -- ventas vs presupuesto por mes × categoría
 TO intranet_ro;
 
 -- Bitácora de refresco: la intranet la lee para invalidar su caché y mostrar

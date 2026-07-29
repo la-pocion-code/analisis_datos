@@ -29,14 +29,18 @@ import time
 
 from classes.db_loader import DBLoader
 
-# Orden de refresco. Son independientes entre sí (todas leen de v_ventas_bi o de
-# bi_presupuesto), así que el orden solo afecta al log. Las baratas primero para
-# que un fallo tardío no deje todo sin refrescar.
+# Orden de refresco. Las 4 primeras son independientes entre sí (leen de v_ventas_bi
+# o de bi_presupuesto) y van de la más barata a la más cara, para que un fallo tardío
+# no deje todo sin refrescar.
+# ⚠ `mv_ventas_presupuesto_mes` va SIEMPRE AL FINAL: lee de mv_ventas_mes y de
+# mv_presupuesto_mes, así que necesita que ambas estén ya refrescadas o mostraría el
+# cruce contra datos viejos.
 MVS = (
     "mv_presupuesto_mes",
     "mv_ventas_kpi_mes",
     "mv_ventas_dia",
     "mv_ventas_mes",
+    "mv_ventas_presupuesto_mes",
 )
 
 

@@ -49,10 +49,31 @@ Permisos: [`sql/marts/24_rol_intranet.sql`](../sql/marts/24_rol_intranet.sql).
 | `marts.mv_ventas_dia` | fecha × empresa × cliente × vendedor × categoría × país × equipo | 176.979 | series temporales (evolución diaria, MTD, acumulados) |
 | `marts.mv_ventas_mes` | mes × empresa × cliente × vendedor × **producto** × categoría × país × equipo | 851.515 | desgloses y top-N (cliente, producto, vendedor, categoría, país) |
 | `marts.mv_ventas_kpi_mes` | mes × empresa × categoría | 296 | conteos **distintos**: facturas, clientes, líneas |
-| `marts.mv_presupuesto_mes` | mes × cliente × canal × zona × ejecutiva × categoría | 347 | presupuesto comercial tipado |
+| `marts.mv_presupuesto_mes` | mes × cliente × canal × zona × ejecutiva × **nivel** | 347 | presupuesto comercial tipado |
+| `marts.mv_ventas_presupuesto_mes` | mes × **categoría** | 360 | **ventas vs presupuesto** (cumplimiento) |
 
 Medidas en las tres primeras: `venta` = `SUM(venta_componente)`,
 `unidades` = `SUM(cantidad_componente)`.
+
+### ⭐ Filtrar por categoría cruzando presupuesto y ventas
+
+La categoría del presupuesto es **`canal`**, ⚠ **NO `categoria_cliente`** (esa columna es el **NIVEL**
+del cliente — `DIAMOND`/`SILVER`/`GOLD` — y viene vacía en 302 de las 347 filas; se conserva con ese
+nombre para no romper nada, pero no es una categoría).
+
+`mv_presupuesto_mes` expone ahora **`categoria`** = `canal` normalizado con `marts.map_categoria`, o sea
+**el mismo vocabulario que `mv_ventas_*.categoria`**. Con eso los dos lados son directamente
+comparables y el filtro por categoría es único para todo el tablero.
+
+`marts.mv_ventas_presupuesto_mes` ya trae el cruce hecho:
+`periodo_aaaamm, anio, mes, categoria, venta, presupuesto, presupuesto_con_iva, cumplimiento_pct, falta`.
+Es un **`FULL OUTER JOIN`**: una categoría con presupuesto y sin ventas (o al revés) **sigue
+apareciendo** — es justo lo que el negocio necesita ver. `cumplimiento_pct` y `falta` son `NULL` cuando
+no hay presupuesto (p. ej. 2024-2025, o la categoría `Proveedores`).
+
+⚠ Tres asimetrías al leerla: el presupuesto es **solo 2026**; **no tiene empresa** ⇒ `venta` suma las
+DOS (HFA + PCN) y no se puede filtrar por empresa aquí; y `venta` está atribuida por **`fecha_venta`**
+⇒ esta MV **no** admite `?date_basis=factura`.
 
 ### Vistas de lookup (nombres descriptivos)
 
@@ -152,10 +173,20 @@ diseñar los gráficos:
 
 Módulo: [`refrescar_mv_dashboards.py`](../refrescar_mv_dashboards.py).
 
-Lo llama **`run_dw.py`** al final de cada corrida del cron horario de Railway
-(después del incremental **y** del rebuild, para que recoja ambos). Envuelto en
-`try/except`: si un tablero no se puede refrescar, el ETL igual termina bien y el
-fallo queda registrado en `marts.bi_mv_refresh`.
+Lo llama **`run_dw.py`** al final de **cada corrida del cron, que ahora es cada 15
+minutos** (`*/15 * * * *`), después del incremental **y** del rebuild para que
+recoja ambos. Envuelto en `try/except`: si un tablero no se puede refrescar, el ETL
+igual termina bien y el fallo queda registrado en `marts.bi_mv_refresh`.
+
+⚠ Consecuencia para la caché de la intranet: `MAX(refreshed_at)` cambia **4× más
+seguido**, así que la caché se invalida cada 15 min en vez de cada hora.
+
+⚠ Frescura desigual dentro de la hora: en los ticks `:15/:30/:45` el ETL corre en
+modo **ligero** (solo dimensiones + hecho nuevo). Las líneas cargadas en esos ticks
+llegan **sin `categoria`, sin `es_reverso` y sin el puente NC/ND resuelto** hasta el
+tick `:00`. En la práctica: una factura de los últimos ≤45 min puede aparecer en
+`'(sin categoria)'`, y una nota crédito recién emitida puede restar en su propio mes
+hasta el cierre de la hora.
 
 ```bash
 python refrescar_mv_dashboards.py                    # todas
@@ -163,9 +194,14 @@ python refrescar_mv_dashboards.py --mv mv_ventas_dia # una sola
 python refrescar_mv_dashboards.py --no-concurrente   # si alguna nunca se pobló
 ```
 
-Duraciones medidas (2026-07-28): `mv_presupuesto_mes` 0,2 s ·
-`mv_ventas_kpi_mes` 9,1 s · `mv_ventas_dia` 14,2 s · `mv_ventas_mes` 21,1 s →
-**~45 s en total**, holgado para un cron horario.
+Duraciones medidas (2026-07-29): `mv_presupuesto_mes` 0,2 s ·
+`mv_ventas_kpi_mes` 11,4 s · `mv_ventas_dia` 15,7 s · `mv_ventas_mes` 23,4 s ·
+`mv_ventas_presupuesto_mes` 0,3 s → **~53 s en total**. Con una corrida ligera de
+~55 s, un tick de 15 min cierra en <2 min: holgado.
+
+⚠ `mv_ventas_presupuesto_mes` se refresca **siempre al final**: lee de
+`mv_ventas_mes` y de `mv_presupuesto_mes`, así que si se adelanta mostraría el cruce
+contra datos viejos.
 
 Dos detalles que importan:
 

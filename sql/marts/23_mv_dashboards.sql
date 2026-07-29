@@ -286,26 +286,98 @@ SELECT
     EXTRACT(MONTH FROM p.fecha::TIMESTAMP)::SMALLINT                  AS mes,
     COALESCE(NULLIF(btrim(p.cliente),           ''), '(sin cliente)')   AS cliente,
     COALESCE(NULLIF(btrim(p.canal),             ''), '(sin canal)')     AS canal,
+    -- ⭐ categoria: el canal del Excel NORMALIZADO al mismo vocabulario que `fact.categoria` de Odoo
+    -- (marts.map_categoria). Es la columna con la que se une contra mv_ventas_*.categoria y la que
+    -- permite filtrar los tableros por categoría. Único desajuste real: INTERNACIONAL → EXPORTACION.
+    COALESCE(mc.categoria_bi, NULLIF(btrim(p.canal), ''), '(sin categoria)') AS categoria,
     COALESCE(NULLIF(btrim(p.zona),              ''), '(sin zona)')      AS zona,
     COALESCE(NULLIF(btrim(p.ejecutiva),         ''), '(sin ejecutiva)') AS ejecutiva,
-    COALESCE(NULLIF(btrim(p.categoria_cliente), ''), '(sin categoria)') AS categoria_cliente,
+    -- ⚠ NO es una categoría: es el NIVEL del cliente (DIAMOND/SILVER/GOLD) y viene vacío en 302 de
+    -- las 347 filas. Se conserva con su nombre para no romper a la intranet. La categoría es `categoria`.
+    COALESCE(NULLIF(btrim(p.categoria_cliente), ''), '(sin nivel)')     AS categoria_cliente,
     SUM(COALESCE(NULLIF(btrim(p.presupuesto),         '')::NUMERIC, 0)) AS presupuesto,
     SUM(COALESCE(NULLIF(btrim(p.presupuesto_con_iva), '')::NUMERIC, 0)) AS presupuesto_con_iva
 FROM marts.bi_presupuesto p
+LEFT JOIN marts.map_categoria mc ON mc.categoria_origen = btrim(p.canal)
 WHERE p.fecha IS NOT NULL
   AND btrim(p.fecha) <> ''
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9;
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10;
 
 CREATE UNIQUE INDEX ux_mv_presupuesto_mes
-    ON marts.mv_presupuesto_mes (periodo_aaaamm, cliente, canal, zona, ejecutiva, categoria_cliente);
+    ON marts.mv_presupuesto_mes (periodo_aaaamm, cliente, canal, categoria, zona, ejecutiva, categoria_cliente);
 
-CREATE INDEX ix_mv_presupuesto_mes_anio    ON marts.mv_presupuesto_mes (anio);
-CREATE INDEX ix_mv_presupuesto_mes_cliente ON marts.mv_presupuesto_mes (cliente);
+CREATE INDEX ix_mv_presupuesto_mes_anio      ON marts.mv_presupuesto_mes (anio);
+CREATE INDEX ix_mv_presupuesto_mes_cliente   ON marts.mv_presupuesto_mes (cliente);
+CREATE INDEX ix_mv_presupuesto_mes_categoria ON marts.mv_presupuesto_mes (categoria);
 
 COMMENT ON MATERIALIZED VIEW marts.mv_presupuesto_mes IS
   'Presupuesto comercial tipado (el origen bi_presupuesto es todo VARCHAR) al '
-  'grano mes × cliente × canal × zona × ejecutiva × categoría. OJO: solo 2026 y '
-  'SIN desglose por empresa.';
+  'grano mes × cliente × canal × zona × ejecutiva × nivel. `categoria` = el canal '
+  'normalizado con map_categoria, para unir con mv_ventas_*.categoria. OJO: '
+  '`categoria_cliente` es el NIVEL (DIAMOND/SILVER/GOLD), no una categoría. '
+  'Solo 2026 y SIN desglose por empresa.';
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- mv_ventas_presupuesto_mes — VENTAS vs PRESUPUESTO al grano mes × categoría.
+--
+-- Es el cruce que la intranet hacía a mano. La unión se puede hacer porque
+-- `mv_presupuesto_mes.categoria` ya viene normalizada con `map_categoria` al
+-- mismo vocabulario que `mv_ventas_mes.categoria` (ver arriba).
+--
+-- FULL OUTER JOIN a propósito: una categoría con presupuesto y sin ventas (o al
+-- revés) TIENE que aparecer — es justo lo que el negocio necesita ver.
+--
+-- ⚠ TRES ASIMETRÍAS que hay que respetar al leerla:
+--   · El presupuesto es solo de **2026** ⇒ en 2024-2025 `presupuesto` es NULL.
+--   · El presupuesto **no tiene empresa** ⇒ `venta` suma las DOS empresas
+--     (HFA + PCN). No se puede filtrar por empresa en esta MV.
+--   · `venta` está atribuida por **fecha_venta** (la NC resta en el mes de su
+--     factura). No admite la base `fecha_factura` de los otros tableros.
+-- ════════════════════════════════════════════════════════════════════════════
+DROP MATERIALIZED VIEW IF EXISTS marts.mv_ventas_presupuesto_mes CASCADE;
+
+CREATE MATERIALIZED VIEW marts.mv_ventas_presupuesto_mes AS
+WITH v AS (
+    SELECT periodo_aaaamm, categoria, SUM(venta) AS venta
+    FROM marts.mv_ventas_mes
+    GROUP BY 1, 2
+),
+p AS (
+    SELECT periodo_aaaamm, categoria,
+           SUM(presupuesto)         AS presupuesto,
+           SUM(presupuesto_con_iva) AS presupuesto_con_iva
+    FROM marts.mv_presupuesto_mes
+    GROUP BY 1, 2
+)
+SELECT
+    COALESCE(v.periodo_aaaamm, p.periodo_aaaamm)              AS periodo_aaaamm,
+    (COALESCE(v.periodo_aaaamm, p.periodo_aaaamm) / 100)::SMALLINT AS anio,
+    (COALESCE(v.periodo_aaaamm, p.periodo_aaaamm) % 100)::SMALLINT AS mes,
+    COALESCE(v.categoria, p.categoria)                        AS categoria,
+    COALESCE(v.venta, 0)                                      AS venta,
+    p.presupuesto,
+    p.presupuesto_con_iva,
+    -- cumplimiento y faltante solo tienen sentido si hay presupuesto (>0)
+    CASE WHEN COALESCE(p.presupuesto, 0) > 0
+         THEN ROUND(COALESCE(v.venta, 0) * 100.0 / p.presupuesto, 1) END AS cumplimiento_pct,
+    CASE WHEN COALESCE(p.presupuesto, 0) > 0
+         THEN p.presupuesto - COALESCE(v.venta, 0) END                   AS falta
+FROM v
+FULL OUTER JOIN p ON p.periodo_aaaamm = v.periodo_aaaamm
+                 AND p.categoria      = v.categoria;
+
+CREATE UNIQUE INDEX ux_mv_ventas_presupuesto_mes
+    ON marts.mv_ventas_presupuesto_mes (periodo_aaaamm, categoria);
+
+CREATE INDEX ix_mv_ventas_presupuesto_mes_anio      ON marts.mv_ventas_presupuesto_mes (anio);
+CREATE INDEX ix_mv_ventas_presupuesto_mes_categoria ON marts.mv_ventas_presupuesto_mes (categoria);
+
+COMMENT ON MATERIALIZED VIEW marts.mv_ventas_presupuesto_mes IS
+  'Ventas vs presupuesto por mes × categoría (FULL OUTER: aparecen las '
+  'categorías que solo tienen uno de los dos lados). `venta` por fecha_venta y '
+  'sumando las DOS empresas; el presupuesto solo existe en 2026 y no tiene '
+  'empresa. cumplimiento_pct/falta son NULL si no hay presupuesto.';
 
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -314,5 +386,6 @@ COMMENT ON MATERIALIZED VIEW marts.mv_presupuesto_mes IS
 INSERT INTO marts.bi_mv_refresh (mv_name, refreshed_at, filas, ok)
 SELECT m.mv, now(), NULL, TRUE
 FROM (VALUES ('mv_ventas_dia'), ('mv_ventas_mes'),
-             ('mv_ventas_kpi_mes'), ('mv_presupuesto_mes')) AS m(mv)
+             ('mv_ventas_kpi_mes'), ('mv_presupuesto_mes'),
+             ('mv_ventas_presupuesto_mes')) AS m(mv)
 ON CONFLICT (mv_name) DO UPDATE SET refreshed_at = now(), ok = TRUE, error = NULL;

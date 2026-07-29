@@ -13,7 +13,7 @@ Odoo (XML-RPC)                          PostgreSQL (Railway)
   res.partner/product  │                           └─ vistas v_ventas / v_cartera / v_balance_comprobacion
   analytic.account…  ──┘
 ```
-- Es el **cron activo** del proyecto (Railway → `run_dw.py`, horario). Reemplazó al antiguo sync raw
+- Es el **cron activo** del proyecto (Railway → `run_dw.py`, **cada 15 min**). Reemplazó al antiguo sync raw
   `etl_odoo_incremental.py` (archivado). Lee de Odoo directo; no depende de `raw.odoo_apuntes`.
 - Grano: **una línea de asiento** (`account.move.line`, `state='posted'`).
 - **Un solo hecho** sirve ventas, cartera y estados financieros (en BI se filtra con DAX; no se
@@ -35,7 +35,7 @@ Odoo (XML-RPC)                          PostgreSQL (Railway)
 ### 2.2 Cargar / actualizar el hecho (`etl_dw_marts.py`)
 | Comando | Qué hace | Cuándo usarlo |
 |---|---|---|
-| `python etl_dw_marts.py --incremental` | Solo cambios por `write_date` (hecho + cartera + dimensiones). Idempotente y rápido. | Actualización normal. **Es lo que corre el cron cada hora**; rara vez hace falta a mano. |
+| `python etl_dw_marts.py --incremental` | Solo cambios por `write_date` (hecho + cartera + dimensiones). Idempotente y rápido. | Actualización normal. **Es lo que corre el cron cada 15 min** (con `--sin-cierre` salvo en el tick :00); rara vez hace falta a mano. |
 | `python etl_dw_marts.py --dims` | Refresca **solo catálogos y dimensiones** (cuentas, clasificación de estados financieros, centros de costo, terceros/productos/vendedores) **+ enriquecimiento de ventas** (`dim_tercero`: telefono/email/etiqueta/cliente_padre; `dim_producto.es_kit`) **+ kits** (`dim_kit_componente` desde `mrp.bom`). No toca el hecho (`fact.equipo` se llena al cargar el hecho, no aquí). | Cambió algo de **dimensiones** y quieres verlo ya: cuenta/cliente/producto nuevo, tras cambiar la clasificación, o para **poblar el enriquecimiento de ventas / kits**. ⚠ El refresco total de terceros son ~206k registros (unos minutos). |
 | `python etl_dw_marts.py --rebuild` | **DELETE + recarga del AÑO ACTUAL** (años cerrados intactos). Refleja **borrados/ediciones** de Odoo que el incremental no detecta. | El año en curso no cuadra o sospechas datos viejos. El cron lo hace los días **3 y 24** a las 03h. |
 | `python etl_dw_marts.py --rebuild --desde 2026-06-01 --hasta 2026-06-30` | **DELETE + recarga de un RANGO** exacto. | Un **mes o rango puntual no cuadra** (p.ej. partida doble ≠ 0 en junio). Lo más quirúrgico. |
@@ -58,10 +58,27 @@ print('aplicado')"
 Tras un DDL que agrega columnas de dimensión, correr `python etl_dw_marts.py --dims` para poblarlas.
 
 ### 2.4 El cron automático (no hay que correrlo a mano)
-`run_dw.py` es el entrypoint del cron de Railway (`railway.toml` → `0 * * * *`):
-- **Cada hora:** `--incremental`.
-- **Días 3 y 24, 03:00:** además `--rebuild` del año actual.
-Para probarlo localmente igual que el cron: `python run_dw.py`.
+`run_dw.py` es el entrypoint del cron de Railway (`railway.toml` → **`*/15 * * * *`**). No todos los
+ticks hacen lo mismo, porque el coste de una corrida es casi todo **fijo** (full scans del hecho,
+TRUNCATE+rebuild de los puentes NC/ND, full scan de productos en Odoo) y repetirlo 4×/hora no trae ni
+una fila más:
+
+| Tick | Qué corre | Duración medida |
+|---|---|---|
+| **:00** | corrida **COMPLETA**: catálogos + dims + kits + nombre comercial + hecho + **todos los pasos de cierre** + MV | 2–7,5 min + ~53 s de MV |
+| **:15 / :30 / :45** | **ligera**: dimensiones por `write_date` + `cargar_hecho` + MV | ~55 s + ~53 s de MV |
+| días 3 y 24, **03:00** | además `--rebuild` del año actual (**solo en el tick :00**) | mucho más de 15 min |
+
+- ⚠ En los ticks ligeros las líneas nuevas quedan **sin `categoria`, sin `es_reverso` y sin puente
+  NC/ND** hasta el cierre de la hora. Es el precio de la frescura.
+- ⚠ **Advisory lock** (`pg_try_advisory_lock`, clave `8152026`): si la corrida anterior sigue viva, el
+  tick se **omite** con un warning y sale con código 0. Sin esto, dos corridas solapadas dejarían los
+  puentes NC/ND incompletos.
+- ⚠ La hora es la del **contenedor = UTC**, no Colombia: la ventana "días 3 y 24 a las 03h" cae en
+  realidad a las ~22:00 del día anterior en hora local.
+
+Para probarlo localmente igual que el cron: `python run_dw.py`. Para forzar solo la parte ligera:
+`python etl_dw_marts.py --incremental --sin-cierre`.
 
 ### 2.6 Mapeos de negocio de ventas (NO-Odoo) — `cargar_mapeos.py`
 `python cargar_mapeos.py` lee de Google Drive (vía `DriveLoader`) los Excel de **zonas** (general,
@@ -176,10 +193,10 @@ locales, para **desconectar Power BI del PC**. Lee de Google Drive (`DriveLoader
 
 ## 6. Programación en Railway (ya montado)
 El cron corre `run_dw.py` (`railway.toml` + `Procfile`):
-- *Start Command:* `python run_dw.py` · *Cron Schedule:* `0 * * * *`.
+- *Start Command:* `python run_dw.py` · *Cron Schedule:* `*/15 * * * *`.
 - Variables de entorno requeridas: `url, db, username_odoo, password, DB_HOST, DB_PORT, DB_NAME,
   DB_USER, DB_PASSWORD`.
-- Al hacer **push a `main`**, Railway redepliega y el próximo tick horario usa el código nuevo.
+- Al hacer **push a `main`**, Railway redepliega y el próximo tick (≤15 min) usa el código nuevo.
 
 ## 7. Conciliación / verificación
 - **Estado y cuadre:** `python estado_dw.py --odoo` (conteos por año vs Odoo + partida doble).

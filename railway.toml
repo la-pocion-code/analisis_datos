@@ -1,3 +1,5 @@
 [deploy]
 startCommand = "python run_dw.py"
-cronSchedule = "0 * * * *"
+# Cada 15 min. run_dw.py reparte el trabajo: corrida COMPLETA en el tick :00 (cierre + rebuild) y
+# LIGERA en :15/:30/:45. Un advisory lock evita el solapamiento si una corrida se pasa de 15 min.
+cronSchedule = "*/15 * * * *"

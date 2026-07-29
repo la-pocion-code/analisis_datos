@@ -48,6 +48,14 @@ CATEGORIAS_RENOMBRAR = {
     "Farmacia": "FARMACIA",
     "Coopidrogas": "COOPIDROGAS",
     "Catálogo": "CATÁLOGO",
+    # 3) Vocabulario del PRESUPUESTO (`bi_presupuesto.canal`) → mismo vocabulario. Es lo que permite
+    #    cruzar presupuesto vs ventas por categoría (marts.mv_ventas_presupuesto_mes). El resto de los
+    #    canales del presupuesto ya usan la etiqueta canónica y no necesitan fila aquí.
+    "INTERNACIONAL": "EXPORTACION",
+    # 4) Typos de Odoo (aparecen tal cual en fact.categoria porque el mapeo es COALESCE, no un enum).
+    "CL,IENTE": "CALL CENTER",
+    "CLENTE": "CALL CENTER",
+    "CLIENTE": "CALL CENTER",
 }
 
 # País por NOMBRE del cliente del exterior → marts.map_cliente_pais.
