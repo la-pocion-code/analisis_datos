@@ -158,8 +158,15 @@ el nombre técnico — es lo que se pinta en los gráficos.
 
    La diferencia llega al **7 % en un mes** (marzo) aunque el total anual sea casi
    igual. Por eso el grano de las MV incluye **las dos** fechas —cuesta +0,04 %
-   de filas, porque solo 952 de 910.802 líneas tienen fechas distintas— y la
-   intranet expone `?date_basis=factura|venta` (por defecto `factura`).
+   de filas, porque solo 952 de 910.802 líneas tienen fechas distintas—.
+
+   ⚠ **CORREGIDO 2026-07-29**: la intranet **ya NO expone `?date_basis=`**. Por
+   decisión de William («para todo se usará `fecha_venta`, que es la columna que se
+   ajustó») los tableros de ventas usan **siempre `fecha_venta`**, y el endpoint
+   devuelve **400** si llega ese parámetro (commit `1bb9628` de la intranet). Las
+   columnas de factura se conservan en el grano para poder auditar, pero ningún
+   tablero las consulta. **La contabilidad es otra base**: se atribuye por **fecha
+   contable** (`fecha_key`), ver §9.
 
    Si alguna fecha llegara nula, las columnas de factura hacen
    `COALESCE(fecha_factura, fecha_venta)`: así una línea nunca desaparece —con su
@@ -268,16 +275,7 @@ Cada hoja nueva añade sus MV aquí y su `GRANT` en `24_rol_intranet.sql`
   `bi_inventario_cclave`, `bi_tiendas_cclave`.
 - **Cartera** — portar a SQL los buckets de mora que hoy calcula Power Query
   (`DIAS ATRASO`, `RANGO MORA`: Corriente/Próximo/11-30/31-60/61-90/90+).
-- **Contabilidad** — la más grande. Antes hay que portar a SQL las **columnas
-  calculadas DAX** de `dim_cuenta` (`concepto_contable`, `concepto_balance`,
-  `categoria_gasto`, `flujo_actividad`, `orden_*`): son `CASE` sobre código PUC
-  (`clase_codigo`/`grupo_codigo`/`cuenta_codigo`). Después `mv_pyg_mes` y
-  `mv_balance_mes` sobre `v_balance_comprobacion`, y el cruce
-  `bi_presupuesto` × `bi_cliente_credito` (días de CxC → `meses_desplazamiento`,
-  `anticipo`) que alimenta la proyección de flujo de caja.
-
-Reutilizable: `reportes-api/reports.py` ya tiene SQL de `estado_resultados`,
-`balance` acumulado, `top_clientes` y `ventas_por_categoria`.
+(La hoja de **Contabilidad** ya está construida: ver §9.)
 
 ## 8. Nota
 
@@ -294,3 +292,146 @@ c=DBLoader().get_connection(); \
 conn=c.__enter__(); cur=conn.cursor(); cur.execute(sql); conn.commit(); c.__exit__(None,None,None); \
 print('aplicado')"
 ```
+
+---
+
+## 9. Fase 2 — hoja de CONTABILIDAD
+
+DDL en `sql/marts/26_contabilidad_dashboards.sql`; permisos en `24_rol_intranet.sql`
+(que hay que **re-ejecutar después** del 26, aunque numéricamente vaya antes).
+
+Sustituye la hoja «Informe Contabilidad» del PBIX, que son **seis** sub-páginas:
+PYG · Situación Financiera · Flujo de Efectivo · Comportamientos · Detalle · KPIs.
+
+### 9.1 Lo que se midió antes de escribir el DDL
+
+| Dato | Valor |
+|---|---|
+| Rango contable | 2023-12-31 → 2026-08-09 (**33 meses**) |
+| Líneas del hecho | 4.375.278 |
+| `SUM(debito) - SUM(credito)` | **−0,01** ⇒ partida doble cuadrada y **historia completa** |
+| Asiento de apertura | 2023-12-31, 681 líneas (empresa 1). La empresa 8 arranca 2025-12-01 |
+| Cuentas clases 1/2/3 · 4/5/6/7 · 8/9 | 960 · 938 · 48 (**las de orden, sin un solo movimiento**) |
+| Cuentas sin `codigo` en clases 1-7 | **0** ⇒ no hay fallback a `nivel_movimiento` |
+| Terceros con movimiento contable | 137.612 |
+| Centros de costo con movimiento | 62 de 67 |
+| Cuentas usadas por 1 sola empresa / por las 2 | **923 / 1** |
+
+El cuadre de −0,01 es lo que hace legítimo calcular `saldo_acum`: sin el asiento de
+apertura, todos los saldos estarían desplazados por una constante y el balance
+**seguiría cuadrando** —el error sería simétrico e invisible—.
+
+### 9.2 Objetos expuestos
+
+| Objeto | Grano | Filas | Para qué |
+|---|---|---|---|
+| `v_dim_cuenta_bi` | cuenta (1.945) | — | las 14 columnas que en Power BI son DAX |
+| `mv_contab_cuenta_mes` | empresa × mes × cuenta | 9.366 | **base**: la única que escanea el hecho |
+| `mv_balance_mes` | empresa × mes × cuenta, clases 1/2/3, **densa** | 14.949 | situación financiera (4 niveles) |
+| `mv_pyg_mes` | empresa × mes × concepto × **cuenta_codigo (N4)** | 972 | estado de resultados y KPIs |
+| `mv_flujo_mes` | empresa × mes × renglón de flujo | 351 | flujo de efectivo (solo lo agregable) |
+| `mv_contab_tercero_mes` | empresa × mes × tercero, **pivotada** | 250.526 | comportamientos y detalle |
+| `mv_contab_centro_mes` | empresa × mes × centro (+ `plan`) | 564 | comportamiento por centro |
+| `mv_contab_canal_mes` | empresa × mes × categoría × canal | 611 | comportamiento por canal |
+| `bi_pyg_renglon` | renglón | 17 | catálogo y **orden decimal** de los renglones derivados |
+| `bi_tasa_renta` | empresa | 2 | 39 % HFA / 35 % PCN |
+| `v_lk_cuenta` | cuenta | — | lookup del PUC con la clasificación derivada |
+
+Aplicar el DDL entero tarda **12,7 s**. El hecho contable y `dim_cuenta` **siguen
+negados** al rol: verificado con `has_table_privilege`.
+
+### 9.3 Las reglas exactas (verificadas al peso contra el informe)
+
+PCN (empresa 8), mayo-2026 — lo que devuelve `mv_pyg_mes` coincide **exactamente**:
+ingresos operacionales `6.830.236.960` · costo de ventas `2.801.095.140` · gastos
+admin `404.721.946` · gastos de ventas `2.651.211.097` · D&A línea `3.132.892` · D&A
+total `6.469.192` · ingresos no op. `84.808.759` · gastos no op. `80.724.548`.
+Derivados: UB `4.029.141.820` · UO `970.075.885` · EBITDA `976.545.077` · UAI
+`974.160.096` · provisión al 35 % `340.956.034` (diferencias de 1 peso por redondeo).
+
+⚠ **Las dos reglas de gasto NO son simétricas** — es el error más fácil de cometer:
+
+| Medida | Definición |
+|---|---|
+| gastos de administración | grupo **51 EXCLUYENDO** `cuenta_codigo` 5160/5165 |
+| gastos de ventas | grupo **52 COMPLETO** (sí incluye 5260/5265) |
+| D&A (renglón del informe) | 5160, 5165 |
+| D&A total (addback del EBITDA) | 5160, 5165, **5260, 5265** |
+
+Por eso `mv_pyg_mes` lleva el **N4 en el grano**: agregando solo por grupo, 5160/5165
+caen dentro del 51 y EBITDA, utilidad operativa y la línea de D&A dejan de ser
+calculables — y no se puede recuperar después.
+
+Signo de presentación: `clase_codigo IN ('4','2','3') → −1`. Así ingresos y gastos
+salen ambos positivos y utilidad bruta = ingresos − costo.
+
+**Base de fecha**: los estados financieros van por **fecha contable** (`fecha_key`),
+no por `fecha_factura` ni `fecha_venta`. Consecuencia: «ingresos por cliente» de esta
+hoja **NO cuadra** con `venta` del tablero de Ventas — aquí no se excluyen reversos ni
+notas débito, porque contablemente son movimientos reales.
+
+### 9.4 Empresa única y obligatoria
+
+Los estados financieros **nunca se consolidan**. Cinco motivos acumulativos:
+
+1. PUC distinto: 923 cuentas las usa una sola empresa, solo 1 las dos.
+2. HFA no tiene grupo 51 — todo su gasto operativo va al 52. Consolidado, la fila
+   «gastos de administración» sería la de PCN sola.
+3. `seccion`/`concepto`/`nivel_movimiento` (de los reportes Odoo) solo están poblados
+   para la empresa 8.
+4. **Intercompañía**: en el informe, el 4.º proveedor de PCN es la propia empresa 1
+   con 714 mill. Un consolidado lo duplicaría y nada aquí puede detectarlo.
+5. Las tasas de renta difieren (39 % / 35 %).
+
+`empresa_id` es la primera columna de todos los índices y la intranet rechaza una
+consulta sin empresa.
+
+⚠ **Enero-2026 no es un hueco de datos**: ese mes se facturó en la **empresa 1**
+(clase 4 = 7.535.406.985) y PCN solo tuvo 33.898.521; desde febrero manda PCN. Con el
+filtro de empresa única, enero se ve casi vacío para PCN y hay que explicarlo en la UI.
+
+### 9.5 Tres cálculos del informe que están MAL y aquí se corrigen
+
+Decisión de William (2026-07-29): corregir, aunque esas páginas dejen de cuadrar con
+Power BI.
+
+1. **Situación Financiera** mostraba el **movimiento del mes**, no el saldo, y
+   arrastraba dentro las cuentas de resultado: la fila en blanco de encima de ACTIVO
+   (−974.160.096,79 en mayo) es *idéntica* a `UTILIDAD ANTES DE IMPUESTOS` del PYG, y
+   por eso la fila `Total` daba 0,00 — era la partida doble completa (clases 1-7), no
+   un cuadre de balance. Correcto: `saldo_presentacion` (acumulado, con signo),
+   filtrado a clases 1/2/3, y el resultado del ejercicio como renglón de patrimonio.
+   **Verificado**: `ACTIVO 27.145.470.011 = PASIVO 13.469.553.885 + PATRIMONIO
+   4.938.368.827 + resultado 8.737.547.300`, diferencia **−1 peso**.
+2. **Flujo de Efectivo** estaba roto: «ACTIVIDADES DE FINANCIACIÓN» traía
+   85.188.799,95, *exactamente* el mismo valor que «ACTIVIDADES DE INVERSIÓN», cuando
+   las obligaciones financieras del mes eran −1.702.189.935,80. Y la columna `Total` de
+   «FLUJO DE CAJA INICIAL» era el valor de un mes, no una suma. `mv_flujo_mes` expone
+   solo los renglones **agregables** con el signo ya resuelto (un aumento de activo
+   consume caja); los derivados y los de stock los arma la intranet.
+3. **KPIs** daba DIO y DSO en **días negativos**, por dividir por un Δ en vez de por
+   el saldo acumulado. Con `mv_balance_mes.saldo_acum` sale bien.
+
+### 9.6 Refresco
+
+`refrescar_mv_dashboards.py` separa `MVS_VENTAS` (cada tick) de `MVS_CONTAB` (**solo
+el tick `:00`**, cuando `run_dw` corre en modo completo). Las contables son de grano
+mensual y salen de asientos, no de facturas al minuto: 15 minutos de frescura no
+aportan nada, y en los ticks ligeros las líneas nuevas llegan aún **sin `categoria`**,
+así que el panel de canales mostraría un bucket `(sin categoria)` que se vacía al
+cierre de cada hora.
+
+⚠ **El orden de `MVS_CONTAB` no es negociable**: `mv_contab_cuenta_mes` va primera y
+las tres siguientes derivan de ella. Al revés servirían los datos del refresco
+anterior con un `refreshed_at` nuevo — la intranet invalidaría su caché y mostraría
+datos viejos como frescos, sin que nada lo delate.
+
+### 9.7 Lo que queda fuera del v1, y por qué
+
+- **Desperdicio de materia prima** (KPI del informe): **no es derivable** del DW. El
+  hecho es contable puro y no se extraen `stock.move` ni datos de manufactura. En
+  Power BI da 0,00 en los 6 meses, o sea que allí también está vacío.
+- **Intensidad de anticipos a proveedores** y **anticipos de clientes / ventas**:
+  faltan los códigos PUC exactos. También dan 0,00 hoy. Cuando el contador los
+  indique, salen de `mv_balance_mes` sin MV nueva.
+- **Consolidado entre empresas**: requiere eliminación de intercompañía explícita.

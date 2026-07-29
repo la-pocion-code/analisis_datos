@@ -29,19 +29,42 @@ import time
 
 from classes.db_loader import DBLoader
 
-# Orden de refresco. Las 4 primeras son independientes entre sí (leen de v_ventas_bi
-# o de bi_presupuesto) y van de la más barata a la más cara, para que un fallo tardío
-# no deje todo sin refrescar.
+# ── VENTAS (sql/marts/23_mv_dashboards.sql) — se refrescan en CADA tick ─────────
+# Orden: las 4 primeras son independientes entre sí (leen de v_ventas_bi o de
+# bi_presupuesto) y van de la más barata a la más cara, para que un fallo tardío no
+# deje todo sin refrescar.
 # ⚠ `mv_ventas_presupuesto_mes` va SIEMPRE AL FINAL: lee de mv_ventas_mes y de
 # mv_presupuesto_mes, así que necesita que ambas estén ya refrescadas o mostraría el
 # cruce contra datos viejos.
-MVS = (
+MVS_VENTAS = (
     "mv_presupuesto_mes",
     "mv_ventas_kpi_mes",
     "mv_ventas_dia",
     "mv_ventas_mes",
     "mv_ventas_presupuesto_mes",
 )
+
+# ── CONTABILIDAD (sql/marts/26_contabilidad_dashboards.sql) — solo en el tick :00 ─
+# Son de grano MENSUAL y salen de asientos contables, no de facturas al minuto: 15
+# minutos de frescura no aportan nada y en los ticks ligeros las líneas nuevas llegan
+# todavía sin `categoria`, así que el panel de canales mostraría un bucket
+# '(sin categoria)' que se vacía al cierre de cada hora.
+#
+# ⚠ `mv_contab_cuenta_mes` va PRIMERA y no es negociable: las tres siguientes DERIVAN
+# de ella. Si se refrescaran al revés, servirían los datos del refresco anterior con
+# un `refreshed_at` nuevo — la intranet invalidaría su caché y mostraría datos viejos
+# como si fueran frescos, sin que nada lo delate.
+MVS_CONTAB = (
+    "mv_contab_cuenta_mes",      # base: la única que escanea el hecho
+    "mv_balance_mes",            # deriva de la anterior
+    "mv_pyg_mes",                # deriva de la anterior
+    "mv_flujo_mes",              # deriva de la anterior
+    "mv_contab_tercero_mes",     # independiente (escanea el hecho)
+    "mv_contab_centro_mes",      # independiente
+    "mv_contab_canal_mes",       # independiente
+)
+
+MVS = MVS_VENTAS + MVS_CONTAB
 
 
 def _registrar(cur, mv: str, filas, duracion_ms: int, ok: bool, error: str | None) -> None:
@@ -61,13 +84,18 @@ def _registrar(cur, mv: str, filas, duracion_ms: int, ok: bool, error: str | Non
     )
 
 
-def refrescar(mvs=MVS, concurrente: bool = True) -> dict:
+def refrescar(mvs=None, concurrente: bool = True, completa: bool = True) -> dict:
     """
     Refresca las MV indicadas. Un fallo en una NO detiene las demás: el cron del
     ETL nunca debe caerse porque un tablero no se pudo refrescar.
 
+    `completa=False` (los ticks ligeros del cron, :15/:30/:45) refresca solo las de
+    VENTAS y salta las de contabilidad — ver el comentario de MVS_CONTAB.
+
     Devuelve {'ok': [...], 'fallidas': [(mv, error), ...]}.
     """
+    if mvs is None:
+        mvs = MVS if completa else MVS_VENTAS
     resultado = {"ok": [], "fallidas": []}
 
     with DBLoader().get_connection() as conn:
@@ -125,12 +153,16 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Refresca las MV de los dashboards de la intranet.")
     ap.add_argument("--mv", action="append", choices=list(MVS),
                     help="Refrescar solo esta MV (repetible). Por defecto: todas.")
+    ap.add_argument("--solo-ventas", action="store_true",
+                    help="Saltar las MV de contabilidad (lo que hace el cron en los ticks ligeros).")
     ap.add_argument("--no-concurrente", action="store_true",
                     help="Usar REFRESH sin CONCURRENTLY (bloquea lecturas; solo para la 1.ª carga).")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-    refrescar(tuple(args.mv) if args.mv else MVS, concurrente=not args.no_concurrente)
+    refrescar(tuple(args.mv) if args.mv else None,
+              concurrente=not args.no_concurrente,
+              completa=not args.solo_ventas)
 
 
 if __name__ == "__main__":

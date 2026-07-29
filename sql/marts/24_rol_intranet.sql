@@ -85,6 +85,29 @@ GRANT SELECT ON
     marts.mv_ventas_presupuesto_mes   -- ventas vs presupuesto por mes × categoría
 TO intranet_ro;
 
+-- Vistas materializadas de dashboards (hoja Contabilidad — fase 2).
+-- DDL en 26_contabilidad_dashboards.sql ⇒ este archivo (24) hay que RE-EJECUTARLO
+-- después del 26, aunque numéricamente vaya antes. Mismo caso que ya ocurre con 23.
+-- Se conceden solo las AGREGACIONES: el hecho contable (4,37 M de líneas, con el
+-- detalle de cada asiento) y `dim_cuenta` siguen fuera del alcance del rol.
+GRANT SELECT ON
+    marts.mv_contab_cuenta_mes,       -- movimiento por empresa × mes × cuenta
+    marts.mv_balance_mes,             -- estado de situación financiera (densa)
+    marts.mv_pyg_mes,                 -- estado de resultados (grano N4)
+    marts.mv_flujo_mes,               -- flujo de efectivo (renglones agregables)
+    marts.mv_contab_tercero_mes,      -- comportamiento de clientes/proveedores
+    marts.mv_contab_centro_mes,       -- comportamiento por centro de costo
+    marts.mv_contab_canal_mes         -- comportamiento por canal
+TO intranet_ro;
+
+-- Semillas que la intranet necesita para armar los estados: el catálogo y el orden
+-- de los renglones derivados, y la tasa de renta por empresa. Van en la base y no
+-- en el código de la intranet para que no se dupliquen ni deriven.
+GRANT SELECT ON
+    marts.bi_pyg_renglon,
+    marts.bi_tasa_renta
+TO intranet_ro;
+
 -- Bitácora de refresco: la intranet la lee para invalidar su caché y mostrar
 -- "datos actualizados hace X". Solo SELECT (la escribe el ETL con su rol).
 GRANT SELECT ON marts.bi_mv_refresh TO intranet_ro;
@@ -94,7 +117,8 @@ GRANT SELECT ON
     marts.v_lk_tercero,
     marts.v_lk_producto,
     marts.v_lk_vendedor,
-    marts.v_lk_empresa
+    marts.v_lk_empresa,
+    marts.v_lk_cuenta        -- PUC + clasificación derivada (26_*.sql)
 TO intranet_ro;
 
 -- En PostgreSQL una VISTA accede a sus tablas base con los privilegios de su
@@ -111,5 +135,9 @@ REVOKE CREATE ON SCHEMA marts FROM intranet_ro;
 
 -- NOTA: NO se concede SELECT sobre marts.fact_movimiento_contable, dim_cuenta,
 -- v_ventas_bi, v_ventas_explotada ni las bi_* crudas. Cuando se construyan las
--- hojas de Nielsen / cuentas clave / cartera / contabilidad, se añadirán aquí
--- sus MV correspondientes (nunca las tablas base).
+-- hojas de Nielsen / cuentas clave / cartera, se añadirán aquí sus MV
+-- correspondientes (nunca las tablas base).
+--
+-- ⚠ La hoja de contabilidad NO fue una excepción a eso: se concedieron sus siete MV
+-- agregadas y `v_lk_cuenta`, pero el hecho contable y `dim_cuenta` siguen negados.
+-- Un tablero necesita totales por mes, no el detalle de cada asiento.

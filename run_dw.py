@@ -78,8 +78,11 @@ def main():
     #    intranet. Va AL FINAL para que recoja también lo que trajo el rebuild.
     #    Envuelto en try/except: si un tablero no se puede refrescar, el ETL
     #    igual terminó bien (y el fallo queda en marts.bi_mv_refresh).
+    #    `completa` decide si se refrescan también las MV de CONTABILIDAD: son de
+    #    grano mensual y en los ticks ligeros las líneas nuevas aún no tienen
+    #    `categoria`, así que refrescarlas cada 15 min no aporta y sí ensucia.
     try:
-        mvd.refrescar()
+        mvd.refrescar(completa=completa)
     except Exception:
         logging.exception("Fallo al refrescar las MV de dashboards")
 
