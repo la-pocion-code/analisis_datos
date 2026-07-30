@@ -442,3 +442,114 @@ datos viejos como frescos, sin que nada lo delate.
   faltan los códigos PUC exactos. También dan 0,00 hoy. Cuando el contador los
   indique, salen de `mv_balance_mes` sin MV nueva.
 - **Consolidado entre empresas**: requiere eliminación de intercompañía explícita.
+
+## 10. Fase 3 — hoja de VENTAS completa (2026-07-30)
+
+DDL: `sql/marts/27_ventas_dashboards_fase2.sql`. GRANTs y los dos lookups
+ampliados: `sql/marts/24_rol_intranet.sql` (**re-ejecutarlo después del 27**).
+
+La fase 1 (§2) cubrió solo el **Resumen**. Esta fase añade las 9 sub-páginas
+restantes del informe de Power BI más una nueva que allí no existe.
+
+### 10.1 Qué faltaba y de dónde sale
+
+| Hoja del informe | Lo que faltaba | Dónde está ahora |
+|---|---|---|
+| Facturación (diario) | nada | `mv_ventas_dia` (ya existía) |
+| Clientes | nada | `mv_ventas_mes` + `mv_ventas_kpi_mes` + `v_lk_producto` |
+| Canal | nada | `mv_ventas_mes` por `categoria` |
+| **Página web** | nada — es el Resumen filtrado | `categoria = 'SHOPIFY'` |
+| **Mayoristas** | la **zona** | `v_lk_tercero.zona` (nueva) |
+| **Línea y categoría** | **línea** y **categoría comercial** | `v_lk_producto.linea` / `.linea_categoria` (nuevas) |
+| **Kits** | unidades a nivel de kit | `mv_ventas_kit_mes` (nueva) |
+| **Productos** | fecha de lanzamiento y ciclo de vida | `bi_producto_lanzamiento` + `bi_ciclo_vida` (semillas) |
+| Nuevos vs recurrentes | primera compra por cliente | `mv_ventas_cliente_primera` (nueva) |
+| Tasa de recompra | conteo de clientes con ≥2 facturas | `mv_ventas_recompra` (nueva) |
+
+### 10.2 Mediciones (2026-07-29/30, solo lectura)
+
+```
+SHOPIFY 2026 ................ 6.774.546.547 = 12,53 %   ← «Pagina Web» del informe: $6,75 mil M ✔
+presupuesto por zona jun-26 .. 2.400.000.001            ← total del informe, exacto ✔
+  ANTIOQUIA 756.089.709 · OCCIDENTE 730.133.981 · CENTRO 471.282.251 · COSTA Y ORIENTE 442.494.060
+zona: cobertura del canal .... 100 % de MAYORISTA NV (las 4 zonas suman su total)
+bi_lineas por CÓDIGO ......... 35/35 filas, 94,43 % del valor 2026
+bi_lineas por NOMBRE ......... 16/35 filas, 39,90 %      ← el error fácil
+kits 2024/2025/2026 .......... 26.474 / 47.407 / 32.851 unidades de kit
+  las mismas desde la explotada .. 139.370 en 2026       ← INFLADO ×4,2
+recompra 2026 total / SHOPIFY . 14,07 % / 12,87 %        ← informe: 13,14 % en Shopify
+primera venta por producto ..... 2024-06 → 2026-06 (38 productos)
+```
+
+Cifras de **2025 (año cerrado)**, estables para fijar en tests:
+
+```
+venta 2025 ......... 82.417.391.917      unidades 2025 .... 4.044.256
+por línea .......... TRADICIONAL 31.410.435.978 · TONGOLÉ 23.447.325.187 ·
+                     POCION PLUS 10.686.380.776 · DUTONIC 5.698.663.004 · B8 3.108.030.225
+kits 2025 .......... 47.407 unidades · 6.269.015.175 (idéntico por las dos vías)
+```
+
+⚠ **No fijar cifras de 2026 en un test**: el ETL corre cada 15 minutos y el año en
+curso se mueve. Entre dos mediciones del mismo día MAYORISTA NV pasó de
+18.126.483.426 a 18.135.911.362 y los kits de 32.851 a 32.904. Para tests, usar
+2025 o invariantes estructurales («las 4 zonas suman el total del canal»).
+
+### 10.3 Reglas exactas (las que es fácil equivocar)
+
+- **`bi_lineas` se une por el CÓDIGO de los corchetes**, no por el nombre:
+  `upper(btrim(substring(bl.producto FROM '\[(.*?)\]'))) = upper(btrim(p.codigo))`.
+  El nombre del Excel no coincide letra a letra con `dim_producto.nombre`.
+- **Los 5 productos sin línea son reales, no un fallo del join**: PCN32, PCN33,
+  PCN34, PCN35 y PCN36 (CONTROL CASPA y ANTICAÍDA), $3.009 M = 5,57 % de 2026.
+  **Faltan en `LINEAS Y CATEGORIAS.xlsx`** — al añadirlos, la cobertura sube sola.
+- **Las unidades de kit se leen de `v_ventas_producto`**, no de `v_ventas_bi` /
+  `v_ventas_explotada`: ahí un kit aparece una vez por componente con la *misma*
+  `cantidad_neta`, así que sumarla infla ×4,2. El **valor** sí coincide por las dos
+  vías (la explosión prorratea): verificado, 6.269.015.175 en 2025.
+- **`mv_ventas_recompra` tiene columna `nivel` y sus niveles NO se suman.** Un
+  `COUNT(DISTINCT factura_id)` por cliente no se rueda hacia arriba: quien compró el
+  producto A una vez y el B una vez tiene «1 vez» en cada producto y «2 veces» en el
+  total. Medido en 2026: los niveles `canal` suman 43.741 clientes y el nivel `total`
+  da 43.557. Siempre `WHERE nivel = '…'`.
+- **`mv_ventas_recompra` no lleva empresa a propósito**: un cliente que recompra lo
+  hace sin importar qué sociedad facturó. Partirlo por empresa contaría dos veces al
+  que compró en las dos.
+- **`v_lk_tercero.zona` es la zonificación del canal mayorista** aplicada al
+  departamento. Queda poblada para casi cualquier cliente colombiano (~97,8 %), así
+  que sirve como corte geográfico en otros canales — pero es la regional del
+  mayorista, no una propia de cada canal. `'sin zona'` (literal) = departamento
+  extranjero mapeado; `NULL` = sin departamento.
+
+### 10.4 Lo que NO cuadra con Power BI, y por qué está bien
+
+- **Kits: −6,3 %** (106.732 unidades históricas contra 113.862). `v_ventas_producto`
+  excluye `es_reverso`, las anulaciones reales. Por kit la diferencia es del 0,1 %
+  (PCNKIT12: 15.137 vs 15.113). Mismo criterio ya fijado para el Resumen.
+- **Recompra en Shopify: 12,87 % contra 13,14 %.** El informe va por fecha de
+  factura e incluye reversos.
+- **Penetración de portafolio**: en Power BI da 103 %, o sea que su denominador está
+  fijo. Aquí se define como productos vendidos / portafolio comercial activo (46
+  productos no-kit con código PCN/KD/TNG/B8) y por tanto no puede pasar de 100 %.
+
+### 10.5 Datos que dependen del negocio
+
+- **`bi_producto_lanzamiento`** viene sembrada con las **17 fechas legibles** en la
+  captura del informe. Faltan los demás productos y los 39 kits. Sin fila, la
+  intranet muestra «sin fecha de lanzamiento» en lugar de un ciclo de vida
+  inventado. **No derivar la fecha con `MIN(fecha_venta)`**: la historia arranca en
+  2024-06 y a [PCN07] (lanzado 2021-09) lo movería de «Clásico» a «Maduro»,
+  cambiando su meta del 2 % al 5 % sin que nada lo delate.
+- **`bi_ciclo_vida`**: las metas (20 / 5 / 2 %) se leen literalmente del informe,
+  pero **los cortes en meses (18 y 36) son una inferencia** de los casos visibles
+  (antigüedad 12 → Crecimiento, 25 → Maduro, 37+ → Clásico). Están en tabla para
+  que el negocio los corrija sin desplegar.
+
+### 10.6 Fuera de alcance de esta fase
+
+- **Margen bruto** y **penetración/cobertura** son de **otro** `.pbix` (su menú es
+  Ventas / Margen / Cartera). El margen necesita costo por producto, que el DW **no
+  tiene**: `dim_producto` no trae `standard_price`. Solo hay margen por la vía
+  contable (`mv_contab_canal_mes`, ingresos grupo 41 − costos grupo 61).
+- **Cartera** sigue pendiente como hoja propia (§7).
+- **Clientes Elite** y **Mayoristas2**: no hay captura de referencia.

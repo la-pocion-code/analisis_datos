@@ -240,6 +240,16 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `dim_cuenta` —no las 5 que decía el plan— como **VISTA** (`v_dim_cuenta_bi`), no como columnas
   materializadas: el `upsert` del ETL no las mantendría y cada cuenta nueva entraría en NULL.
   Detalle en la sección de dashboards y en `docs/dashboards_intranet.md` §9.
+- ✅ HECHO (2026-07-30): **hoja de VENTAS completa** — `27_ventas_dashboards_fase2.sql` aplicado
+  (`mv_ventas_kit_mes`, `mv_ventas_cliente_primera`, `mv_ventas_recompra` + las semillas
+  `bi_producto_lanzamiento` y `bi_ciclo_vida`), `v_lk_producto` con `linea`/`linea_categoria` y
+  `v_lk_tercero` con `zona` en `24_rol_intranet.sql`, y las 3 MV en `MVS_VENTAS`.
+  ⚠ Tres trampas medidas, todas en `docs/dashboards_intranet.md` §10: `bi_lineas` se une por el
+  **código** de los corchetes (94,43 % del valor) y no por el nombre (39,90 %); las unidades de kit
+  salen de `v_ventas_producto` y no de la vista explotada (que las infla ×4,2); y
+  `mv_ventas_recompra` lleva columna `nivel` porque sus niveles **no se suman**.
+  ⏳ Falta dato del negocio: fechas de lanzamiento restantes, confirmar los cortes 18/36 meses, y
+  **añadir PCN32-36 al Excel de líneas**.
 - DQ: cuentas usadas con `clase_codigo`/`grupo_codigo` nulo o inesperado.
 - **Ventas desde el DW (proyecto por fases):**
   - ✅ Fase 1: `v_ventas_producto` (netas, grano producto, comercial). Aplicada y validada (empresa 8 2026).

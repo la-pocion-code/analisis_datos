@@ -26,6 +26,10 @@
 -- Vistas de lookup: solo columnas descriptivas, sin datos personales.
 -- ════════════════════════════════════════════════════════════════════════════
 
+-- ⚠ Las columnas nuevas se AÑADEN AL FINAL. `CREATE OR REPLACE VIEW` puede
+-- agregar columnas al final pero **no puede quitarlas ni reordenarlas**: insertar
+-- una en medio hace fallar la re-ejecución con «cannot change name of view column».
+-- Y este archivo se re-ejecuta cada vez que se reconstruyen las MV.
 CREATE OR REPLACE VIEW marts.v_lk_tercero AS
 SELECT t.tercero_id,
        t.nombre,
@@ -33,12 +37,34 @@ SELECT t.tercero_id,
        t.ciudad,
        t.departamento,
        t.pais,
-       t.cliente_padre
-FROM marts.dim_tercero t;
+       t.cliente_padre,
+       -- Zona comercial por departamento (fase 2 de la hoja de Ventas).
+       -- ⚠ `map_zona` es la ZONIFICACIÓN DEL CANAL MAYORISTA: sus 37 filas son
+       -- todas de MAYORISTA NV. Pero el mapeo es departamento → zona, así que aquí
+       -- queda poblada para CUALQUIER cliente con departamento colombiano (~97,8 %
+       -- de los terceros; el resto no tiene departamento). Dentro del mayorista cubre el
+       -- 100 % del valor —las 4 zonas suman exactamente su total—; usarla en otro
+       -- canal es legítimo como corte geográfico, pero es la zonificación del
+       -- mayorista, no una regional propia de ese canal.
+       -- Los departamentos extranjeros (California/US, Guayas/EC, Lima/PE,
+       -- Distrito Nacional/DO) están mapeados a la etiqueta literal 'sin zona';
+       -- NULL es «departamento sin mapear o vacío».
+       --
+       -- No se usa `map_zona_cundinamarca`: ese mapeo parte Cundinamarca en BOGOTA
+       -- NORTE / BOGOTA SUR, una sub-zona más fina que las 4 del informe, y
+       -- `map_zona` ya resuelve Cundinamarca → CENTRO. Mezclarlos duplicaría filas.
+       --
+       -- El JOIN no multiplica: se verificó que ningún departamento tiene dos zonas.
+       mz.zona                                                  AS zona
+FROM marts.dim_tercero t
+LEFT JOIN marts.map_zona mz
+       ON btrim(upper(mz.departamento)) = btrim(upper(t.departamento))
+      AND btrim(upper(mz.categoria))    = 'MAYORISTA NV';
 
 COMMENT ON VIEW marts.v_lk_tercero IS
   'Lookup de clientes para los tableros: solo lo descriptivo. Excluye a '
-  'propósito identificacion (NIT), telefono, email y etiqueta.';
+  'propósito identificacion (NIT), telefono, email y etiqueta. `zona` es la '
+  'zonificación del canal MAYORISTA NV aplicada al departamento del cliente.';
 
 CREATE OR REPLACE VIEW marts.v_lk_producto AS
 SELECT p.producto_id,
@@ -47,12 +73,31 @@ SELECT p.producto_id,
        p.nombre_comercial,
        COALESCE(NULLIF(btrim(p.nombre_comercial), ''), p.nombre) AS etiqueta,
        p.categoria,
-       p.es_kit
-FROM marts.dim_producto p;
+       p.es_kit,
+       -- Línea y categoría COMERCIALES (fase 2 de la hoja de Ventas). Salen de
+       -- `bi_lineas`, que es el Excel «LINEAS Y CATEGORIAS.xlsx».
+       --
+       -- ⚠ EL JOIN VA POR EL CÓDIGO DE LOS CORCHETES, no por el nombre.
+       -- `bi_lineas.producto` viene con el formato «[PCN01] TRATAMIENTO LA POCION»,
+       -- y ese nombre NO coincide letra a letra con `dim_producto.nombre`. Medido:
+       --     por código  → 35/35 filas casan, 94,43 % del valor de 2026
+       --     por nombre  → 16/35 filas casan, 39,90 %   ← el error fácil
+       -- Con el join malo la mayor parte del negocio cae en «(sin línea)» y el
+       -- tablero parece tener un hueco de datos que no existe.
+       --
+       -- El 5,57 % restante son 5 productos reales que FALTAN en el Excel:
+       -- PCN32/33/34/35/36 (CONTROL CASPA y ANTICAÍDA). Se ven como «(sin línea)»
+       -- hasta que el negocio los añada; la intranet publica la cobertura.
+       bl.linea                                                 AS linea,
+       bl.categoria                                             AS linea_categoria
+FROM marts.dim_producto p
+LEFT JOIN marts.bi_lineas bl
+       ON upper(btrim(substring(bl.producto FROM '\[(.*?)\]'))) = upper(btrim(p.codigo));
 
 COMMENT ON VIEW marts.v_lk_producto IS
   'Lookup de productos para los tableros. `etiqueta` = nombre_comercial si '
-  'existe, si no el nombre técnico (es lo que se muestra en los gráficos).';
+  'existe, si no el nombre técnico (es lo que se muestra en los gráficos). '
+  '`linea`/`linea_categoria` vienen de bi_lineas por CÓDIGO (94,4 % del valor).';
 
 CREATE OR REPLACE VIEW marts.v_lk_vendedor AS
 SELECT v.vendedor_id, v.nombre
@@ -101,12 +146,23 @@ GRANT SELECT ON
     marts.mv_contab_canal_mes         -- comportamiento por canal
 TO intranet_ro;
 
+-- Vistas materializadas de dashboards (hoja Ventas — fase 2).
+-- DDL en 27_ventas_dashboards_fase2.sql ⇒ mismo caso que 23 y 26: re-ejecutar ESTE
+-- archivo después del 27.
+GRANT SELECT ON
+    marts.mv_ventas_kit_mes,          -- unidades y valor a nivel de KIT
+    marts.mv_ventas_cliente_primera,  -- primera/última compra por cliente
+    marts.mv_ventas_recompra          -- tasa de recompra por nivel
+TO intranet_ro;
+
 -- Semillas que la intranet necesita para armar los estados: el catálogo y el orden
 -- de los renglones derivados, y la tasa de renta por empresa. Van en la base y no
 -- en el código de la intranet para que no se dupliquen ni deriven.
 GRANT SELECT ON
     marts.bi_pyg_renglon,
-    marts.bi_tasa_renta
+    marts.bi_tasa_renta,
+    marts.bi_producto_lanzamiento,    -- fecha de lanzamiento (dato de negocio)
+    marts.bi_ciclo_vida               -- tramos de ciclo de vida y meta de crecimiento
 TO intranet_ro;
 
 -- Bitácora de refresco: la intranet la lee para invalidar su caché y mostrar
@@ -135,9 +191,18 @@ TO intranet_ro;
 REVOKE CREATE ON SCHEMA marts FROM intranet_ro;
 
 -- NOTA: NO se concede SELECT sobre marts.fact_movimiento_contable, dim_cuenta,
--- v_ventas_bi, v_ventas_explotada ni las bi_* crudas. Cuando se construyan las
+-- dim_tercero, dim_producto, v_ventas_bi, v_ventas_explotada, v_ventas_producto,
+-- v_cartera ni las bi_* CRUDAS (bi_nielsen, bi_lineas, bi_presupuesto,
+-- bi_cuentas_clave*, bi_cartera, bi_cliente_credito…). Cuando se construyan las
 -- hojas de Nielsen / cuentas clave / cartera, se añadirán aquí sus MV
 -- correspondientes (nunca las tablas base).
+--
+-- ⚠ Las cinco `bi_*` que SÍ se conceden son SEMILLAS CURADAS, no volcados de Excel:
+-- bi_pyg_renglon, bi_tasa_renta, bi_producto_lanzamiento, bi_ciclo_vida y
+-- bi_mv_refresh. Son catálogos pequeños que la intranet necesita para armar sus
+-- estados y que no tendría sentido duplicar en código Python. `bi_lineas` es el
+-- contraejemplo: es el Excel crudo, y la intranet lo ve solo a través de
+-- `v_lk_producto`, que además ya resuelve el join por código.
 --
 -- ⚠ La hoja de contabilidad NO fue una excepción a eso: se concedieron sus siete MV
 -- agregadas y `v_lk_cuenta`, pero el hecho contable y `dim_cuenta` siguen negados.

@@ -36,12 +36,20 @@ from classes.db_loader import DBLoader
 # ⚠ `mv_ventas_presupuesto_mes` va SIEMPRE AL FINAL: lee de mv_ventas_mes y de
 # mv_presupuesto_mes, así que necesita que ambas estén ya refrescadas o mostraría el
 # cruce contra datos viejos.
+#
+# Las tres de la fase 2 (sql/marts/27_ventas_dashboards_fase2.sql) son
+# INDEPENDIENTES: `mv_ventas_kit_mes` lee de v_ventas_producto y las otras dos de
+# v_ventas_bi, ninguna de otra MV. Van después de las de fase 1 solo por coste: si
+# el tick se queda sin tiempo, es mejor perder la recompra que el Resumen.
 MVS_VENTAS = (
     "mv_presupuesto_mes",
     "mv_ventas_kpi_mes",
     "mv_ventas_dia",
     "mv_ventas_mes",
     "mv_ventas_presupuesto_mes",
+    "mv_ventas_kit_mes",          # fase 2 — unidades a nivel de kit
+    "mv_ventas_cliente_primera",  # fase 2 — primera/última compra por cliente
+    "mv_ventas_recompra",         # fase 2 — tasa de recompra (la más cara de las 3)
 )
 
 # ── CONTABILIDAD (sql/marts/26_contabilidad_dashboards.sql) — solo en el tick :00 ─

@@ -389,8 +389,36 @@ definidos por el admin). **Contrato de datos completo:
   ⚠ **El orden de `MVS_CONTAB` no es negociable**: `mv_contab_cuenta_mes` va primera y tres derivan
   de ella; al revés se servirían datos del refresco anterior con un `refreshed_at` nuevo, y **nada lo
   delataría**.
+- **`sql/marts/27_ventas_dashboards_fase2.sql`** (fase 3 = las **9 sub-páginas restantes de Ventas**
+  + una nueva que no existe en Power BI, aplicada 2026-07-30, 20,6 s). ⚠ **Re-ejecutar
+  `24_rol_intranet.sql` DESPUÉS.** Añade `mv_ventas_kit_mes` (800 filas), `mv_ventas_cliente_primera`
+  (120.978) y `mv_ventas_recompra` (1.075), más dos semillas de negocio
+  (`bi_producto_lanzamiento`, `bi_ciclo_vida`). Los dos lookups crecieron **en el 24**, que es su
+  casa: `v_lk_producto` + `linea`/`linea_categoria`, `v_lk_tercero` + `zona`.
+  Contrato completo y todas las mediciones en `docs/dashboards_intranet.md` §10.
+  - ⚠ **`bi_lineas` se une por el CÓDIGO de los corchetes, no por el nombre**: por código casan
+    35/35 filas y cubren el **94,43 %** del valor 2026; por nombre solo 16/35 y **39,90 %**. Con el
+    join malo el negocio cae en «(sin línea)» y parece un hueco de datos que no existe. Los 5
+    productos que sí faltan son reales (PCN32-36, CONTROL CASPA/ANTICAÍDA) y hay que **añadirlos al
+    Excel `LINEAS Y CATEGORIAS.xlsx`**.
+  - ⚠ **Las unidades de kit salen de `v_ventas_producto`, NO de la vista explotada**: allí un kit
+    aparece una vez por componente con la *misma* `cantidad_neta` → 139.370 en 2026 contra las
+    **32.851** reales (×4,2). El **valor** sí coincide por las dos vías (6.269.015.175 en 2025).
+  - ⚠ **`mv_ventas_recompra` lleva columna `nivel` y sus niveles NO se suman**: un
+    `COUNT(DISTINCT factura_id)` por cliente no se rueda hacia arriba (comprar A una vez y B una vez
+    = «1 vez» por producto pero «2 veces» en total). Medido: `canal` suma 43.741 clientes y `total`
+    da 43.557. Y **no lleva empresa a propósito**.
+  - ⚠ **La fecha de lanzamiento NO es derivable** y no se debe sacar de `MIN(fecha_venta)`: la
+    historia arranca en 2024-06 y el informe muestra lanzamientos de 2021. Sembradas 17 fechas
+    legibles de la captura; el resto queda sin fila y la intranet dice «sin fecha de lanzamiento».
+  - ⚠ **No fijar cifras de 2026 en un test**: el ETL corre cada 15 min. En el mismo día MAYORISTA NV
+    pasó de 18.126.483.426 a 18.135.911.362. Usar **2025** (cerrado: venta 82.417.391.917) o
+    invariantes («las 4 zonas suman el total del canal»).
 - **Fases siguientes** (cada hoja añade sus MV aquí + su `GRANT`): Nielsen → cuentas clave/KAM →
   cartera (portar los buckets de mora que hoy calcula Power Query). Contabilidad y Ventas ya están.
+  ⚠ **El margen bruto NO se puede hacer por la vía de ventas**: `dim_producto` no tiene
+  `standard_price` ni ningún costo. Solo existe por la vía contable (`mv_contab_canal_mes`:
+  ingresos grupo 41 − costos grupo 61).
   ⚠ Tres KPIs de contabilidad quedaron **fuera del v1 por falta de fuente**: el **desperdicio de
   materia prima no es derivable** (el DW no extrae `stock.move` ni manufactura) y los dos de
   **anticipos** necesitan que contabilidad indique el código PUC exacto. En Power BI los tres dan
@@ -462,6 +490,16 @@ definidos por el admin). **Contrato de datos completo:
   `dim_cuenta` —no las 5 que decía el plan— como **VISTA** (`v_dim_cuenta_bi`), no como columnas
   materializadas: el `upsert` del ETL no las mantendría y cada cuenta nueva entraría en NULL.
   Detalle en la sección de dashboards y en `docs/dashboards_intranet.md` §9.
+- ✅ HECHO (2026-07-30): **hoja de VENTAS completa** — `27_ventas_dashboards_fase2.sql` aplicado
+  (`mv_ventas_kit_mes`, `mv_ventas_cliente_primera`, `mv_ventas_recompra` + las semillas
+  `bi_producto_lanzamiento` y `bi_ciclo_vida`), `v_lk_producto` con `linea`/`linea_categoria` y
+  `v_lk_tercero` con `zona` en `24_rol_intranet.sql`, y las 3 MV en `MVS_VENTAS`. Cuadres verificados:
+  SHOPIFY 2026 = 6.774.546.547 (= los «$6,75 mil M» de la hoja *Pagina Web*), presupuesto por zona
+  de junio = 2.400.000.001 (= el total del informe, exacto), valor de kits idéntico por las dos vías.
+  Detalle y todas las mediciones en `docs/dashboards_intranet.md` §10.
+  ⏳ **Le falta dato del negocio**: las fechas de lanzamiento de los productos y kits que no están en
+  la captura, y confirmar los cortes 18/36 meses de `bi_ciclo_vida`. Y **añadir PCN32-36 al Excel de
+  líneas** (hoy son el 5,57 % del valor cayendo en «(sin línea)»).
 - DQ: cuentas usadas con `clase_codigo`/`grupo_codigo` nulo o inesperado.
 - **Ventas desde el DW (proyecto por fases):**
   - ✅ Fase 1: `v_ventas_producto` (netas, grano producto, comercial). Aplicada y validada (empresa 8 2026).
