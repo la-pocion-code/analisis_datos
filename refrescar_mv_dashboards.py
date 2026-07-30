@@ -73,7 +73,20 @@ MVS_CONTAB = (
     "mv_contab_canal_mes",       # independiente
 )
 
-MVS = MVS_VENTAS + MVS_CONTAB
+
+# ── NIELSEN (sql/marts/28_nielsen_dashboards.sql) — solo en el tick :00 ─────────
+# El panel de Nielsen es SEMANAL y llega por un Excel que se carga aparte: refrescarlo
+# cada 15 minutos no puede aportar un dato nuevo, solo escanear 573.013 filas de balde.
+#
+# ⚠ `mv_nielsen_item_semana` es casi 1:1 con el origen y va DESPUÉS de la agregada, que
+# es la que usan todos los paneles: si el tick se queda sin tiempo, es mejor perder el
+# ranking de productos que el share.
+MVS_NIELSEN = (
+    "mv_nielsen_semana",
+    "mv_nielsen_item_semana",
+)
+
+MVS = MVS_VENTAS + MVS_CONTAB + MVS_NIELSEN
 
 
 def _registrar(cur, mv: str, filas, duracion_ms: int, ok: bool, error: str | None) -> None:

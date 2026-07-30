@@ -250,6 +250,21 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `mv_ventas_recompra` lleva columna `nivel` porque sus niveles **no se suman**.
   ⏳ Falta dato del negocio: fechas de lanzamiento restantes, confirmar los cortes 18/36 meses, y
   **añadir PCN32-36 al Excel de líneas**.
+- ✅ HECHO (2026-07-30 b): **hoja de NIELSEN** — `28_nielsen_dashboards.sql` aplicado
+  (`mv_nielsen_semana` 158.979 filas + `mv_nielsen_item_semana` 573.013 + las semillas
+  `bi_nielsen_market` y `bi_nielsen_marca_propia`), `GRANT` en `24_rol_intranet.sql`, y
+  `MVS_NIELSEN` solo en el tick `:00` (el dato es semanal). Cuadra al segundo decimal con el
+  informe. ⚠ Seis trampas medidas, todas en `docs/dashboards_intranet.md` §11: los 4 markets
+  **no se suman** (el total del informe está inflado ~27 %), Supermercados no trae valor,
+  la marca propia solo está medida en 2 universos y desde dic-2024, `dist_num` es un %
+  por ítem, el UPC no casa con ningún código propio, y el share por mes del informe
+  mezcla años (2,17 % contra el 4,56 % real).
+- ✅ HECHO (2026-07-30 c): **la línea de producto pasa de `bi_lineas` a ODOO**. Cobertura del
+  94,43 % al **100,000 %** en los tres años, y aparece la «Línea Control Caspa» que al Excel le
+  faltaba (PCN32/33/36). ⚠ Se retira el pendiente de «añadir PCN32-36 al Excel»: ya no aplica.
+  ⚠ Desapareció el eje «categoría de producto»: solo existía en el Excel y el árbol de Odoo no
+  llega a ese detalle. Si el negocio quiere recuperarlo, hay que añadir un nivel al árbol de
+  Odoo (o etiquetas de producto) y que el ETL las traiga.
 - DQ: cuentas usadas con `clase_codigo`/`grupo_codigo` nulo o inesperado.
 - **Ventas desde el DW (proyecto por fases):**
   - ✅ Fase 1: `v_ventas_producto` (netas, grano producto, comercial). Aplicada y validada (empresa 8 2026).

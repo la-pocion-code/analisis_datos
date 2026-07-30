@@ -414,8 +414,40 @@ definidos por el admin). **Contrato de datos completo:
   - ⚠ **No fijar cifras de 2026 en un test**: el ETL corre cada 15 min. En el mismo día MAYORISTA NV
     pasó de 18.126.483.426 a 18.135.911.362. Usar **2025** (cerrado: venta 82.417.391.917) o
     invariantes («las 4 zonas suman el total del canal»).
-- **Fases siguientes** (cada hoja añade sus MV aquí + su `GRANT`): Nielsen → cuentas clave/KAM →
-  cartera (portar los buckets de mora que hoy calcula Power Query). Contabilidad y Ventas ya están.
+- **`sql/marts/28_nielsen_dashboards.sql`** (fase 4 = hoja **Nielsen**, aplicada 2026-07-30, 12 s).
+  ⚠ **Re-ejecutar `24_rol_intranet.sql` DESPUÉS.** `mv_nielsen_semana` (158.979 filas, agregada) +
+  `mv_nielsen_item_semana` (573.013, con `dist_num`) + las semillas `bi_nielsen_market` y
+  `bi_nielsen_marca_propia`. `MVS_NIELSEN` va **solo en el tick `:00`**: el dato es semanal.
+  `bi_nielsen` crudo **sigue negado**. Contrato y todas las mediciones en
+  `docs/dashboards_intranet.md` §11. Cuadra al segundo decimal con el informe (farmacias:
+  474.124.569.959 · 18.586.406 und · 207 marcas · 2.589 productos · las 3 categorías exactas).
+  - ⚠ **LOS 4 MARKETS NO SE SUMAN**: `NEW TOTAL COLOMBIA` (1.998.446.266.413) ya contiene a los
+    otros. El «2.549 mil M» de la hoja *Comparar* del informe es exactamente la suma de los
+    cuatro → el mercado **inflado ~27 %**. La intranet obliga a elegir uno.
+  - ⚠ **`Total Colombia Supermercados` no trae valor NI unidades** (96.675 filas, el 100 % de
+    ese market): solo sirve para distribución.
+  - ⚠ **La marca propia solo está medida en FARMACIAS (desde 2024-12-15) y ECOMMERCE (desde
+    2024-12-22)**. En el total nacional no aparece. Un 0 % ahí es «no nos miden», no «no
+    vendemos» — y los 4 universos se exponen igual porque la hoja también sirve para estudiar
+    mercados antes de entrar.
+  - ⚠ **`dist_num` es un porcentaje POR ÍTEM** (0,016 a 69,47), no un share: la suma por
+    categoría/semana da 1.814 %. Solo vive en la MV de ítem.
+  - ⚠ **El UPC de Nielsen no casa con ningún código propio** (0 de 18): es *sell-out* de mercado
+    contra el *sell-in* propio. La hoja es autónoma y **no se cruza** con `mv_ventas_*`.
+  - ⚠ **El share por mes del informe mezcla años**: POCION sale con 2,17 % en enero cuando su
+    enero-2026 real es 4,56 %. La intranet usa año-mes por defecto.
+- ⚠ **LA LÍNEA DE PRODUCTO YA NO SALE DE `bi_lineas`** (2026-07-30, decisión de William). Sale
+  del **árbol de categorías de Odoo** (`dim_producto.categoria`), normalizado en
+  `v_lk_producto.linea`. Medido: Odoo cubre el **100,000 %** del valor en 2024, 2025 y 2026
+  contra el 94,43 % del Excel, y trae la «Línea Control Caspa» que al Excel le falta entera
+  (PCN32/33/36). **`bi_lineas` ya no la mira ningún objeto concedido a la intranet**; no se borra,
+  pero antes de volver a engancharla leer el comentario largo de `v_lk_producto`.
+  ⚠ Con el cambio **desapareció la «categoría de producto»** (SHAMPOO/MASCARILLA/…): solo existía
+  en el Excel, el árbol de Odoo tiene 3 niveles y el ETL solo lee `id, default_code, name,
+  categ_id` de `product.product`. **No deducirla del nombre**: un renombre le cambiaría la
+  categoría sola. Vuelve si se añade un nivel al árbol de Odoo o etiquetas de producto.
+- **Fases siguientes** (cada hoja añade sus MV aquí + su `GRANT`): cuentas clave/KAM → cartera
+  (portar los buckets de mora que hoy calcula Power Query). Contabilidad, Ventas y Nielsen ya están.
   ⚠ **El margen bruto NO se puede hacer por la vía de ventas**: `dim_producto` no tiene
   `standard_price` ni ningún costo. Solo existe por la vía contable (`mv_contab_canal_mes`:
   ingresos grupo 41 − costos grupo 61).
@@ -498,8 +530,23 @@ definidos por el admin). **Contrato de datos completo:
   de junio = 2.400.000.001 (= el total del informe, exacto), valor de kits idéntico por las dos vías.
   Detalle y todas las mediciones en `docs/dashboards_intranet.md` §10.
   ⏳ **Le falta dato del negocio**: las fechas de lanzamiento de los productos y kits que no están en
-  la captura, y confirmar los cortes 18/36 meses de `bi_ciclo_vida`. Y **añadir PCN32-36 al Excel de
-  líneas** (hoy son el 5,57 % del valor cayendo en «(sin línea)»).
+  la captura, y confirmar los cortes 18/36 meses de `bi_ciclo_vida`.
+  (Lo de «añadir PCN32-36 al Excel de líneas» ya NO aplica: la línea sale de Odoo y los cubre.)
+- ✅ HECHO (2026-07-30 b): **hoja de NIELSEN** — `28_nielsen_dashboards.sql` aplicado
+  (`mv_nielsen_semana` 158.979 filas + `mv_nielsen_item_semana` 573.013 + las semillas
+  `bi_nielsen_market` y `bi_nielsen_marca_propia`), `GRANT` en `24_rol_intranet.sql`, y
+  `MVS_NIELSEN` solo en el tick `:00` (el dato es semanal). Cuadra al segundo decimal con el
+  informe. ⚠ Seis trampas medidas, todas en `docs/dashboards_intranet.md` §11: los 4 markets
+  **no se suman** (el total del informe está inflado ~27 %), Supermercados no trae valor,
+  la marca propia solo está medida en 2 universos y desde dic-2024, `dist_num` es un %
+  por ítem, el UPC no casa con ningún código propio, y el share por mes del informe
+  mezcla años (2,17 % contra el 4,56 % real).
+- ✅ HECHO (2026-07-30 c): **la línea de producto pasa de `bi_lineas` a ODOO**. Cobertura del
+  94,43 % al **100,000 %** en los tres años, y aparece la «Línea Control Caspa» que al Excel le
+  faltaba (PCN32/33/36). ⚠ Se retira el pendiente de «añadir PCN32-36 al Excel»: ya no aplica.
+  ⚠ Desapareció el eje «categoría de producto»: solo existía en el Excel y el árbol de Odoo no
+  llega a ese detalle. Si el negocio quiere recuperarlo, hay que añadir un nivel al árbol de
+  Odoo (o etiquetas de producto) y que el ETL las traiga.
 - DQ: cuentas usadas con `clase_codigo`/`grupo_codigo` nulo o inesperado.
 - **Ventas desde el DW (proyecto por fases):**
   - ✅ Fase 1: `v_ventas_producto` (netas, grano producto, comercial). Aplicada y validada (empresa 8 2026).

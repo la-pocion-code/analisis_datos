@@ -26,10 +26,11 @@
 -- Vistas de lookup: solo columnas descriptivas, sin datos personales.
 -- ════════════════════════════════════════════════════════════════════════════
 
--- ⚠ Las columnas nuevas se AÑADEN AL FINAL. `CREATE OR REPLACE VIEW` puede
--- agregar columnas al final pero **no puede quitarlas ni reordenarlas**: insertar
--- una en medio hace fallar la re-ejecución con «cannot change name of view column».
--- Y este archivo se re-ejecuta cada vez que se reconstruyen las MV.
+-- ⚠ Con `CREATE OR REPLACE VIEW` las columnas nuevas se AÑADEN AL FINAL: se pueden
+-- agregar al final pero **no quitar ni reordenar** — insertar una en medio hace
+-- fallar la re-ejecución con «cannot change name of view column», y este archivo se
+-- re-ejecuta cada vez que se reconstruyen las MV. Para QUITAR una columna hay que
+-- hacer DROP + CREATE, como en `v_lk_producto` más abajo.
 CREATE OR REPLACE VIEW marts.v_lk_tercero AS
 SELECT t.tercero_id,
        t.nombre,
@@ -66,7 +67,14 @@ COMMENT ON VIEW marts.v_lk_tercero IS
   'propósito identificacion (NIT), telefono, email y etiqueta. `zona` es la '
   'zonificación del canal MAYORISTA NV aplicada al departamento del cliente.';
 
-CREATE OR REPLACE VIEW marts.v_lk_producto AS
+-- ⚠ DROP + CREATE y no `CREATE OR REPLACE`: esta vista **perdió** la columna
+-- `linea_categoria` (2026-07-30) y `CREATE OR REPLACE VIEW` puede añadir columnas al
+-- final pero **no quitarlas** — fallaría con «cannot drop columns from view». Va sin
+-- CASCADE a propósito: si algún día alguien crea algo que dependa de este lookup,
+-- preferimos que el script falle a que se lo lleve por delante en silencio.
+DROP VIEW IF EXISTS marts.v_lk_producto;
+
+CREATE VIEW marts.v_lk_producto AS
 SELECT p.producto_id,
        p.codigo,
        p.nombre,
@@ -74,30 +82,55 @@ SELECT p.producto_id,
        COALESCE(NULLIF(btrim(p.nombre_comercial), ''), p.nombre) AS etiqueta,
        p.categoria,
        p.es_kit,
-       -- Línea y categoría COMERCIALES (fase 2 de la hoja de Ventas). Salen de
-       -- `bi_lineas`, que es el Excel «LINEAS Y CATEGORIAS.xlsx».
+       -- ── LÍNEA COMERCIAL: sale del ÁRBOL DE CATEGORÍAS DE ODOO ──────────────
+       -- Decisión de William (2026-07-30): la fuente de verdad es Odoo, no un Excel.
+       -- Y al medirlo, además de ser la fuente correcta es objetivamente mejor:
        --
-       -- ⚠ EL JOIN VA POR EL CÓDIGO DE LOS CORCHETES, no por el nombre.
-       -- `bi_lineas.producto` viene con el formato «[PCN01] TRATAMIENTO LA POCION»,
-       -- y ese nombre NO coincide letra a letra con `dim_producto.nombre`. Medido:
-       --     por código  → 35/35 filas casan, 94,43 % del valor de 2026
-       --     por nombre  → 16/35 filas casan, 39,90 %   ← el error fácil
-       -- Con el join malo la mayor parte del negocio cae en «(sin línea)» y el
-       -- tablero parece tener un hueco de datos que no existe.
+       --                            bi_lineas (Excel)   dim_producto.categoria (Odoo)
+       --   cobertura del valor .....     94,43 %              100,000 %  (2024/25/26)
+       --   productos sin línea .....       5                     0
        --
-       -- El 5,57 % restante son 5 productos reales que FALTAN en el Excel:
-       -- PCN32/33/34/35/36 (CONTROL CASPA y ANTICAÍDA). Se ven como «(sin línea)»
-       -- hasta que el negocio los añada; la intranet publica la cobertura.
-       bl.linea                                                 AS linea,
-       bl.categoria                                             AS linea_categoria
-FROM marts.dim_producto p
-LEFT JOIN marts.bi_lineas bl
-       ON upper(btrim(substring(bl.producto FROM '\[(.*?)\]'))) = upper(btrim(p.codigo));
+       -- Los 5 que el Excel no tenía sí están en Odoo: PCN32/33/36 en «Línea Control
+       -- Caspa» —una línea entera que al Excel le falta— y PCN34/35 en «Anti Caída».
+       -- Las cifras coinciden: Reparación da 31.410.481.087 en 2025 contra los
+       -- 31.410.435.978 que daba TRADICIONAL en el Excel.
+       --
+       -- ⚠ **NO volver a `bi_lineas`.** Su única ventaja aparente es tener 12 líneas
+       -- en vez de 10, pero eso es porque parte «Especializada» en BITE ME +
+       -- LANZAMIENTO + BOOSTER + PERFUME (verificado: suman lo mismo, 4.433 mill.).
+       -- A cambio deja el 5,6 % del negocio sin clasificar.
+       --
+       -- La normalización quita el prefijo del árbol y luego el «Línea »/«Linea »
+       -- inicial, porque el árbol de Odoo es inconsistente: unos nodos lo llevan y
+       -- otros no («Pocion Plus», «Sport», «Anti Caída»), y «Linea Especializada» va
+       -- sin acento. Resultado: Reparación · Tongole · Pocion Plus · Anti Caída ·
+       -- Especializada · B8 · Kids · Facial · Sport · Control Caspa (+ Kits, Sachet,
+       -- Accesorios y Add On's, que son formatos y no líneas, pero son nodos reales
+       -- del mismo nivel y se muestran tal cual en vez de esconderlos).
+       -- Verificado: ningún par de nodos colisiona en la misma etiqueta.
+       --
+       -- El `( Importado)?` cubre «Inventario/Producto Terminado Importado/…», que hoy
+       -- tiene 2 productos sin ventas: sin él, el día que se vendan caerían en
+       -- «(sin línea)» y parecería un hueco de datos.
+       --
+       -- NULL = el producto no es producto terminado (materia prima, empaques,
+       -- gastos…). Es lo correcto: esos no tienen línea comercial.
+       CASE WHEN p.categoria ~ '^Inventario/Producto Terminado( Importado)?/' THEN
+           NULLIF(
+             regexp_replace(
+               regexp_replace(btrim(p.categoria),
+                              '^Inventario/Producto Terminado( Importado)?/', ''),
+               '^L[ií]nea\s+', '', 'i'),
+             '')
+       END                                                      AS linea
+FROM marts.dim_producto p;
 
 COMMENT ON VIEW marts.v_lk_producto IS
   'Lookup de productos para los tableros. `etiqueta` = nombre_comercial si '
   'existe, si no el nombre técnico (es lo que se muestra en los gráficos). '
-  '`linea`/`linea_categoria` vienen de bi_lineas por CÓDIGO (94,4 % del valor).';
+  '`linea` sale del arbol de categorias de ODOO (100 % de cobertura del valor); '
+  'NO de bi_lineas. La categoria de producto (SHAMPOO/MASCARILLA/...) NO existe '
+  'en Odoo y por eso ya no se expone.';
 
 CREATE OR REPLACE VIEW marts.v_lk_vendedor AS
 SELECT v.vendedor_id, v.nombre
@@ -155,6 +188,14 @@ GRANT SELECT ON
     marts.mv_ventas_recompra          -- tasa de recompra por nivel
 TO intranet_ro;
 
+-- Vistas materializadas de dashboards (hoja Nielsen — panel de mercado).
+-- DDL en 28_nielsen_dashboards.sql ⇒ re-ejecutar ESTE archivo después del 28.
+-- ⚠ `bi_nielsen` CRUDO sigue negado: la intranet solo ve las dos MV tipadas.
+GRANT SELECT ON
+    marts.mv_nielsen_semana,          -- agregada: share, ranking y series
+    marts.mv_nielsen_item_semana      -- detalle por item: ranking de productos y dist_num
+TO intranet_ro;
+
 -- Semillas que la intranet necesita para armar los estados: el catálogo y el orden
 -- de los renglones derivados, y la tasa de renta por empresa. Van en la base y no
 -- en el código de la intranet para que no se dupliquen ni deriven.
@@ -162,7 +203,9 @@ GRANT SELECT ON
     marts.bi_pyg_renglon,
     marts.bi_tasa_renta,
     marts.bi_producto_lanzamiento,    -- fecha de lanzamiento (dato de negocio)
-    marts.bi_ciclo_vida               -- tramos de ciclo de vida y meta de crecimiento
+    marts.bi_ciclo_vida,              -- tramos de ciclo de vida y meta de crecimiento
+    marts.bi_nielsen_market,          -- metadatos de los universos (cual es el total)
+    marts.bi_nielsen_marca_propia     -- marcas de la casa dentro del panel
 TO intranet_ro;
 
 -- Bitácora de refresco: la intranet la lee para invalidar su caché y mostrar
@@ -200,9 +243,12 @@ REVOKE CREATE ON SCHEMA marts FROM intranet_ro;
 -- ⚠ Las cinco `bi_*` que SÍ se conceden son SEMILLAS CURADAS, no volcados de Excel:
 -- bi_pyg_renglon, bi_tasa_renta, bi_producto_lanzamiento, bi_ciclo_vida y
 -- bi_mv_refresh. Son catálogos pequeños que la intranet necesita para armar sus
--- estados y que no tendría sentido duplicar en código Python. `bi_lineas` es el
--- contraejemplo: es el Excel crudo, y la intranet lo ve solo a través de
--- `v_lk_producto`, que además ya resuelve el join por código.
+-- estados y que no tendría sentido duplicar en código Python.
+--
+-- ⚠ `bi_lineas` ya NO se usa para nada (2026-07-30). El ETL la sigue cargando y el
+-- .pbix la sigue leyendo, pero ningún objeto concedido a la intranet la mira: la
+-- línea comercial sale del árbol de categorías de Odoo. Ver el comentario largo en
+-- `v_lk_producto` antes de volver a engancharla «porque tiene más líneas».
 --
 -- ⚠ La hoja de contabilidad NO fue una excepción a eso: se concedieron sus siete MV
 -- agregadas y `v_lk_cuenta`, pero el hecho contable y `dim_cuenta` siguen negados.

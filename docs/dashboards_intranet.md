@@ -553,3 +553,126 @@ curso se mueve. Entre dos mediciones del mismo día MAYORISTA NV pasó de
   contable (`mv_contab_canal_mes`, ingresos grupo 41 − costos grupo 61).
 - **Cartera** sigue pendiente como hoja propia (§7).
 - **Clientes Elite** y **Mayoristas2**: no hay captura de referencia.
+
+## 11. Fase 4 — hoja de NIELSEN (2026-07-30)
+
+DDL: `sql/marts/28_nielsen_dashboards.sql`. GRANTs: `sql/marts/24_rol_intranet.sql`
+(**re-ejecutarlo después del 28**). Refresco: `MVS_NIELSEN`, solo en el tick `:00`
+(el dato es **semanal**; refrescarlo cada 15 min no puede traer nada nuevo).
+
+### 11.1 El dataset
+
+573.013 filas · 164 semanas (**2023-05-14 → 2026-06-28**) · 4 markets · 3 categorías ·
+248 marcas · 195 fabricantes · 3.601 ítems · 13 presentaciones (una vacía).
+
+Los tres casts son **perfectos**: 0 filas mal formadas de 573.013 en `vtas_valor`,
+`vtas_unds` y `dist_num`. Y `periods` parsea al **100 %** con
+`to_date(split_part(periods,'fin ',2),'DD/MM/YY')` — el formato es
+«1 sem 26-26 fin 28/06/26» y se toma la fecha de cierre, ignorando el número de semana
+del texto (la fecha es lo que permite ordenar y agrupar sin ambigüedad).
+
+### 11.2 Cotejo contra el informe — cuadra al segundo decimal
+
+`TOTAL COLOMBIA FARMACIAS`, todo el histórico:
+
+```
+total ventas ......... 474.124.569.959     el informe dice «474 mil M»      ✔
+total unidades ....... 18.586.406          «18,59 mill.»                    ✔
+precio medio ......... 25.509,21           «$25.510,16»                     ✔
+marcas / productos ... 207 / 2.589         idéntico                         ✔
+presentaciones ....... 13                  idéntico (con el blanco)         ✔
+categorías ........... SHAMPOO      280.703.031.368  59,20 %               ✔
+                       TRATAMIENTOS 112.474.208.195  23,72 %               ✔
+                       BALSAMOS      80.947.330.396  17,07 %               ✔
+share histórico ...... ELVIVE 9,70 · OTRAS 7,10 · DOVE 5,81 · TIO NACHO 5,20  ✔
+share de ELVIVE mes .. 10,10 / 10,23 / 10,23 / 10,25 / 9,94 / 9,15 / 8,97 /
+                       9,13 / 9,75 / 8,60 / 9,68 / 10,17   columna por columna ✔
+```
+
+⚠ Estas cifras son de **todo el histórico**, así que **no se mueven con el ETL** — al
+contrario que las de 2026 de Ventas. Se pueden fijar en un test.
+
+### 11.3 Las seis trampas del dataset
+
+1. ⚠ **LOS 4 MARKETS NO SE SUMAN.** `NEW TOTAL COLOMBIA` (1.998.446.266.413) ya
+   contiene a los otros. El KPI «2.549 mil M» de la hoja *Comparar* del informe es
+   **exactamente** 1.998.446.266.413 + 474.124.569.959 + 76.507.844.825, o sea el
+   mercado **inflado ~27 %** por sumar universos solapados. La intranet obliga a elegir
+   UN market; `bi_nielsen_market.es_universo_total` marca cuál es el total.
+2. ⚠ **`Total Colombia Supermercados` no trae valor NI unidades**: 96.675 filas, el
+   **100 %** de ese market. Solo sirve para distribución.
+3. ⚠ **La marca propia solo está medida en 2 de los 4 markets**: FARMACIAS (desde
+   **2024-12-15**) y ECOMMERCE (desde **2024-12-22**). En `NEW TOTAL COLOMBIA` no
+   aparece. Los 4 se exponen igual porque la hoja también sirve para estudiar mercados
+   donde todavía no se entra (decisión de William) — pero un 0 % ahí significa **«aquí
+   no nos miden»**, no «aquí no vendemos», y la intranet lo distingue.
+4. ⚠ **El share por mes del informe MEZCLA AÑOS.** Su modo «MES» agrupa por número de
+   mes ignorando el año: POCION sale con **2,17 %** en enero cuando su enero-2026 real
+   es **4,56 %** — la mitad, porque enero-2024 y enero-2025 (donde la marca no existía)
+   entran en la misma columna. Es el mismo error de forma que el «7 meses contra 12» de
+   Ventas. El grano por defecto de la intranet es **año-mes**.
+5. ⚠ **`dist_num` es un PORCENTAJE POR ÍTEM** (0,016 a 69,47), no una fracción ni un
+   share: la suma por categoría/semana/market da **1.814 %**. No se suma ni se promedia
+   entre ítems. Vive solo en `mv_nielsen_item_semana`.
+6. ⚠ **El UPC de Nielsen no casa con ningún código propio** (0 de 18 ítems de la
+   marca). Nielsen es *sell-out* de mercado y las ventas propias son *sell-in*: la hoja
+   es **autónoma** y no se cruza con `mv_ventas_*`.
+
+### 11.4 Objetos
+
+| Objeto | Filas | Para qué |
+|---|---|---|
+| `mv_nielsen_semana` | **158.979** | share, ranking y series (agregada, sin `item` ni `dist_num`) |
+| `mv_nielsen_item_semana` | **573.013** | ranking de productos y `dist_num` (grano de ítem) |
+| `bi_nielsen_market` | 4 | metadatos: cuál es el total, cuál solo trae distribución |
+| `bi_nielsen_marca_propia` | 1 | las marcas de la casa, para no cablear 'POCION' en el código |
+
+`bi_nielsen` **crudo sigue negado** a `intranet_ro`.
+
+### 11.5 Lo que la intranet hace distinto del informe (autorizado)
+
+- **Mercado de selección única, sin «Todas»**: mata el mercado inflado del 27 %.
+- **La matriz de share arranca en «año y mes»**; el modo «mes» se conserva para
+  estacionalidad pero **avisa** de lo que le hace a una marca nueva.
+- **Aviso cuando el universo no mide la marca propia**, con la fecha desde la que sí.
+- **Supermercados marcado «solo distribución»**: sus paneles de valor devuelven `null`
+  con la razón, no ceros.
+- **El crecimiento es 52 semanas contra las 52 anteriores** (estándar del panel) y se
+  rotula. Da **25,43 %** en farmacias; el «30,27 %» del informe **no se deduce** de
+  ninguna combinación de los datos — mismo caso que el «Ingreso esperado» de Ventas.
+- **El share «entre competidores» y el share DEL MERCADO se muestran los dos**, más el
+  peso del grupo. Medido: POCION es el 31,02 % de su grupo pero el **2,34 %** del
+  mercado, y el grupo entero pesa el 7,55 %. Sin ese contexto el 31 % engaña.
+
+### 11.6 Cambio de fuente de la LÍNEA de producto (2026-07-30)
+
+⚠ **`v_lk_producto.linea` ya NO sale de `bi_lineas`** (el Excel «LINEAS Y CATEGORIAS»)
+sino del **árbol de categorías de Odoo** (`dim_producto.categoria`). Decisión de
+William: la fuente de verdad es Odoo. Y medido, además es mejor:
+
+```
+                          bi_lineas (Excel)   dim_producto.categoria (Odoo)
+cobertura del valor ....      94,43 %              100,000 %  en 2024/25/26
+productos sin línea ....        5                     0
+líneas .................       12                    10
+```
+
+Los 5 que el Excel no tenía sí están en Odoo: **PCN32/33/36 → «Línea Control Caspa»**
+(una línea entera que al Excel le falta) y **PCN34/35 → «Anti Caída»**. Las cifras
+coinciden: Reparación da **31.410.481.087** en 2025 contra los 31.410.435.978 de
+TRADICIONAL. La única diferencia de granularidad es que Odoo agrupa en «Especializada»
+lo que el Excel parte en BITE ME + LANZAMIENTO + BOOSTER + PERFUME (suman lo mismo).
+
+La normalización quita el prefijo `Inventario/Producto Terminado( Importado)?/` y luego
+el `Línea `/`Linea ` inicial, porque el árbol de Odoo es inconsistente. Verificado: no
+hay colisiones.
+
+⚠ **Desapareció el eje «categoría de producto»** (SHAMPOO, MASCARILLA, TRATAMIENTO,
+CREMA DE PEINAR, PERFUME, VIAJERO): solo existía en el Excel. El árbol de Odoo tiene
+**tres niveles** y no llega a ese detalle, y el ETL solo lee `id, default_code, name,
+categ_id` de `product.product`. **No se deduce del nombre del producto** — un renombre
+le cambiaría la categoría sola. Vuelve el día que el negocio añada un nivel al árbol de
+Odoo o etiquetas de producto.
+
+⚠ **`bi_lineas` ya no la mira ningún objeto concedido a la intranet.** No se borra (el
+ETL la carga y el `.pbix` la usa), pero antes de volver a engancharla, leer esto.
