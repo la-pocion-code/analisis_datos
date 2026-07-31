@@ -272,8 +272,7 @@ Cada hoja nueva añade sus MV aquí y su `GRANT` en `24_rol_intranet.sql`
 
 - **Nielsen** — MV sobre `bi_nielsen` (573k filas, todo `VARCHAR`: hay que tipar
   `vtas_valor`, `vtas_unds`, `dist_num` y parsear la fecha desde `periods`).
-- **Cuentas clave / KAM** — MV sobre `bi_cuentas_clave_ventas`,
-  `bi_inventario_cclave`, `bi_tiendas_cclave`.
+- ~~**Cuentas clave / KAM**~~ — **hecha** el 2026-07-31: ver §12.
 - **Cartera** — portar a SQL los buckets de mora que hoy calcula Power Query
   (`DIAS ATRASO`, `RANGO MORA`: Corriente/Próximo/11-30/31-60/61-90/90+).
 (La hoja de **Contabilidad** ya está construida: ver §9.)
@@ -676,3 +675,119 @@ Odoo o etiquetas de producto.
 
 ⚠ **`bi_lineas` ya no la mira ningún objeto concedido a la intranet.** No se borra (el
 ETL la carga y el `.pbix` la usa), pero antes de volver a engancharla, leer esto.
+
+---
+
+## 12. Fase 5 — hoja de CUENTAS CLAVE (2026-07-31)
+
+Sell-in contra sell-out por retailer. DDL en `sql/marts/29_cuentas_clave_dashboards.sql`;
+`GRANT` en `24_rol_intranet.sql` (re-ejecutarlo **después** del 29).
+
+El ETL ya estaba hecho y validado (`cargar_cuentas_clave.py`, ver
+`docs/cuentas_clave_migracion.md`): esta fase **no lo toca**. Lo único que faltaba era la
+capa curada y el permiso — los tres volcados son `VARCHAR(512)` y estaban negados al rol.
+
+### 12.1 El dataset
+
+| Origen | Filas | Clientes | Notas |
+|---|---:|---:|---|
+| `bi_cuentas_clave_ventas` | 60.515 | 10 | 2024-12-01 → 2026-06-30 · 35 productos |
+| `bi_inventario_cclave` | 4.303 | 8 | **una sola foto** (`_loaded_at` 2026-07-23) |
+| `bi_tiendas_cclave` | 1.155 | 11 | catálogo de tiendas |
+| `bi_cuentas_clave` (BASE) | 57 | — | mapeo de códigos por retailer |
+
+Calidad medida antes de escribir el DDL: **0 filas mal formadas** en los casts de
+`unidades`, `inventario` y `maximo`; **0 huecos** en fecha, producto, tienda e `id_tienda`.
+
+### 12.2 Empalmes verificados
+
+| Empalme | Resultado |
+|---|---|
+| `producto` → `dim_producto.codigo` | **35 de 35** extrayendo el código de `[COD] NOMBRE` |
+| `cliente` → `tercero_id` **por semilla** | **11 de 11** — ⚠ por nombre era una trampa, ver 12.4.9 |
+| `id_tienda` ventas → catálogo | **1.128 de 1.128** (normalizado) |
+| `id_tienda` inventario → catálogo | **315 de 315** (normalizado; en crudo 155) |
+
+⚠ La normalización (`UPPER` + colapsar espacios) **no es cosmética**: el volcado de
+inventario conserva la caja original («Locatel Calle 100») y ventas y el catálogo la traen
+en mayúsculas. Sin normalizar, el inventario pierde **la mitad** de sus tiendas y ningún
+error lo delata.
+
+### 12.3 Cotejo contra el informe
+
+El sell-out por cliente cuadra con los números de control del `.pbix` (snapshot
+2026-07-22): **9 de 10 exactos** y NOVAVENTA con −2 uds, el desvío ya documentado del ETL.
+
+    FARMATODO 212.665 · BRECCIA 18.016 · LEOPHARMA 18.851 · LUCEGO 11.788
+    LIFE 8.375 · PROSALON 7.782 · PASTEUR 7.463 · SURTI 3.514 · LASKIN 2.354
+    NOVAVENTA 534.466 (control 534.468)
+
+### 12.4 Las trampas (el detalle está en la cabecera del 29_*.sql)
+
+1. **El sell-out NO trae pesos.** `valores` viene vacía en los 10 retailers, así que la MV
+   **no la expone** y la hoja entera se mide en unidades — el sell-in también.
+2. **Cada retailer cierra en un mes distinto** (NOVAVENTA 2025-10 … LEOPHARMA 2026-06).
+   Cualquier ratio tiene que recortar los dos lados a la ventana con sell-out **de ese
+   cliente**: sin recortar, 2026 da un 6 % falso. Recortado: total **79,0 %**, y por
+   retailer entre 44,7 % y 125,3 %. Es el bug del `.pbix`, donde el sell-out ignora el
+   filtro temporal.
+
+2b. ⚠⚠ **Un ratio > 100 % NO es necesariamente un error**, y esto corrige lo que parecía
+   obvio. LUCEGO da **125,3 %** con la ventana bien recortada porque **compró 33.694 uds
+   antes** de que su reporte de sell-out existiera (202505-202510, reporte desde 202511):
+   está vendiendo inventario acumulado, y eso es un dato útil. Lo que sí es un caso aparte
+   es el **sell-in ≤ 0** (LUCEGO 202601 = −175 netos por devoluciones): ahí el ratio no
+   existe y hay que decirlo. El ratio se lee como *sell-through de la ventana*, y el
+   sell-out empieza cuando empieza el REPORTE del retailer, no la relación comercial.
+3. **`id_tienda` = CLIENTE ‖ NOMBRE_TIENDA** con cajas distintas por origen (ver 12.2).
+4. **El inventario es una FOTO**, no una serie: `foto_at` dice de cuándo.
+5. **`vendedor` viene vacío al 100 %** y `sucursal` casi; no se exponen.
+6. **96 filas con unidades negativas** son devoluciones y se conservan.
+7. **`maximo` SOLO lo entrega FARMATODO** (2.006 filas de 4.287). Los otros 7 mandan el
+   texto `'0'`, que no es vacío — una cuenta de «celdas con dato» lo daba por poblado.
+   `llenado_pct` lleva `NULLIF(SUM(maximo), 0)`: para ellos es NULL, que significa «no
+   sabemos cuánto cabe» y no «el anaquel está vacío».
+8. **Dos tiendas de LASKIN venden y no están en el catálogo.** La cobertura parte del
+   catálogo, así que no pasa del 100 %, pero el catálogo no es exhaustivo. LASKIN es
+   además el de peor cobertura: 15 de 27.
+9. ⚠⚠ **El cliente NO se empalma por nombre.** Hay **cuatro «FARMATODO»** en
+   `dim_tercero`, y el que casa por nombre EXACTO con el sell-out («FARMATODO COLOMBIA
+   SA», sin puntos, id 388191) es un duplicado **con cero ventas**; el que factura es
+   «FARMATODO COLOMBIA S.A» (id 268476). El empalme por nombre dejaba al mayor retailer
+   del panel —212.665 uds de sell-out— con sell-in 0 y sin ratio, **sin dar ningún
+   error**. Con el tercero correcto sale al 78,5 %, en línea con el resto. Por eso el
+   empalme va por la semilla **`bi_cclave_cliente`**, verificada uno a uno: los otros 9
+   coincidían con su nombre, pero eso era suerte, no un contrato.
+
+### 12.5 Objetos expuestos
+
+    mv_cclave_venta_mes    sell-out: cliente x mes x producto x tienda (35.081 filas)
+    mv_cclave_inventario   inventario en tienda, con llenado_pct (4.287)
+    mv_cclave_tienda       catálogo de tiendas: el DENOMINADOR de la cobertura (1.155)
+    bi_cclave_cliente      semilla: retailer -> tercero_id (11 filas, verificadas)
+    bi_cclave_ciclo        semilla: dias de reposicion por retailer — nace VACIA
+
+Las cuatro con `GRANT SELECT` a `intranet_ro`. Los cuatro volcados crudos **siguen
+negados** (verificado). Refresco en el tick `:00` (`MVS_CCLAVE`).
+
+⚠ `mv_cclave_tienda` es una MV propia y no un `SELECT DISTINCT` sobre las ventas a
+propósito: si el denominador de la cobertura fueran las tiendas que vendieron, la
+cobertura sería siempre 100 % y el panel no diría nada.
+
+### 12.6 Dato de negocio que falta
+
+**`bi_cclave_ciclo` nace vacía.** El «Stock Sugerido» del informe usa una tabla
+`DIAS_INVENTARIO` (ciclo 8/15/80 días) **cableada con `Table.FromRows` dentro del `.pbix`**:
+no existe en ninguna base. Hasta que el negocio la llene, la intranet devuelve «no
+calculable» con la razón. Un ciclo inventado daría un stock sugerido con aspecto de dato.
+
+Y **ZAR IMPORT (Ecuador) tiene inventario (51.210 uds) y 2 tiendas, pero cero sell-out**:
+el ETL lo deja fuera a la espera de un acceso directo roto en Drive
+(`SEGMENTO DE CLIENTES.xlsx`). Su cobertura es 0 % y eso es un dato, no un hueco.
+
+### 12.7 Fuera de alcance
+
+- **Cartera** sigue pendiente (§7), y tiene su propio diagnóstico: de las 6.002 filas de
+  `v_cartera` solo las **271 de factura** traen fecha de vencimiento; las 5.731 `entry` son
+  asientos en cuentas de CxC y el 97 % no la trae, así que no admiten cálculo de mora.
+- El `.pbix` no se toca (decisión de William: Power BI es transitorio).

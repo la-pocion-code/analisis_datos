@@ -86,7 +86,22 @@ MVS_NIELSEN = (
     "mv_nielsen_item_semana",
 )
 
-MVS = MVS_VENTAS + MVS_CONTAB + MVS_NIELSEN
+
+# ── CUENTAS CLAVE (sql/marts/29_cuentas_clave_dashboards.sql) — tick :00 ────────
+# El sell-out y el inventario llegan por `cargar_cuentas_clave.py`, que descarga 19
+# archivos de Drive: entre carga y carga no hay un dato nuevo que ganar. Son las tres
+# MV más baratas del lote (60.515 + 4.303 + 1.155 filas de origen).
+#
+# ⚠ `mv_cclave_venta_mes` va primera porque es la que alimenta los KPIs y el ratio; el
+# inventario es una FOTO y el catálogo de tiendas casi no cambia, así que si el tick se
+# queda sin tiempo son los dos que mejor se pueden perder.
+MVS_CCLAVE = (
+    "mv_cclave_venta_mes",
+    "mv_cclave_inventario",
+    "mv_cclave_tienda",
+)
+
+MVS = MVS_VENTAS + MVS_CONTAB + MVS_NIELSEN + MVS_CCLAVE
 
 
 def _registrar(cur, mv: str, filas, duracion_ms: int, ok: bool, error: str | None) -> None:
@@ -112,7 +127,8 @@ def refrescar(mvs=None, concurrente: bool = True, completa: bool = True) -> dict
     ETL nunca debe caerse porque un tablero no se pudo refrescar.
 
     `completa=False` (los ticks ligeros del cron, :15/:30/:45) refresca solo las de
-    VENTAS y salta las de contabilidad — ver el comentario de MVS_CONTAB.
+    VENTAS y salta contabilidad, Nielsen y cuentas clave: ninguna de esas tres puede
+    tener un dato nuevo entre tick y tick — ver el comentario de cada tupla.
 
     Devuelve {'ok': [...], 'fallidas': [(mv, error), ...]}.
     """

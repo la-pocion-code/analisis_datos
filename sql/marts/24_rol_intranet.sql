@@ -196,6 +196,19 @@ GRANT SELECT ON
     marts.mv_nielsen_item_semana      -- detalle por item: ranking de productos y dist_num
 TO intranet_ro;
 
+-- Vistas materializadas de dashboards (hoja Cuentas clave — sell-in vs sell-out).
+-- DDL en 29_cuentas_clave_dashboards.sql ⇒ re-ejecutar ESTE archivo después del 29.
+-- ⚠ Los TRES volcados crudos siguen negados (`bi_cuentas_clave`,
+-- `bi_cuentas_clave_ventas`, `bi_inventario_cclave`, `bi_tiendas_cclave`): la
+-- intranet solo ve las MV tipadas, que además ya resuelven los empalmes a
+-- `tercero_id` y `producto_id` — y que a propósito NO exponen la columna `valores`,
+-- porque viene vacía en los 10 retailers.
+GRANT SELECT ON
+    marts.mv_cclave_venta_mes,        -- sell-out: cliente x mes x producto x tienda
+    marts.mv_cclave_inventario,       -- inventario en tienda (una FOTO, no serie)
+    marts.mv_cclave_tienda            -- catalogo de tiendas: denominador de cobertura
+TO intranet_ro;
+
 -- Semillas que la intranet necesita para armar los estados: el catálogo y el orden
 -- de los renglones derivados, y la tasa de renta por empresa. Van en la base y no
 -- en el código de la intranet para que no se dupliquen ni deriven.
@@ -205,7 +218,9 @@ GRANT SELECT ON
     marts.bi_producto_lanzamiento,    -- fecha de lanzamiento (dato de negocio)
     marts.bi_ciclo_vida,              -- tramos de ciclo de vida y meta de crecimiento
     marts.bi_nielsen_market,          -- metadatos de los universos (cual es el total)
-    marts.bi_nielsen_marca_propia     -- marcas de la casa dentro del panel
+    marts.bi_nielsen_marca_propia,    -- marcas de la casa dentro del panel
+    marts.bi_cclave_cliente,          -- retailer -> tercero_id (verificado, ver 29_*)
+    marts.bi_cclave_ciclo             -- dias de reposicion por retailer (nace VACIA)
 TO intranet_ro;
 
 -- Bitácora de refresco: la intranet la lee para invalidar su caché y mostrar
@@ -236,14 +251,19 @@ REVOKE CREATE ON SCHEMA marts FROM intranet_ro;
 -- NOTA: NO se concede SELECT sobre marts.fact_movimiento_contable, dim_cuenta,
 -- dim_tercero, dim_producto, v_ventas_bi, v_ventas_explotada, v_ventas_producto,
 -- v_cartera ni las bi_* CRUDAS (bi_nielsen, bi_lineas, bi_presupuesto,
--- bi_cuentas_clave*, bi_cartera, bi_cliente_credito…). Cuando se construyan las
--- hojas de Nielsen / cuentas clave / cartera, se añadirán aquí sus MV
--- correspondientes (nunca las tablas base).
+-- bi_cuentas_clave*, bi_cartera, bi_cliente_credito…). Cuando se construya la hoja
+-- de **cartera** se añadirán aquí sus MV correspondientes (nunca las tablas base).
+-- Nielsen (28_*) y cuentas clave (29_*) ya lo hicieron así.
 --
--- ⚠ Las cinco `bi_*` que SÍ se conceden son SEMILLAS CURADAS, no volcados de Excel:
--- bi_pyg_renglon, bi_tasa_renta, bi_producto_lanzamiento, bi_ciclo_vida y
--- bi_mv_refresh. Son catálogos pequeños que la intranet necesita para armar sus
--- estados y que no tendría sentido duplicar en código Python.
+-- ⚠ Las `bi_*` que SÍ se conceden son SEMILLAS CURADAS, no volcados de Excel:
+-- bi_pyg_renglon, bi_tasa_renta, bi_producto_lanzamiento, bi_ciclo_vida,
+-- bi_nielsen_market, bi_nielsen_marca_propia, bi_cclave_ciclo y bi_mv_refresh. Son
+-- catálogos pequeños que la intranet necesita para armar sus estados y que no
+-- tendría sentido duplicar en código Python.
+--
+-- ⚠ `bi_cclave_ciclo` nace VACÍA y se concede igual, a propósito: la intranet
+-- necesita poder leerla para saber que está vacía y decir «no calculable» con la
+-- razón. Si no se concediera, el mismo caso llegaría como un 503 de tablero caído.
 --
 -- ⚠ `bi_lineas` ya NO se usa para nada (2026-07-30). El ETL la sigue cargando y el
 -- .pbix la sigue leyendo, pero ningún objeto concedido a la intranet la mira: la
