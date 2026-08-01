@@ -30,3 +30,5 @@ google_credentials.json
 *.log
 *.jiff
 *.jfif
+# Salida del skill graphify (cache de AST, se regenera)
+graphify-out/
