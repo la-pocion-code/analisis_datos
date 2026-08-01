@@ -1476,6 +1476,21 @@ class ReportClassNew():
         cobertura_hoy = agregar_mayoristas(cobertura_hoy)
         cobertura_ayer = agregar_mayoristas(cobertura_ayer)
 
+        # Totales generales de TODA la compañia para el correo consolidado. Se toman de las
+        # fuentes completas y no de la cobertura por zona: los canales sin zona asignada
+        # (SHOPIFY, CALL CENTER) y las zonas presupuestadas sin fila de cobertura (FARMACIA,
+        # HOLE COSMETICS...) no aparecen en los bloques del correo pero si en el total.
+        ventas_total = float(df_ventas.loc[df_ventas['FECHA_FACTURA'] >= mes_actual, 'TOTAL($)'].sum())
+        presupuesto_total = float(presupuesto['PRESUPUESTO'].sum())
+
+        totales_generales = {
+            'ventas': ventas_total,
+            'presupuesto': presupuesto_total,
+            'falta': presupuesto_total - ventas_total,
+            'cumplimiento': round(ventas_total / presupuesto_total * 100, 1) if presupuesto_total else 0.0,
+            'fecha_corte': hoy.date(),
+        }
+
 
 
 
@@ -1839,7 +1854,7 @@ class ReportClassNew():
 
    
 
-        return {'Cuerpo_HTML':informes_por_zona, 'Base_Vendedores': base_vendedores}
+        return {'Cuerpo_HTML':informes_por_zona, 'Base_Vendedores': base_vendedores, 'Totales': totales_generales}
     
     def informe_cartera(self, categorias: list, client_credit_expo: dict) -> pd.DataFrame:
         """
