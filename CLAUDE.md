@@ -508,12 +508,15 @@ definidos por el admin). **Contrato de datos completo:
 - ✅ HECHO: canonicalización PUC (`11_puc_canonico.sql` + `canonicalizar_puc`): `dim_cuenta` con
   `cuenta_canonica_id`/`codigo_canonico`/`nombre_canonico` (no destructivo, hecho intacto); 401 grupos,
   423 cuentas colapsadas. Docs en `docs/MODELO_ESTRELLA.md` §10.
-- ⚠ **PENDIENTE CRÍTICO — DESPLEGAR EN RAILWAY.** El cron corre `run_dw.py` pero con el código
-  **anterior**: cada tick hace `TRUNCATE` del puente NC y lo repuebla solo por conciliación, y
-  `marcar_reversos` desmarca lo que puso `marcar_reversos_puente`. Comprobado 2026-07-28/29: los
-  arreglos aplicados a mano se **revierten en la siguiente hora**. Hasta el deploy no se sostienen ni
-  la cascada NC, ni las anulaciones sin `reversed_entry_id`, ni el puente ND, ni el cron `*/15`.
-  (`railway.toml`/`Procfile` ya están ajustados; el sync raw `etl_odoo_incremental.py` quedó archivado.)
+- ✅ **HECHO (verificado 2026-07-31) — YA ESTÁ DESPLEGADO EN RAILWAY.** Estuvo pendiente: el cron
+  corría el código anterior, que cada tick hacía `TRUNCATE` del puente NC repoblándolo solo por
+  conciliación, y `marcar_reversos` desmarcaba lo que ponía `marcar_reversos_puente` ⇒ los arreglos
+  aplicados a mano se revertían en la siguiente hora (comprobado 2026-07-28/29). **Ya no.**
+  Evidencia medida en la base: `map_nc_factura` tiene **2.056 enlaces por `reversed_entry`** (el
+  código viejo solo dejaba `conciliacion`), `map_nd_factura` **existe con 21 filas**, `es_reverso`
+  está marcado en **20.379** líneas y `bi_mv_refresh` refresca cada pocos minutos. Si vuelves a
+  dudar, la comprobación es un `SELECT metodo_enlace, count(*) FROM marts.map_nc_factura GROUP BY 1`:
+  si solo sale `conciliacion`, el cron habría vuelto al código viejo.
 - ✅ HECHO (2026-07-29): **hoja de CONTABILIDAD de los tableros** — `26_contabilidad_dashboards.sql`
   aplicado (`v_dim_cuenta_bi` + 7 MV + `bi_pyg_renglon`/`bi_tasa_renta` + `v_lk_cuenta`), `GRANT` en
   `24_rol_intranet.sql`, y `MVS_CONTAB` en `refrescar_mv_dashboards.py` (solo el tick `:00`).
@@ -557,9 +560,33 @@ definidos por el admin). **Contrato de datos completo:
   - ✅ Fase 5 (validada): `python validar_ventas.py` concilia `v_ventas_producto` vs `base_ventas`
     (CLEAN DATA). Alinear 3 cosas: combinar empresas + fecha de factura + producto comercial.
     **Destapó un bug de `es_reverso`** (se excluían facturas de factoring/NC-parcial marcadas
-    `payment_state='reversed'` como si fueran anuladas): corregido (ver `marcar_reversos`). Tras el
-    fix, **TOTAL 2026 Excel vs DW = -0,0%** (antes -5,1%). Residuos mensuales ≤4% (timing/parciales);
-    Jul + por timing (DW con más facturas que el CSV).
+    `payment_state='reversed'` como si fueran anuladas): corregido (ver `marcar_reversos`).
+    Histórico del cuadre **contra el BRUTO**: −5,1% (con el bug) → −0,0% (tras el fix) → −1,1% (al
+    pasar a `fecha_venta`) → −1,3% (2026-07-28).
+  - ⚠⚠ **CORREGIDO 2026-07-31 — EL SIGNO ESTABA AL REVÉS, Y ERA CULPA DEL SCRIPT.** `FILES_2026`
+    solo traía los 3 ficheros de VENTAS y **no el de notas crédito**, que en 2026 va aparte
+    (`Ventas_Febrero_2026_Julio_2026.csv`, −2.852,9M). Medido: esos 3 tienen **0 filas negativas y
+    0 documentos RINV/RFEX/RPOS** ⇒ son BRUTO puro (al revés que 2024-25, donde el pipeline
+    netificaba dentro de la fila de la factura). Así que se comparaba el NETO del DW contra el
+    BRUTO del Excel. Con el fichero incluido (ene-jul, medido 2026-07-31 10:23):
+    Excel bruto 55.165.069.210 − NC 2.852.867.976 = **Excel NETO 52.312.201.234** vs
+    **DW 54.376.881.626** ⇒ **el DW está +3,9% POR ENCIMA**, no por debajo. El propio script
+    imprime ahora las dos cifras (+3,9% neto / −1,4% bruto) para que no vuelva a confundirse.
+    ⚠ Prueba de que el fichero de NC es complemento y no solapamiento: 52.312.201.234 coincide
+    **AL PESO** con el total de `exploded_data`, que se construye por separado.
+    ⚠ **Comparar «cuánta NC resta cada lado» NO es manzana con manzana**: ante una anulación total
+    el Excel **netea** (deja la factura y le resta la NC) y el DW **la saca entera** (`es_reverso`
+    marca las dos), así que el DW resta −273,9M contra los −2.852,9M del Excel sin que sea un
+    error. Lo comparable es el NETO.
+    ⚠ Buena parte del +3,9% es **timing**: los CSV son fotos (Enero-Mayo del 18-jun, Junio del
+    6-jul) y el DW carga cada 15 min. Y el desglose MENSUAL está contaminado porque el Excel
+    atribuye la NC a **su propio mes** (marzo sale +16%), que es justo el error que `fecha_venta`
+    corrige: **el juez es el anual**.
+  - En años **CERRADOS** el DW sí queda por debajo del manual, y poco: **2024 −0,68%** (18.622,2M
+    vs 18.750,2M) y **2025 −0,59%** (82.417,4M vs 82.907,8M), medido contra `exploded_data`. El
+    manual queda arriba porque su cruce de NC saca el nº de factura con una regex que **solo cubre
+    la serie `FEVY`** (`archivado/Notas credito.ipynb`): las NC contra `FVE`/`POS`/`FEX` nunca se
+    aplicaron. Orden verificado en 2025: **manual 82.907,8M > Odoo 82.686,0M > DW 82.417,4M**.
 
 ## Reglas de trabajo
 - NO ejecutar el cron, ni conectarse a Odoo/Postgres en vivo, sin que el usuario lo pida.
