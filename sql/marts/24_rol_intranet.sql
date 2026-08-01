@@ -209,6 +209,17 @@ GRANT SELECT ON
     marts.mv_cclave_tienda            -- catalogo de tiendas: denominador de cobertura
 TO intranet_ro;
 
+-- Vista materializada de dashboards (hoja Cartera — saldos, mora y responsable).
+-- DDL en 30_cartera_dashboards.sql ⇒ re-ejecutar ESTE archivo después del 30.
+-- ⚠⚠ `v_cartera` sigue NEGADA y no es negociable: expone `identificacion`, o sea el
+-- NIT del tercero. La MV no lo propaga, y por eso es ella la que se concede.
+-- ⚠ `bi_cartera` (el volcado del pipeline viejo) también sigue negado: es un CSV
+-- manual con todas las columnas en VARCHAR y un `responsable` que ya está resuelto
+-- dentro de la MV.
+GRANT SELECT ON
+    marts.mv_cartera_saldo            -- cartera por linea de CxC, sin NIT
+TO intranet_ro;
+
 -- Semillas que la intranet necesita para armar los estados: el catálogo y el orden
 -- de los renglones derivados, y la tasa de renta por empresa. Van en la base y no
 -- en el código de la intranet para que no se dupliquen ni deriven.
@@ -220,7 +231,9 @@ GRANT SELECT ON
     marts.bi_nielsen_market,          -- metadatos de los universos (cual es el total)
     marts.bi_nielsen_marca_propia,    -- marcas de la casa dentro del panel
     marts.bi_cclave_cliente,          -- retailer -> tercero_id (verificado, ver 29_*)
-    marts.bi_cclave_ciclo             -- dias de reposicion por retailer (nace VACIA)
+    marts.bi_cclave_ciclo,            -- dias de reposicion por retailer (nace VACIA)
+    marts.bi_cartera_tipo_credito     -- que tipos son cartera de credito, y por que no
+                                      -- lo son los demas (la hoja publica el motivo)
 TO intranet_ro;
 
 -- Bitácora de refresco: la intranet la lee para invalidar su caché y mostrar
@@ -251,9 +264,9 @@ REVOKE CREATE ON SCHEMA marts FROM intranet_ro;
 -- NOTA: NO se concede SELECT sobre marts.fact_movimiento_contable, dim_cuenta,
 -- dim_tercero, dim_producto, v_ventas_bi, v_ventas_explotada, v_ventas_producto,
 -- v_cartera ni las bi_* CRUDAS (bi_nielsen, bi_lineas, bi_presupuesto,
--- bi_cuentas_clave*, bi_cartera, bi_cliente_credito…). Cuando se construya la hoja
--- de **cartera** se añadirán aquí sus MV correspondientes (nunca las tablas base).
--- Nielsen (28_*) y cuentas clave (29_*) ya lo hicieron así.
+-- bi_cuentas_clave*, bi_cartera, bi_cliente_credito…). Nielsen (28_*), cuentas
+-- clave (29_*) y cartera (30_*) conceden solo sus MV, nunca las tablas base.
+-- ⚠ En cartera el motivo es más fuerte que en las otras: `v_cartera` expone el NIT.
 --
 -- ⚠ Las `bi_*` que SÍ se conceden son SEMILLAS CURADAS, no volcados de Excel:
 -- bi_pyg_renglon, bi_tasa_renta, bi_producto_lanzamiento, bi_ciclo_vida,

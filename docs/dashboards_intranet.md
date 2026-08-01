@@ -787,7 +787,95 @@ el ETL lo deja fuera a la espera de un acceso directo roto en Drive
 
 ### 12.7 Fuera de alcance
 
-- **Cartera** sigue pendiente (§7), y tiene su propio diagnóstico: de las 6.002 filas de
-  `v_cartera` solo las **271 de factura** traen fecha de vencimiento; las 5.731 `entry` son
-  asientos en cuentas de CxC y el 97 % no la trae, así que no admiten cálculo de mora.
+- **Cartera** ya no está pendiente: se construyó en la fase 6 (§13).
 - El `.pbix` no se toca (decisión de William: Power BI es transitorio).
+
+---
+
+## 13. Fase 6 — hoja de CARTERA (2026-08-01)
+
+DDL en `sql/marts/30_cartera_dashboards.sql`. Expone `marts.v_cartera` —que la intranet
+**no puede leer**— como una sola vista materializada.
+
+### 13.1 Objeto expuesto
+
+| Objeto | Grano | Filas | Para qué |
+|---|---|---|---|
+| `mv_cartera_saldo` | línea de CxC (`linea_id`) | 6.023 | saldos, vencimiento, responsable |
+| `bi_cartera_tipo_credito` | tipo de cliente | 14 | qué es cartera de crédito y qué no |
+| `bi_cartera_responsable` | cliente / tipo / default | 69 | quién cobra |
+
+`GRANT` en `24_rol_intranet.sql`, que hay que **re-ejecutar después** del 30.
+
+### 13.2 Por qué se concede la MV y no la vista
+
+⚠⚠ **`v_cartera` expone `identificacion`, o sea el NIT del tercero**, y por eso está
+negada a `intranet_ro`. La MV **no propaga esa columna**. No añadirla: la hoja no la
+necesita y sería dato personal saliendo a una app web.
+
+### 13.3 Lo que se midió (2026-08-01)
+
+```
+v_cartera .......... 6.018 filas · 595 terceros · 836 documentos · 9.135.510.346
+  entry ............ 5.738 filas · solo   142 con vencimiento
+  out_invoice ......   240 filas ·        240 con vencimiento (100 %)
+  out_refund .......    40 filas ·         40 con vencimiento (100 %)
+saldo negativo ..... 2.945 filas · −4.922.033.134 · 475 terceros
+empresas ........... HFA 4.011 / 639.925.131  ·  PCN 2.007 / 8.495.585.215
+```
+
+Los cuatro bloques de la hoja **suman exactamente el total** (verificado en la prueba del
+DDL): anticipos −4.922.033.134 + cartera con mora 6.763.624.037 + crédito sin vencimiento
+2.857.493.532 + fuera de crédito 4.437.171.641 = **9.136.256.076**.
+
+### 13.4 Las decisiones que hay que respetar
+
+1. ⚠⚠ **Solo las facturas admiten mora.** `fecha_vencimiento_key` es
+   `account.move.line.date_maturity`, y Odoo solo la calcula cuando hay término de pago.
+   Los `entry` (recibos, reclasificaciones, ajustes) no lo tienen: 142 de 5.738. La MV
+   publica `admite_mora` y la hoja separa los dos mundos. El pipeline viejo lo resolvía con
+   `Numero.str.startswith('F')`, que además se comía los anticipos sin decirlo.
+2. ⚠⚠ **`tipo_cliente` no es `categoria`.** La vista expone el valor **crudo** de Odoo;
+   `categoria` ya está normalizada por `map_categoria` y nunca es nula. Filtrar por una o
+   por otra da conjuntos distintos. El pipeline de cartera siempre usó el crudo.
+3. ⚠ **No todo lo que hay en cartera es cartera de crédito**, y lo que sobra no se
+   descarta: son 4.437 MM. `CLIENTE` (contado, 2.260 MM), `Proveedores` (1.020 MM),
+   `(sin tipo)` (−3.223 MM, casi todo asientos sin cliente) y hasta un
+   `Wrote Judge.me web review` que es basura literal de Odoo. La semilla los registra
+   **con su motivo** para que la hoja pueda explicarlos.
+4. ⚠ **Los negativos son anticipos y van aparte, sin netear** (decisión de William). Un
+   anticipo no cancela una factura vencida; netearlos escondería mora real.
+5. ⚠ **El aging NO se materializa.** `dias_atraso` depende de HOY: congelarlo en el
+   refresco haría que, pasada la medianoche, la hoja mostrara la mora de ayer. La MV trae
+   `fecha_vencimiento` y `dias_credito` (estables) y el corte lo hace la intranet contra
+   `CURRENT_DATE`.
+6. ⚠ **El responsable no existía en el almacén.** El `.pbix` repuntó su tabla `Cartera` a
+   `v_cartera` y perdió la columna: hoy es `Table.AddColumn(ORD, "RESPONSABLE", each null)`.
+   Se modela en `bi_cartera_responsable`, con precedencia **cliente > tipo > default**, y
+   arranca desde el último volcado real del pipeline (2026-07-23): **DIANA RIOS, DANIELA
+   DURAN y SHELLSY VELASCO**. Resuelto: 337 filas con dueño por 8.542 MM, y 5.686 sin
+   dueño por 593 MM (casi todo asientos sin tercero).
+
+### 13.5 Rangos de mora
+
+Se conservan los cortes del informe, incluidas sus rarezas: `Corriente` es **menos de −7
+días y también 1…10**, `Proximo` es −7…0 (el día 0 cae aquí, no en Corriente), y luego
+`11_30`, `31_60`, `61_90`, `90+`. No es un error de transcripción; cambiarlos haría que la
+hoja no cuadrara con el correo que cartera lleva años recibiendo.
+
+### 13.6 Refresco
+
+`MVS_CARTERA` en `refrescar_mv_dashboards.py`, en el tick `:00`. Sale del hecho contable
+—que sí se actualiza cada 15 minutos— pero la cartera se gestiona por días y una factura no
+cambia de rango de mora en un cuarto de hora.
+
+### 13.7 Fuera de alcance
+
+- Los **días de crédito pactado** del exterior seguían cableados en el notebook
+  (`DROGUERIA CORPORACION LIFE` 120, `C&L SOLUTIONS` 120, `ZAR IMPORT` 100,
+  `DISTRIBUIDORA LEOPHARMA` 120). No se portan todavía: hoy esas facturas usan el
+  `date_maturity` de Odoo, que es lo que la contabilidad tiene registrado.
+- `bi_cliente_credito` (días de CxC y saldo de anticipo por cliente) sigue **sin portar**:
+  alimenta la proyección de flujo de caja, que es de la hoja de Contabilidad (§9).
+- Las 12 líneas con `estado_pago = 'paid'` y saldo distinto de cero **se conservan**: son
+  facturas de exportación con residuos de redondeo de divisa (la mayor, 323.844).

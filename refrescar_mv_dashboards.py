@@ -101,7 +101,21 @@ MVS_CCLAVE = (
     "mv_cclave_tienda",
 )
 
-MVS = MVS_VENTAS + MVS_CONTAB + MVS_NIELSEN + MVS_CCLAVE
+
+# ── CARTERA (sql/marts/30_cartera_dashboards.sql) — tick :00 ───────────────────
+# Sale del hecho contable, que el ETL sí actualiza cada 15 minutos, pero la cartera
+# se mira por la mañana y se gestiona por días: una factura no cambia de rango de
+# mora en un cuarto de hora. Con 6.018 filas de origen el refresco es barato, así
+# que va en el tick de la hora junto al resto de lo mensual.
+#
+# ⚠ Esta MV NO materializa los días de atraso ni el rango de mora: dependen de HOY
+# y quedarían congelados en el instante del refresco. Los calcula la intranet
+# contra CURRENT_DATE. Por eso aquí no hay orden que respetar ni MV derivada.
+MVS_CARTERA = (
+    "mv_cartera_saldo",
+)
+
+MVS = MVS_VENTAS + MVS_CONTAB + MVS_NIELSEN + MVS_CCLAVE + MVS_CARTERA
 
 
 def _registrar(cur, mv: str, filas, duracion_ms: int, ok: bool, error: str | None) -> None:
