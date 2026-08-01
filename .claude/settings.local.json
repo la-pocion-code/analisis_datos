@@ -27,7 +27,12 @@
       "Bash(railway redeploy *)",
       "Bash(python -c \"from db_loader import DBLoader; print\\('OK'\\)\")",
       "PowerShell(python \"C:\\\\Users\\\\ANALISTA DATOS\\\\AppData\\\\Local\\\\Temp\\\\map_aml.py\")",
-      "PowerShell(Remove-Item \"C:\\\\Users\\\\ANALISTA DATOS\\\\AppData\\\\Local\\\\Temp\\\\map_aml.py\" -Confirm:$false)"
+      "PowerShell(Remove-Item \"C:\\\\Users\\\\ANALISTA DATOS\\\\AppData\\\\Local\\\\Temp\\\\map_aml.py\" -Confirm:$false)",
+      "mcp__powerbi-modeling-mcp__connection_operations",
+      "mcp__powerbi-modeling-mcp__partition_operations",
+      "Bash(./virtual-env/Scripts/python.exe \"C:/Users/ANALIS~1/AppData/Local/Temp/claude/D--Desktop-analisis-datos/c9a91738-2806-4e61-8a9c-c09eda0f353e/scratchpad/check_cols.py\")",
+      "mcp__powerbi-modeling-mcp__dax_query_operations",
+      "mcp__powerbi-modeling-mcp__measure_operations"
     ]
   }
 }
