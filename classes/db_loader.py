@@ -232,7 +232,7 @@ class DBLoader:
                 for i in range(0, len(values), batch_size):
                     batch = values[i:i + batch_size]
                     try:
-                        psycopg2.extras.execute_batch(cur, insert_sql, batch)
+                        psycopg2.extras.execute_batch(cur, insert_sql, batch, page_size=batch_size)
                         conn.commit()
                         filas_ok += len(batch)
                         logging.info(f"  Lote {i // batch_size + 1}: {len(batch)} filas insertadas")

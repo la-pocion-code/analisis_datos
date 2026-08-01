@@ -64,6 +64,12 @@ DRIVE_IDS = {
     'bd_clientes':           '13yLRqlQ79sZMrUxl_Lzm0QheFuJ_9QpR',
     'deptos':                '1zqchcPXNKIwP2Vk5CnCTfpLhDmUtHHK1',
 
+    # ---- DATASETS BI (marts.bi_*) — ver cargar_bi_datasets.py ----
+    'base_consolidada':      '1UzexLDgl3kbF0BGR4zqwqrS_QtK7vuZH',   # data/contabilidad/base_consolidada.csv (base pyg)
+    'base_cuentas_clave':    '1fbrNW8LxECpZy-yzAhud0dmmdpz8XPOw',   # data/cuentas_clave/base_cuentas_clave.xlsx
+    'cartera_procesada':     '1lmmomVFK-uFbbdJtncSWFSEvaBZsixTn',   # data/../cartera_procesada.csv
+    'cliente_cartera':       '1ZAKDOMhMffN_8KGzSG27g_632ChC8fFL',   # data/cliente_cartera.xlsx (cliente_credito)
+
     # ---- CARPETAS ----
     'carpeta_data':          '1NkkdC7p_ird1KaQbA7_70O7dvFA66GBA',
     'carpeta_clean_data':    '107OKNu-sdCaYN0QjynslKX8CKCe-yUJr',
@@ -71,6 +77,8 @@ DRIVE_IDS = {
     'carpeta_cartera':       '1CFTK3YYWKny8wujXlhqTxcDI2KxYXrm4',
     'carpeta_contabilidad':  '134jlktluBLbxgYqcm3ZCgdzGOpEc9yXj',
     'carpeta_cuentas_clave': '1wC79opFds_JN6p0Q-WtwE-czYxgjTsiC',
+    'carpeta_nielseiq':      '16lftHkg8aQza_vkz3s6dW1yhOtNusW-i',
+    'carpeta_paises':        '17KiBoiNmNXNChE6vm2t_zux_sDpDjl1w',
 }
 
 
@@ -102,8 +110,18 @@ class DriveLoader:
         """Descarga un archivo de Drive y retorna (bytes, nombre, mimeType)."""
         meta = self.service.files().get(
             fileId=file_id,
-            fields='name, mimeType'
+            fields='name, mimeType, shortcutDetails'
         ).execute()
+
+        # Accesos directos (shortcuts) de Drive: resolver al archivo destino.
+        if meta['mimeType'] == 'application/vnd.google-apps.shortcut':
+            target = (meta.get('shortcutDetails') or {}).get('targetId')
+            if not target:
+                raise ValueError(f"Shortcut sin destino: {file_id}")
+            file_id = target
+            meta = self.service.files().get(
+                fileId=file_id, fields='name, mimeType'
+            ).execute()
 
         nombre   = meta['name']
         mimetype = meta['mimeType']
