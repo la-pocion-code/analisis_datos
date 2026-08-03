@@ -35,6 +35,11 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 - `etl_dw_marts.py` — ETL del DW (ver sección Data Warehouse).
 - `cargar_mapeos.py` — carga los mapeos NO-Odoo de ventas (zona/cliente_padre/categoría) de Drive a
   `marts.map_*`. A demanda (ver sección Data Warehouse).
+- `cargar_marketing.py` — carga la hoja de MARKETING de la intranet (TRM + Supermetrics/GA4/
+  Search Console/Shopify). ⚠ Hoy **solo la TRM funciona**; las otras cuatro esperan credenciales.
+  Enganchado a `run_dw.py` (paso 2b, tick :00).
+- `cargar_cartera_responsables.py` — re-siembra `marts.bi_cartera_responsable` desde la hoja
+  `Responsables` de `base_cartera.xlsx`. A demanda. ⚠ Cruza por `TERCERO_ID`.
 - `classes/db_loader.py` — `DBLoader`: conexión PG, auto-DDL, UPSERT, carga incremental.
 - `classes/drive_loader.py` — `DriveLoader`: lee Excel/CSV de Google Drive.
 - `classes/send_mail.py` — `MailSender`: correos SMTP con adjuntos.
@@ -187,6 +192,9 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
 - PostgreSQL (Railway): `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
 - Correo: `SENDER_EMAIL`, `SENDER_PASSWORD`.
 - Google Drive: `GOOGLE_CREDENTIALS_PATH` (ruta al JSON de service account).
+- Marketing (⚠ NINGUNA existe todavía): `SUPERMETRICS_API_KEY`, `GA4_CREDENTIALS_JSON`,
+  `GSC_CREDENTIALS_JSON`, `SHOPIFY_SHOP_{CO,EC,RD}`, `SHOPIFY_TOKEN_{CO,EC,RD}`. Sin ellas
+  `cargar_marketing.py` solo carga la TRM (que no necesita credencial).
 
 ## Convenciones
 - Esquema crudo actual: `raw`. Objetivo del DW: `staging` (crudo) + `marts` (estrella).

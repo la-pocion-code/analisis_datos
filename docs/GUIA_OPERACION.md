@@ -121,6 +121,39 @@ locales, para **desconectar Power BI del PC**. Lee de Google Drive (`DriveLoader
   notebook exploratorio incompleto (`archivado/cuentas_clave.ipynb`, solo 4 de ~9 retailers, mezclada
   con un modelo de reposición). Falta definir la fuente limpia antes de portarlos a `bi_*`.
 
+### 2.6c Marketing y responsables de cartera (2026-08-03)
+
+**`python cargar_marketing.py`** — carga la hoja de Marketing de la intranet en las tablas de
+aterrizaje de `sql/marts/31_marketing_dashboards.sql`. Ventana móvil de 7 días; **el día en curso
+no se carga** (las cuatro fuentes lo entregan incompleto).
+
+| Opción | Para qué |
+|---|---|
+| `--desde 2026-01-01` | backfill |
+| `--solo-trm` | solo la tasa de cambio (la única fuente que funciona hoy) |
+| `--seco` | valida e informa, no escribe |
+
+⚠⚠ **Solo la TRM funciona.** Supermetrics, GA4, Search Console y Shopify esperan credenciales que
+no existen en este repo. Cada conector avisa y devuelve vacío; la corrida no se cae. Lo que hace
+falta está en el repo de la intranet, `docs/dashboards/marketing-contrato.md` §0 Fase A.
+
+⚠ Va enganchado a `run_dw.py` (paso 2b, solo tick `:00`) con import perezoso. Después hay que
+refrescar: `python refrescar_mv_dashboards.py --mv mv_marketing_gasto_dia --mv mv_marketing_web_dia
+--mv mv_marketing_atribucion_dia`.
+
+**`python cargar_cartera_responsables.py`** — re-siembra `marts.bi_cartera_responsable` desde la
+hoja `Responsables` de `base_cartera.xlsx` (Drive). A demanda: **cambiar un responsable es editar
+el Excel y correr esto**. Con `--seco` valida sin escribir.
+
+⚠⚠ La hoja necesita una columna **`TERCERO_ID`**, rellena SOLO en las filas de nivel cliente (las
+de nivel tipo cruzan por `TIPO CLIENTE` y el id las rompería). El cruce por razón social se cae en
+silencio y se le vio caerse dos veces: `FARMATODO COLOMBIA SA` contra `FARMATODO COLOMBIA S.A`
+(853 MM sin responsable) y `C&L SOLUTIONS LLC.` contra `C&L SOLUTIONS LLC`. El id de FARMATODO que
+factura es **268476** — hay un duplicado sin ventas que es justo el que casa por nombre.
+
+Después: `python refrescar_mv_dashboards.py --mv mv_cartera_saldo`, y comprobar desde la intranet
+con `python manage.py check_marts` (la sección 7r debe pasar a verde).
+
 ### 2.7 Recetas rápidas (síntoma → comando)
 | Situación | Qué correr |
 |---|---|
@@ -147,6 +180,14 @@ locales, para **desconectar Power BI del PC**. Lee de Google Drive (`DriveLoader
 - `tipo_cliente` (de `partner_type_id` del asiento) no se pisa al refrescar el tercero.
 
 ## 4. Reglas de negocio (recalculadas al cierre de cada carga)
+
+> ⚠⚠ **«Recalculadas» va en serio: un `UPDATE` a mano NO sobrevive.** Todo lo de esta sección se
+> recalcula entero en cada tick de cierre, **con el código que está commiteado en este repo**.
+> Corregir un dato a mano sin desplegar el código que lo sostiene da un arreglo que dura hasta el
+> siguiente tick — y en el intervalo todo se ve bien, así que se da por bueno un informe que va a
+> dejar de cuadrar solo. Pasó con `es_reverso` de `FVX1` (159,2 M) el 2026-08-01: se revirtió en
+> dos días. **El orden es commit + push → re-aplicar → refrescar las MV.**
+
 - **Ventas sin reversos:** factura anulada (`payment_state='reversed'`) + su NC → `es_reverso=TRUE`,
   excluidas de ventas. Devoluciones **parciales** (factura `paid`) sí restan vía `venta_neta`
   (`marcar_reversos`).

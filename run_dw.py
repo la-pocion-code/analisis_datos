@@ -112,6 +112,25 @@ def main(conn):
     if completa and ok:
         _marcar_cierre(conn)
 
+    # 2b) Carga de MARKETING (Supermetrics / GA4 / Search Console / Shopify).
+    #     Solo en el tick de cierre: las cuatro fuentes son de grano DIARIO y el
+    #     día en curso no se carga, así que entre tick y tick no hay un dato nuevo
+    #     que ganar — solo cuota de API que gastar.
+    #     Va ANTES del refresco de MV: al revés, `mv_marketing_gasto_dia` se
+    #     refrescaría con la TRM de ayer y convertiría el gasto de hoy con ella.
+    #     ⚠ El import es PEREZOSO a propósito. `cargar_marketing` necesita
+    #     `requests` y las librerías de Google; si se importara en la cabecera, un
+    #     ImportError dejaría caído TODO el ETL de Odoo, no solo marketing.
+    #     ⚠ No toca `ok`: `ok` gobierna `_marcar_cierre`, que es del cierre
+    #     contable. Que una API externa no responda no debe hacer que el cierre se
+    #     repita la hora siguiente.
+    if completa:
+        try:
+            import cargar_marketing
+            cargar_marketing.cargar()
+        except Exception:
+            logging.exception("Fallo en la carga de marketing")
+
     # 3) Refresco de las vistas materializadas que leen los dashboards de la
     #    intranet. Va AL FINAL para que recoja también lo que trajo el rebuild.
     #    Envuelto en try/except: si un tablero no se puede refrescar, el ETL

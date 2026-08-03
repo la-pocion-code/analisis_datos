@@ -879,3 +879,121 @@ cambia de rango de mora en un cuarto de hora.
   alimenta la proyección de flujo de caja, que es de la hoja de Contabilidad (§9).
 - Las 12 líneas con `estado_pago = 'paid'` y saldo distinto de cero **se conservan**: son
   facturas de exportación con residuos de redondeo de divisa (la mayor, 323.844).
+
+---
+
+## 14. Fase 7 — hoja de MARKETING (2026-08-03)
+
+DDL en `sql/marts/31_marketing_dashboards.sql`. Alimenta `/dashboards/marketing` de la
+intranet (Resumen · Plataformas · Embudo · Diario), que porta el artefacto que marketing
+tenía en Cowork y que guardaba todo en el `localStorage` de un navegador.
+
+### 14.1 Objetos expuestos
+
+| Objeto | Grano | Filas hoy | Para qué |
+|---|---|---|---|
+| `mv_marketing_gasto_dia` | fecha × país × plataforma | 0 | gasto YA convertido, compras y ROAS auto |
+| `mv_marketing_web_dia` | fecha × país | 0 | venta, pedidos, sesiones e impresiones |
+| `mv_marketing_atribucion_dia` | fecha × país × canal × fuente | 0 | venta atribuida por canal |
+| `bi_marketing_pais` | país | 3 | catálogo: moneda, zona horaria, ids de Shopify/GA4/GSC |
+| `bi_marketing_cuenta` | país × plataforma | 8 | **qué plataformas tiene cada país** |
+| `bi_trm_dia` | fecha | 73 | tasa de cambio diaria (NO se concede) |
+
+`GRANT` en `24_rol_intranet.sql`, que hay que **re-ejecutar después** del 31.
+
+Las tres MV nacen **vacías**: solo la TRM tiene fuente funcionando. Ver §14.7.
+
+### 14.2 Por qué la conversión de moneda vive en la MV y no en el loader
+
+⚠⚠ El artefacto tenía la TRM en **una casilla de texto con `4000` por defecto**, global y
+sin fecha. Las cuentas de Meta y Google de **Ecuador facturan en COP** mientras Ecuador
+reporta en USD, así que todo su gasto y su ROAS colgaban de ese número.
+
+Medido el 2026-08-03: **la TRM real es 3.144,14**, no 4.000. Un gasto de 1.000.000 COP se
+reportaba como US$250 cuando son US$318 — o sea que el artefacto **subestimaba la
+inversión de Ecuador un 21 % e inflaba su ROAS un 27 %**.
+
+Por eso el loader guarda **solo la moneda nativa** y la conversión la hace
+`mv_marketing_gasto_dia` contra `bi_trm_dia`, con la tasa vigente de cada día. Corregir
+una TRM re-convierte el histórico en el siguiente refresco, en vez de dejar un número malo
+petrificado. La MV publica `trm_usada` para que la cifra sea auditable.
+
+⚠ La tasa se busca con la **vigente más reciente ≤ fecha**, no con la del día exacto: la
+serie de datos.gov.co publica vigencias (la del viernes rige hasta el domingo) y con un
+join directo el gasto del sábado saldría sin convertir.
+
+### 14.3 Lo que se midió (2026-08-03)
+
+```
+TRM cargada ................. 73 dias (2026-06-01 -> 2026-08-02)
+TRM vigente hoy ............. 3.144,14 COP/USD   (el artefacto usaba 4.000)
+paises activos .............. 3   CO (COP) · EC (USD) · RD (USD)
+cuentas de publicidad ....... 8   CO 3 · EC 3 · RD 2  (RD no tiene TikTok)
+hechos ...................... 0   las 4 fuentes esperan credenciales
+```
+
+### 14.4 Las decisiones que hay que respetar
+
+1. ⚠⚠ **`NULL` no es cero.** `sesiones`, `usuarios`, `impresiones`, `clics` y
+   `posicion_media` son anulables a propósito: GA4 y Search Console solo entregan desde
+   que se les concedió acceso. El artefacto mostraba «0 sesiones sobre una meta de
+   18.000» —semáforo rojo permanente sobre un dato inexistente—. Si el loader escribe 0,
+   la hoja vuelve a mentir.
+2. ⚠ **Qué plataformas tiene un país sale de `bi_marketing_cuenta`**, no de las filas con
+   gasto. RD no tiene TikTok: en el artefacto eso estaba cableado en TRES sitios del
+   JavaScript. **La ausencia de fila ES el dato.**
+3. ⚠ **Shopify, GA4 y Search Console NO son «plataformas»**: sus identificadores van en
+   columnas de `bi_marketing_pais`. Como filas de `bi_marketing_cuenta`, la intranet los
+   pintaría como una cuarta tarjeta de publicidad con su ROAS.
+4. ⚠ **El día en curso no se carga.** Las cuatro fuentes lo entregan incompleto. La
+   intranet cuenta con ello: su cálculo del ritmo divide entre **días con dato**.
+5. ⚠ **`canal` tiene que coincidir EXACTAMENTE** con `bi_marketing_cuenta.plataforma`
+   (`Meta`, `Google`, `TikTok`): la intranet cruza por igualdad de cadena, y un
+   `facebook` aquí contra un `Meta` allí deja el ROAS last-click en null sin avisar.
+6. ⚠ **Las compras auto-reportadas se solapan y no se suman.** El mismo pedido lo
+   reclaman Meta y Google; su suma supera los pedidos reales de Shopify. Se guardan tal
+   cual y la intranet las publica con su aviso. El «ROAS prorrateado» del artefacto —que
+   repartía toda la venta usando esas conversiones— **no se portó**.
+
+### 14.5 Las tres capas
+
+```
+bi_marketing_pais / bi_marketing_cuenta   config, se teclea en el SQL
+bi_trm_dia                                 la llena cargar_marketing.py
+bi_marketing_*_dia                         aterrizaje: lo que dijo cada API
+mv_marketing_*_dia                         lo que lee la intranet
+```
+
+No es ceremonia: es lo que permite recargar la TRM y que el gasto convertido se corrija
+solo, y lo que deja tipar de verdad en vez de heredar el `VARCHAR(512)` de
+`DBLoader.cargar` (el problema que las hojas 28 y 29 tuvieron que arreglar después).
+
+⚠ El aterrizaje **NO se concede** a la intranet: está en la moneda de la cuenta, y leerlo
+directamente daría un ROAS ~4.000 veces mayor sin que nada lo delatara.
+
+### 14.6 Refresco y carga
+
+`MVS_MARKETING` en `refrescar_mv_dashboards.py`, tick `:00`. Las tres son independientes
+entre sí: no hay orden que respetar.
+
+`cargar_marketing.py` se engancha en el **paso 2b** de `run_dw.py`, entre el cierre y el
+refresco de MV. ⚠ Va antes del refresco: al revés, `mv_marketing_gasto_dia` convertiría el
+gasto de hoy con la TRM de ayer. ⚠ El import es **perezoso**: `cargar_marketing` necesita
+`requests` y las librerías de Google, y un `ImportError` en la cabecera dejaría caído todo
+el ETL de Odoo.
+
+### 14.7 Fuera de alcance
+
+⚠⚠ **Solo la TRM funciona.** No hay ninguna credencial de Supermetrics, GA4, Search
+Console ni Shopify en este repo — cero rastros en el `.env`. El `google_credentials.json`
+que existe es una cuenta de servicio con **un único scope, `drive.readonly`**; sirve como
+identidad (mismo `client_email` que dar de alta en GA4 y Search Console) pero los scopes
+se piden en código y las APIs hay que habilitarlas en el proyecto `loginlapocion`.
+
+Los cuatro conectores de `cargar_marketing.py` están **escritos y aislados pero sin
+probar**: cada uno comprueba su credencial y, si falta, avisa y devuelve vacío. La hoja de
+la intranet responde 200 y dice «sin dato» con la razón, que es su comportamiento honesto.
+
+Lo que hace falta para encenderlos, paso a paso, está en el repo de la intranet:
+`docs/dashboards/marketing-contrato.md` §0 Fase A. El bloqueante duro es confirmar que hay
+**plan de API de Supermetrics**: el conector de Cowork es interactivo y no sirve para un cron.

@@ -41,6 +41,12 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
   LOCALES (Drive → PG). A demanda (ver sección "BI Power BI").
 - `cargar_cuentas_clave.py` — reproduce en `marts.bi_cuentas_clave_ventas/bi_inventario_cclave/
   bi_tiendas_cclave` las tablas de CUENTAS CLAVE (ventas/inventarios por retailer + países) desde Drive.
+- `cargar_marketing.py` — carga la hoja de MARKETING de la intranet (TRM de datos.gov.co +
+  Supermetrics/GA4/Search Console/Shopify). ⚠ Hoy **solo la TRM funciona**: las otras cuatro
+  esperan credenciales que no existen. Enganchado a `run_dw.py` (paso 2b, tick :00).
+- `cargar_cartera_responsables.py` — re-siembra `marts.bi_cartera_responsable` desde la hoja
+  `Responsables` de `base_cartera.xlsx`. A demanda. ⚠ Cruza por `TERCERO_ID`: por razón social
+  se cayó dos veces (FARMATODO COLOMBIA S.A y C&L SOLUTIONS LLC).
 - `refrescar_mv_dashboards.py` — refresca las MV que consumen los **dashboards de la intranet**
   (lo llama `run_dw.py` al final de cada corrida). Ver sección "Dashboards de la INTRANET".
 - `classes/db_loader.py` — `DBLoader`: conexión PG, auto-DDL, UPSERT, carga incremental.
@@ -461,6 +467,9 @@ definidos por el admin). **Contrato de datos completo:
 - PostgreSQL (Railway): `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
 - Correo: `SENDER_EMAIL`, `SENDER_PASSWORD`.
 - Google Drive: `GOOGLE_CREDENTIALS_PATH` (ruta al JSON de service account).
+- Marketing (⚠ NINGUNA existe todavía): `SUPERMETRICS_API_KEY`, `GA4_CREDENTIALS_JSON`,
+  `GSC_CREDENTIALS_JSON`, `SHOPIFY_SHOP_{CO,EC,RD}`, `SHOPIFY_TOKEN_{CO,EC,RD}`. Sin ellas
+  `cargar_marketing.py` solo carga la TRM (que no necesita credencial).
 
 ## Convenciones
 - Esquema crudo actual: `raw`. Objetivo del DW: `staging` (crudo) + `marts` (estrella).

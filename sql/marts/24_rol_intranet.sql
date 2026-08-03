@@ -220,6 +220,19 @@ GRANT SELECT ON
     marts.mv_cartera_saldo            -- cartera por linea de CxC, sin NIT
 TO intranet_ro;
 
+-- Vistas materializadas de dashboards (hoja Marketing — meta del mes, ROAS y embudo).
+-- DDL en 31_marketing_dashboards.sql ⇒ re-ejecutar ESTE archivo después del 31.
+-- ⚠ Se conceden las MV y NO las tablas de aterrizaje `bi_marketing_*_dia`: el gasto
+-- de la MV ya viene convertido a la moneda del país con la TRM vigente de cada día,
+-- y el aterrizaje está en la moneda de la CUENTA — que en Ecuador es COP aunque el
+-- país reporte en USD. Leer el aterrizaje directamente daría un ROAS ~4.000 veces
+-- mayor sin que nada lo delatara.
+GRANT SELECT ON
+    marts.mv_marketing_gasto_dia,     -- gasto x plataforma, ya convertido (+ trm_usada)
+    marts.mv_marketing_web_dia,       -- venta, pedidos, sesiones e impresiones
+    marts.mv_marketing_atribucion_dia -- venta atribuida por canal
+TO intranet_ro;
+
 -- Semillas que la intranet necesita para armar los estados: el catálogo y el orden
 -- de los renglones derivados, y la tasa de renta por empresa. Van en la base y no
 -- en el código de la intranet para que no se dupliquen ni deriven.
@@ -232,8 +245,12 @@ GRANT SELECT ON
     marts.bi_nielsen_marca_propia,    -- marcas de la casa dentro del panel
     marts.bi_cclave_cliente,          -- retailer -> tercero_id (verificado, ver 29_*)
     marts.bi_cclave_ciclo,            -- dias de reposicion por retailer (nace VACIA)
-    marts.bi_cartera_tipo_credito     -- que tipos son cartera de credito, y por que no
+    marts.bi_cartera_tipo_credito,    -- que tipos son cartera de credito, y por que no
                                       -- lo son los demas (la hoja publica el motivo)
+    marts.bi_marketing_pais,          -- paises del tracker: moneda, zona horaria, orden
+    marts.bi_marketing_cuenta         -- QUE PLATAFORMAS tiene cada pais. La intranet la
+                                      -- lee para no ofrecer TikTok en Rep. Dominicana,
+                                      -- que no lo tiene: la ausencia de fila ES el dato
 TO intranet_ro;
 
 -- Bitácora de refresco: la intranet la lee para invalidar su caché y mostrar
@@ -286,3 +303,13 @@ REVOKE CREATE ON SCHEMA marts FROM intranet_ro;
 -- ⚠ La hoja de contabilidad NO fue una excepción a eso: se concedieron sus siete MV
 -- agregadas y `v_lk_cuenta`, pero el hecho contable y `dim_cuenta` siguen negados.
 -- Un tablero necesita totales por mes, no el detalle de cada asiento.
+--
+-- ⚠ MARKETING (31_*) niega tres cosas, y las tres por el mismo motivo — que el dato
+-- crudo se lee mal:
+--   · `bi_marketing_gasto_dia` / `_web_dia` / `_atribucion_dia` (el aterrizaje) están
+--     en la moneda de la CUENTA, no la del país. Las cuentas de Meta y Google de
+--     Ecuador facturan en COP mientras Ecuador reporta en USD: leer el aterrizaje
+--     directamente daría un ROAS ~4.000 veces mayor y parecería correcto. La MV es la
+--     que convierte, con la TRM vigente de cada día, y publica `trm_usada`.
+--   · `bi_trm_dia` es insumo de ese cálculo, no dato de la hoja. La intranet no la
+--     necesita para nada y concederla solo invitaría a re-convertir por su cuenta.

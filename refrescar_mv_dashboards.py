@@ -115,7 +115,29 @@ MVS_CARTERA = (
     "mv_cartera_saldo",
 )
 
-MVS = MVS_VENTAS + MVS_CONTAB + MVS_NIELSEN + MVS_CCLAVE + MVS_CARTERA
+# ── MARKETING (sql/marts/31_marketing_dashboards.sql) — tick :00 ──────────────
+# Las cuatro fuentes (Supermetrics, GA4, Search Console y Shopify) son de grano
+# DIARIO y `cargar_marketing.py` no carga el día en curso, así que entre tick y
+# tick NO hay un dato nuevo que ganar: refrescar cada 15 minutos solo gastaría
+# tiempo. Va en el tick de la hora, después de la carga.
+#
+# ⚠ Las tres son independientes entre sí: no hay orden que respetar. Se dice
+# explícitamente porque en contabilidad sí lo hay y el motivo es feo — refrescar
+# una derivada antes que su origen sirve los datos del refresco anterior con un
+# `refreshed_at` nuevo, y la intranet los muestra como frescos.
+#
+# ⚠ `mv_marketing_gasto_dia` convierte con `bi_trm_dia`, que llena el mismo
+# loader. Si se refrescara ANTES de cargar la TRM del día, el gasto de ese día
+# saldría con la tasa anterior (no NULL: la MV usa la vigente más reciente). Por
+# eso el paso 2b de `run_dw.py` va antes que este refresco.
+MVS_MARKETING = (
+    "mv_marketing_gasto_dia",
+    "mv_marketing_web_dia",
+    "mv_marketing_atribucion_dia",
+)
+
+MVS = (MVS_VENTAS + MVS_CONTAB + MVS_NIELSEN + MVS_CCLAVE + MVS_CARTERA
+       + MVS_MARKETING)
 
 
 def _registrar(cur, mv: str, filas, duracion_ms: int, ok: bool, error: str | None) -> None:

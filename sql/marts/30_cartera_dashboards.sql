@@ -162,30 +162,66 @@ ON CONFLICT (tipo_cliente) DO UPDATE
 -- Excel, no del negocio, asi que el mismo cliente podia cambiar de dueño porque
 -- alguien añadio una fila en otro sitio. Aqui la precedencia es explicita:
 --
---     1. fila con `cliente` = el nombre del tercero   (la mas especifica)
---     2. fila con `cliente IS NULL` y su `tipo_cliente`
---     3. la fila con `es_default`
---     4. si no hay ninguna, '(sin responsable)'
+--     1. fila con `tercero_id` = el id del tercero    (la mas especifica)
+--     2. fila con `cliente` = el nombre del tercero
+--     3. fila con `cliente IS NULL` y su `tipo_cliente`
+--     4. la fila con `es_default`
+--     5. si no hay ninguna, '(sin responsable)'
+--
+-- ⚠⚠ `tercero_id` SE AÑADIO EL 2026-08-03 Y ES LA LLAVE BUENA. El cruce por
+-- razon social se cae en silencio, y se midio cayendose DOS veces:
+--
+--   · la hoja dice `FARMATODO COLOMBIA SA` y quien factura en Odoo es
+--     `FARMATODO COLOMBIA S.A`, con puntos. Un punto de diferencia dejaba
+--     853.168.462 pesos —el 12,7 % de la cartera— SIN RESPONSABLE, y por tanto
+--     fuera del informe de todo el mundo. Existe ademas un duplicado del mismo
+--     cliente sin ventas, que es el que casa con el nombre de la hoja: el que
+--     factura es el `tercero_id` 268476.
+--   · el notebook cablea `C&L SOLUTIONS LLC.` y Odoo dice `C&L SOLUTIONS LLC`,
+--     asi que ese cliente NO estaba recibiendo sus 120 dias de credito pactados.
+--
+-- El cruce por texto se conserva como respaldo —una fila sin `tercero_id` sigue
+-- funcionando— pero deja de ser el camino principal. Al re-sembrar desde el
+-- Excel, rellenar `TERCERO_ID`.
 --
 -- Arranca con lo que hay en `bi_cartera`, que es el ultimo volcado real del
--- pipeline (2026-07-23): DIANA RIOS, DANIELA DURAN y SHELLSY VELASCO. A partir
--- de aqui se mantiene en esta tabla.
+-- pipeline (2026-07-23): DIANA RIOS, DANIELA DURAN y SHELLSY VELASCO. ⚠ Ese
+-- volcado NO es la fuente de verdad y se quedo corto: le faltan ANDRES VASQUEZ,
+-- MIRIAM BURGOS y MARIA PAULA, y le sobra DANIELA DURAN. La fuente de verdad es
+-- la hoja `Responsables` de `base_cartera.xlsx`, y quien la trae es
+-- `cargar_cartera_responsables.py`.
 -- ════════════════════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS marts.bi_cartera_responsable (
     id           BIGSERIAL PRIMARY KEY,
-    -- Uno de los dos manda; los dos a la vez acotan mas.
+    -- Cualquiera de los tres manda; varios a la vez acotan mas.
+    tercero_id   INTEGER,
     tipo_cliente TEXT,
     cliente      TEXT,
     responsable  TEXT    NOT NULL,
     ubicacion    TEXT,
     es_default   BOOLEAN NOT NULL DEFAULT FALSE,
-    nota         TEXT,
-    CONSTRAINT bi_cartera_responsable_algo_que_casar
-        CHECK (es_default OR tipo_cliente IS NOT NULL OR cliente IS NOT NULL)
+    nota         TEXT
 );
 
--- Un cliente no puede tener dos dueños, ni un tipo tampoco. Y solo puede haber
--- un default: sin esto, `LIMIT 1` elegiria uno al azar en cada refresco.
+-- Migracion para las bases que ya tenian la tabla sin `tercero_id`. Va aqui y no
+-- en un fichero aparte para no tener que duplicar la definicion de la MV, que es
+-- de 100 lineas y se desincronizaria al primer cambio.
+ALTER TABLE marts.bi_cartera_responsable
+    ADD COLUMN IF NOT EXISTS tercero_id INTEGER;
+
+-- El CHECK cambia (ahora `tercero_id` tambien vale como llave), asi que se
+-- reemplaza. DROP IF EXISTS + ADD es idempotente como pareja.
+ALTER TABLE marts.bi_cartera_responsable
+    DROP CONSTRAINT IF EXISTS bi_cartera_responsable_algo_que_casar;
+ALTER TABLE marts.bi_cartera_responsable
+    ADD  CONSTRAINT bi_cartera_responsable_algo_que_casar
+    CHECK (es_default OR tercero_id IS NOT NULL
+           OR tipo_cliente IS NOT NULL OR cliente IS NOT NULL);
+
+-- Un tercero no puede tener dos dueños, ni un cliente, ni un tipo. Y solo puede
+-- haber un default: sin esto, `LIMIT 1` elegiria uno al azar en cada refresco.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_bi_cartera_resp_tercero
+    ON marts.bi_cartera_responsable (tercero_id) WHERE tercero_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_bi_cartera_resp_cliente
     ON marts.bi_cartera_responsable (cliente) WHERE cliente IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ux_bi_cartera_resp_tipo
@@ -195,9 +231,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_bi_cartera_resp_default
     ON marts.bi_cartera_responsable ((TRUE)) WHERE es_default;
 
 COMMENT ON TABLE marts.bi_cartera_responsable IS
-  'Responsable de cobro. Precedencia: cliente > tipo_cliente > default. Sustituye '
-  'la hoja Responsables de base_cartera.xlsx, que nunca llego a una tabla. El '
-  '.pbix tiene la columna cableada a NULL.';
+  'Responsable de cobro. Precedencia: tercero_id > cliente > tipo_cliente > '
+  'default. El cruce por tercero_id es el bueno: por razon social se cayo dos '
+  'veces (FARMATODO COLOMBIA S.A y C&L SOLUTIONS LLC). Se mantiene desde la hoja '
+  'Responsables de base_cartera.xlsx con cargar_cartera_responsables.py.';
 
 -- Arranque desde el ultimo volcado del pipeline viejo. Idempotente: si ya hay una
 -- fila para ese cliente no se toca, porque a partir de aqui manda esta tabla.
@@ -288,12 +325,15 @@ SELECT
     CASE WHEN f.fecha_vencimiento IS NOT NULL AND f.fecha IS NOT NULL
          THEN (f.fecha_vencimiento - f.fecha) END                     AS dias_credito,
 
-    -- Precedencia cliente > tipo > default (ver la semilla).
-    COALESCE(rc.responsable, rt.responsable, rd.responsable,
+    -- Precedencia tercero_id > cliente > tipo > default (ver la semilla).
+    COALESCE(ri.responsable, rc.responsable, rt.responsable, rd.responsable,
              '(sin responsable)')                                     AS responsable,
-    COALESCE(rc.ubicacion, rt.ubicacion)                              AS ubicacion
+    COALESCE(ri.ubicacion, rc.ubicacion, rt.ubicacion)                AS ubicacion
 FROM fechas f
 LEFT JOIN marts.bi_cartera_tipo_credito tc ON tc.tipo_cliente = f.tipo_cliente
+-- Por id primero: es la unica llave que sobrevive a que renombren el cliente en
+-- Odoo, y renombrarlo ya dejo 853 MM sin dueño una vez.
+LEFT JOIN marts.bi_cartera_responsable  ri ON ri.tercero_id   = f.tercero_id
 LEFT JOIN marts.bi_cartera_responsable  rc ON rc.cliente      = f.tercero
 LEFT JOIN marts.bi_cartera_responsable  rt ON rt.cliente IS NULL
                                           AND rt.tipo_cliente = f.tipo_cliente
