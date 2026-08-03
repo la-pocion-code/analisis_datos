@@ -40,6 +40,9 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
   Enganchado a `run_dw.py` (paso 2b, tick :00).
 - `cargar_cartera_responsables.py` — re-siembra `marts.bi_cartera_responsable` desde la hoja
   `Responsables` de `base_cartera.xlsx`. A demanda. ⚠ Cruza por `TERCERO_ID`.
+  ⚠⚠ Desde el 2026-08-03 la siembra de `30_cartera_dashboards.sql` solo entra si la tabla está
+  **vacía**: antes se colaba al lado de las filas del Excel (índices únicos parciales POR NIVEL)
+  y **ganaba**, revirtiendo los responsables en verde y sin un solo error.
 - `classes/db_loader.py` — `DBLoader`: conexión PG, auto-DDL, UPSERT, carga incremental.
 - `classes/drive_loader.py` — `DriveLoader`: lee Excel/CSV de Google Drive.
 - `classes/send_mail.py` — `MailSender`: correos SMTP con adjuntos.

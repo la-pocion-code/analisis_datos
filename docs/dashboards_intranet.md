@@ -855,6 +855,27 @@ DDL): anticipos −4.922.033.134 + cartera con mora 6.763.624.037 + crédito sin
    arranca desde el último volcado real del pipeline (2026-07-23): **DIANA RIOS, DANIELA
    DURAN y SHELLSY VELASCO**. Resuelto: 337 filas con dueño por 8.542 MM, y 5.686 sin
    dueño por 593 MM (casi todo asientos sin tercero).
+   ⚠⚠ **Ese `INSERT` de arranque solo corre si la tabla está VACÍA** (2026-08-03). El
+   `ON CONFLICT DO NOTHING` parecía suficiente y no lo era: los índices únicos son
+   **parciales y por nivel**, así que una fila del volcado a nivel *cliente* no colisiona
+   con una del Excel a nivel *tipo de cliente* y se inserta al lado — y con la precedencia
+   `tercero_id > cliente > tipo_cliente`, **gana la del volcado**. Re-ejecutar el fichero
+   (que la propia cabecera manda hacer al tocar la MV) revertía los responsables al estado
+   del 2026-07-23, en verde y sin un error. La fuente de verdad es la hoja `Responsables`
+   y quien la carga es `cargar_cartera_responsables.py`.
+7. ⚠⚠ **Una nota débito se disfraza de factura y nace vencida** (2026-08-03). Odoo las
+   emite con `move_type = 'out_invoice'`, idéntico a una factura, y **sin término de
+   pago**: `date_maturity = date`, cero días de crédito. Pasan `admite_mora` y entran
+   directas en «61-90» o peor. Medido: `NDY4` (NOVAVENTA, **55.569.759**, «FE7281, Ajuste
+   por precio») era el **48 % de la mora de DIANA RIOS** y el **98 % de su rango 61-90**.
+   · Lo único que las distingue es el **diario** (`dim_diario.codigo IN ('NDY','NDEXP')`,
+     por código y no por nombre — misma regla que `14_ventas.sql` y `25_nd_factura.sql`),
+     y `v_cartera` **no propagaba `diario_id`**. Ahora publica `es_nota_debito` y
+     `documento_origen`, y la MV los arrastra.
+   · ⚠ `v_cartera` está definida **dos veces** (`06_cartera_en_hecho.sql` y
+     `07_widen_text.sql`, que corre después y **gana**). Las dos tienen que coincidir.
+   · **Sí son deuda**: la hoja las saca de la cola de cobro, no de la vista. La MV solo
+     las marca; quien decide es la intranet.
 
 ### 13.5 Rangos de mora
 

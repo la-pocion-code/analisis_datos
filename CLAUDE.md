@@ -47,6 +47,11 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 - `cargar_cartera_responsables.py` — re-siembra `marts.bi_cartera_responsable` desde la hoja
   `Responsables` de `base_cartera.xlsx`. A demanda. ⚠ Cruza por `TERCERO_ID`: por razón social
   se cayó dos veces (FARMATODO COLOMBIA S.A y C&L SOLUTIONS LLC).
+  ⚠⚠ **Hay que volver a correrlo después de re-ejecutar `30_cartera_dashboards.sql`** si la
+  tabla estaba vacía: ese fichero la siembra del volcado viejo de `bi_cartera`. Desde el
+  2026-08-03 la siembra solo entra si la tabla está **vacía** — antes se colaba al lado de las
+  filas del Excel (índices únicos parciales POR NIVEL) y **ganaba**, revirtiendo los
+  responsables en verde y sin un solo error.
 - `refrescar_mv_dashboards.py` — refresca las MV que consumen los **dashboards de la intranet**
   (lo llama `run_dw.py` al final de cada corrida). Ver sección "Dashboards de la INTRANET".
 - `classes/db_loader.py` — `DBLoader`: conexión PG, auto-DDL, UPSERT, carga incremental.

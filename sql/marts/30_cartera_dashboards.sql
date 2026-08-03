@@ -31,7 +31,7 @@
 --     DIANA RIOS 130 filas / 61 clientes · DANIELA DURAN 76 / 5
 --     SHELLSY VELASCO 16 / 3
 --
--- ── LAS SIETE TRAMPAS DE ESTE DATASET ───────────────────────────────────────
+-- ── LAS OCHO TRAMPAS DE ESTE DATASET ────────────────────────────────────────
 --
 -- 1. ⚠⚠ **SOLO LAS FACTURAS ADMITEN MORA.** `fecha_vencimiento_key` sale de
 --    `account.move.line.date_maturity`, y Odoo solo la calcula cuando el
@@ -87,6 +87,23 @@
 -- 7. ⚠ **`v_cartera` EXPONE EL NIT** (`identificacion`), y por eso esta negada a
 --    `intranet_ro`. Esta MV **no lo propaga**. No añadirlo: la hoja no lo
 --    necesita y seria dato personal saliendo a una app web.
+--
+-- 8. ⚠⚠ **UNA NOTA DEBITO NACE VENCIDA Y SE DISFRAZA DE FACTURA** (2026-08-03).
+--    Odoo emite las ND con `move_type = 'out_invoice'`, identico a una factura de
+--    venta: lo UNICO que las distingue es el diario
+--    (`dim_diario.codigo IN ('NDY','NDEXP')` — por CODIGO, no por nombre; misma
+--    regla que ya usan 14_ventas.sql y 25_nd_factura.sql). Ademas no llevan
+--    termino de pago, asi que `date_maturity = date`: cero dias de credito y
+--    entran directas en «61-90» o peor.
+--    Medido el 2026-08-03: `NDY4` (NOVAVENTA, 55.569.759, «FE7281, Ajuste por
+--    precio») era el **48 % de la mora de DIANA RIOS** y el **98 % de su rango
+--    61-90**. El informe viejo no la mostraba, pero por accidente: su filtro era
+--    `Numero.startswith('F')` (trampa 1), que se come todo lo que empiece por N.
+--    ⚠ **Si son deuda real** — el cliente debe ese cargo. Por eso no se
+--    descartan: `v_cartera` publica `es_nota_debito` y `documento_origen`, la MV
+--    los propaga y la hoja les da su propio bloque, como a los anticipos.
+--    ⚠ `v_cartera` esta definida DOS VECES (06_cartera_en_hecho.sql y
+--    07_widen_text.sql, que corre despues y gana). Las dos tienen que coincidir.
 --
 -- ⚠ De paso, dos rarezas que NO son errores:
 --    · 12 lineas con `estado_pago = 'paid'` y saldo distinto de cero: son
@@ -236,8 +253,28 @@ COMMENT ON TABLE marts.bi_cartera_responsable IS
   'veces (FARMATODO COLOMBIA S.A y C&L SOLUTIONS LLC). Se mantiene desde la hoja '
   'Responsables de base_cartera.xlsx con cargar_cartera_responsables.py.';
 
--- Arranque desde el ultimo volcado del pipeline viejo. Idempotente: si ya hay una
--- fila para ese cliente no se toca, porque a partir de aqui manda esta tabla.
+-- ════════════════════════════════════════════════════════════════════════════
+-- Arranque desde el ultimo volcado del pipeline viejo — SOLO SI LA TABLA ESTA
+-- VACIA.
+--
+-- ⚠⚠ EL `ON CONFLICT DO NOTHING` NO BASTABA, Y ES UNA TRAMPA CARA (2026-08-03).
+-- Parecia idempotente: «si ya hay fila para ese cliente, no se toca». Pero los
+-- indices unicos son PARCIALES y por NIVEL, asi que una fila del volcado a nivel
+-- CLIENTE nunca colisiona con una fila del Excel a nivel TIPO DE CLIENTE — se
+-- inserta al lado. Y como la precedencia de la MV es
+-- `tercero_id > cliente > tipo_cliente > default`, **la fila vieja GANA**.
+--
+-- Medido: re-ejecutar este fichero (que la propia cabecera manda hacer cada vez
+-- que se toca la MV) revirtio los responsables al estado del 2026-07-23.
+-- `DAVID SANCHEZ` cayo de 1.304 MM a 20.468 pesos y reaparecio
+-- `SHELLSY VELASCO` con 1.213 MM, que ya no trabaja esa cartera. En verde, sin
+-- un solo error, y `check_marts §7r` no lo caza porque el 100 % de la cartera
+-- SIGUE teniendo un responsable: solo que el equivocado.
+--
+-- La fuente de verdad es la hoja `Responsables` de `base_cartera.xlsx`, y quien
+-- la carga es `cargar_cartera_responsables.py`. Este INSERT es solo el arranque
+-- de una base nueva.
+-- ════════════════════════════════════════════════════════════════════════════
 INSERT INTO marts.bi_cartera_responsable (cliente, responsable, nota)
 SELECT DISTINCT
        btrim(b.nombre_del_contacto_a_mostrar_en_la_factura),
@@ -246,6 +283,7 @@ SELECT DISTINCT
 FROM marts.bi_cartera b
 WHERE COALESCE(btrim(b.responsable), '') <> ''
   AND COALESCE(btrim(b.nombre_del_contacto_a_mostrar_en_la_factura), '') <> ''
+  AND NOT EXISTS (SELECT 1 FROM marts.bi_cartera_responsable)
 ON CONFLICT DO NOTHING;
 
 
@@ -281,7 +319,9 @@ WITH base AS (
         COALESCE(NULLIF(btrim(v.empresa_nombre), ''), '(sin empresa)') AS empresa,
         v.fecha_key,
         v.fecha_vencimiento_key,
-        v.saldo_pendiente
+        v.saldo_pendiente,
+        v.es_nota_debito,
+        v.documento_origen
     FROM marts.v_cartera v
 ),
 fechas AS (
@@ -320,6 +360,18 @@ SELECT
     (f.saldo_pendiente < 0)                                           AS es_anticipo,
     COALESCE(tc.es_credito, FALSE)                                    AS es_credito,
     tc.nota                                                           AS nota_tipo,
+    -- ⚠ NOTA DÉBITO (trampa 8). Es `out_invoice` igual que una factura y trae
+    -- `date_maturity`, asi que `admite_mora` la deja pasar y NACE VENCIDA: Odoo
+    -- no le pone termino de pago, o sea `vencimiento = fecha`, cero dias de
+    -- credito. Medido el 2026-08-03: `NDY4` (NOVAVENTA, 55,6 M, «FE7281, Ajuste
+    -- por precio») era el 48 % de la mora de DIANA RIOS y el 98 % de su rango
+    -- 61-90 dias. El informe viejo nunca las mostro, pero por accidente: su
+    -- filtro era `Numero.startswith('F')`.
+    -- La MV solo lo MARCA; quien decide es la hoja (`SOLO_CARTERA`).
+    COALESCE(f.es_nota_debito, FALSE)                                 AS es_nota_debito,
+    -- El documento al que apunta la ND, para no dejar al cobrador adivinando.
+    -- Solo tiene sentido en una ND: en el resto es el `ref` del asiento.
+    CASE WHEN f.es_nota_debito THEN f.documento_origen END            AS documento_origen,
 
     -- Estatico: no depende de hoy, al contrario que los dias de atraso.
     CASE WHEN f.fecha_vencimiento IS NOT NULL AND f.fecha IS NOT NULL
@@ -346,8 +398,10 @@ LEFT JOIN LATERAL (
 -- `REFRESH ... CONCURRENTLY` exige.
 CREATE UNIQUE INDEX ux_mv_cartera_saldo ON marts.mv_cartera_saldo (linea_id);
 
--- Los tres filtros de la hoja.
-CREATE INDEX ix_mv_cartera_saldo_mora  ON marts.mv_cartera_saldo (admite_mora, es_credito);
+-- Los filtros de la hoja. `es_nota_debito` entra en el primero porque las cuatro
+-- clausulas de la cola de cobro viajan siempre juntas (`SOLO_CARTERA`).
+CREATE INDEX ix_mv_cartera_saldo_mora  ON marts.mv_cartera_saldo
+    (admite_mora, es_credito, es_nota_debito);
 CREATE INDEX ix_mv_cartera_saldo_venc  ON marts.mv_cartera_saldo (fecha_vencimiento);
 CREATE INDEX ix_mv_cartera_saldo_resp  ON marts.mv_cartera_saldo (responsable);
 
@@ -355,7 +409,9 @@ COMMENT ON MATERIALIZED VIEW marts.mv_cartera_saldo IS
   'Cartera por linea de CxC. NO trae dias de atraso ni rango de mora: dependen de '
   'HOY y congelarlos en el refresco mostraria la mora de ayer. NO trae el NIT. '
   'Solo admite_mora=true entra en el aging (los entry no tienen vencimiento); '
-  'es_anticipo=true son saldos a favor y van aparte, sin netear.';
+  'es_anticipo=true son saldos a favor y van aparte, sin netear; '
+  'es_nota_debito=true son cargos extra que nacen vencidos (Odoo no les pone '
+  'termino de pago) y van en su propio bloque, no en la cola de cobro.';
 
 
 -- ════════════════════════════════════════════════════════════════════════════
