@@ -241,6 +241,53 @@ def main():
         ORDER BY ABS(nc.residual) DESC LIMIT 20
     """), vacio="(ninguna: todas las NC del puente están conciliadas por completo)"))
 
+    # ── La CONSECUENCIA de ese riesgo latente, cuantificada ──────────────────────────
+    # Lo de arriba lista la CAUSA (NC con CxC sin conciliar del todo). Esto lista lo que
+    # produce: facturas que, tras sumarles la NC que se les atribuyó, quedan en NEGATIVO.
+    # Es decir, un mes al que se le carga una devolución mayor que la venta que tuvo.
+    #
+    # ⚠ No falta dinero: las proporciones suman 1 y el valor íntegro de la NC entra en
+    # ventas, así que el ANUAL cuadra. Lo que está mal es a qué mes se carga el negativo.
+    # Medido el 2026-08-01: 33 facturas, −109.500.982. Diagnóstico completo en
+    # `proyecto pocion/intranet/docs/dashboards/nc-reparto-unidades.md` §7.
+    #
+    # ⚠ Va SIN filtro de año a propósito (al contrario que el bloque de arriba): el caso
+    # que lo destapó era de 2026-01 pero los mayores son de 2025, y acotar por año lo
+    # habría escondido. Mismo motivo por el que `conciliar_odoo_ventas` hay que correrlo
+    # para los tres años y no solo para el actual.
+    print("\n   CONSECUENCIA — facturas que quedan NETAS NEGATIVAS tras su(s) NC atribuida(s):")
+    print("   (la NC se carga entera a una factura que no la cubre; el anual no cambia,")
+    print("    pero el mes de la factura queda del revés. Ver nc-reparto-unidades.md §7)")
+    print(_p(lo.consultar(f"""
+        WITH doc AS (
+            SELECT f.factura_id, MIN(f.numero) AS numero, MIN(f.fecha_factura) AS fecha,
+                   MIN(f.categoria) AS categoria, BOOL_OR(f.es_reverso) AS rev,
+                   SUM(f.credito - f.debito) AS m, SUM(f.cantidad) AS cant
+            FROM marts.fact_movimiento_contable f
+            JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
+            WHERE c.clase_codigo = '4' AND f.es_venta IS TRUE GROUP BY 1
+        ),
+        agg AS (
+            SELECT mp.factura_id,
+                   SUM(nc.m * mp.proporcion)    AS nc_val,
+                   SUM(nc.cant * mp.proporcion) AS nc_cant,
+                   STRING_AGG(nc.numero, ' ' ORDER BY nc.numero) AS ncs
+            FROM marts.map_nc_factura mp
+            JOIN doc nc ON nc.factura_id = mp.nc_factura_id
+            WHERE nc.rev IS NOT TRUE GROUP BY 1
+        )
+        SELECT fa.numero AS factura, fa.fecha, fa.categoria,
+               ROUND(fa.m / {MM}, 1)              AS factura_mm,
+               ROUND(fa.cant)                     AS und_factura,
+               ROUND(a.nc_val / {MM}, 1)          AS nc_mm,
+               ROUND(a.nc_cant)                   AS und_nc,
+               ROUND((fa.m + a.nc_val) / {MM}, 1) AS neto_mm,
+               a.ncs AS notas_credito
+        FROM agg a JOIN doc fa ON fa.factura_id = a.factura_id
+        WHERE fa.rev IS NOT TRUE AND (fa.m + a.nc_val) < -1
+        ORDER BY (fa.m + a.nc_val) LIMIT 40
+    """), vacio="(ninguna: ninguna factura queda negativa tras su nota crédito)"))
+
     print()
     print("=" * 115)
     print("Recordatorio: las diferencias de marzo/abril contra el Excel de CLEAN DATA son ESPERADAS.")

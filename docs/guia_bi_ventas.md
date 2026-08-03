@@ -275,6 +275,48 @@ marzo 7.297,0 → **7.887,2M** y abril 9.639,8 → **8.823,8M**. Era la segunda 
 - Las que quedan fuera están en **`marts.v_notas_debito_excluidas`** con el documento que referencian:
   cargos extra (`NDY4` 49,2M "FE7281, Ajuste por precio"), ND sin `ref`, y ND que anulan una NC que no
   se pudo enlazar a ninguna factura (esas tampoco restaban → la exclusión es simétrica).
+
+#### ⚠ La simetría se rompía por una puerta lateral (arreglado 2026-08-01)
+
+La NC quedaba fuera, sí — pero **su efecto colateral sobrevivía**: `marcar_reversos` la seguía
+sumando para decidir si su factura estaba anulada.
+
+**Caso `FVX1`** (12-jun-2024, DISTRIBUIDORA LEOPHARMA, **+159.225.366**, empresa HFA):
+
+| doc | fecha | importe clase 4 | |
+|---|---|---:|---|
+| `FVX1` | 12-jun-2024 | +159.225.366 | la factura |
+| `RFEX/2025/0001` · `RFEX/2025/0002` | 14-ene-2025 | −174.115.446 c/u | reversiones (`reversed_entry_id` = FVX1) |
+| `NDEXP1` · `NDEXP2` | 14-ene-2025 | +174.115.446 c/u | **las cancelan al peso** — sin `ref`, fuera de ventas |
+| `RFEX/2025/0003` | 31-ene-2025 | −49.441.252 | crédito comercial real (1,88 USD/und contra 6,35) |
+
+Los cuatro documentos de enero **netean cero** y la factura nunca se anuló. Pero `ncr` sumaba
+−348.230.892 contra +159.225.366 → **cobertura 2,187 ≥ 0,99** → `es_reverso=TRUE`. Resultado: de
+todo el bloque, lo único que entraba en ventas era el negativo de `RFEX/2025/0003`, repartido por
+conciliación **94,6 % a junio-2024**. Junio en exportación daba **−46.788.256** en vez de
+**+111.049.235**, y `conciliar_odoo_ventas --anio 2024` fallaba (junio −12,06 %, anual −1,52 %).
+
+**El arreglo** (`_SQL_REVERSOS`, CTE `nc_muerta`): una NC cancelada por una ND **sin `ref`** no
+cuenta en `ncr`, y se marca `es_reverso` igualmente — así sale de ventas junto con su ND, que es
+lo que la simetría pedía desde el principio.
+
+- ⚠ **Solo se aplica a las ND SIN `ref`.** Con `ref` manda el enlace documental; emparejar a
+  ciegas por tercero+fecha+importe discrepa de él en **4 de 15** casos comprobables. De las 45 ND
+  del almacén solo 3 no traen `ref`: `NDEXP1`, `NDEXP2` y `NDY1`.
+- ⚠ **NO poner cota superior a la cobertura.** Hay 8 facturas con la reversión **duplicada** en
+  Odoo (cobertura ~2,0, sin ND que la cancele) que hoy se excluyen con sus dos NC y netean 0, que
+  es lo correcto. Con una banda `[0,99 , 1,01]` dejarían de excluirse y restarían de más.
+- **Efecto medido** (ensayo en transacción revertida, con control): cambian **exactamente 2
+  documentos**, `FVX1` y `FEVY35821`, y **+158.984.550** en ventas (jun-2024 +157.837.491,
+  abr-2025 +1.147.059). 2024 pasa a cuadrar: junio **−2,78 %**, anual **−0,69 %**.
+- ⚠ **Punto ciego de `diagnosticar_fecha_venta.py` §4**: solo busca *anulaciones que `es_reverso`
+  NO detecta* (falsos negativos). Esto era un **falso positivo** y por eso lo daba por limpio.
+  Pendiente: añadirle la comprobación inversa.
+- **Frente abierto, sin tocar**: 6 facturas donde **una sola NC excede** la que dice reversar
+  (`FEVY24922` 5,06× · `FEVY1755` 3,67× · `FVE2642` 3,49× · `FEVY32543` 2,04× · `FEVY1769` 3,18× ·
+  `FEVY2750` 1,51×). Probablemente esa NC cubre varias facturas y Odoo nombra una: se anula esa y
+  se excluye la NC entera, con lo que ~42,9M de crédito desaparecen e **inflan** las ventas.
+  Hipótesis sin confirmar — cruzar con contabilidad antes de tocar nada.
 - 2026: **21 de 44** ND son venta.
 - ⚠ La visión **contable** (`v_ventas`, `v_balance_comprobacion`, `v_exportaciones`) **sí** las lleva:
   ahí una nota débito es ingreso. La diferencia contra "ventas comerciales" es esperada.

@@ -1003,29 +1003,100 @@ def _anios_desc(desde, hasta=None):
 # Las anulaciones reales igual se netearían solas (factura +X y NC −X suman 0); marcarlas es solo por
 # claridad. Las devoluciones/NC parciales NO se marcan: restan vía venta_neta (factura +X, NC −Y).
 # Ratio ≥0.99 = la NC reversa el total de la factura (clase 4). Ver docs/GUIA_OPERACION.md §7.
+#
+# ⚠⚠ `nc_muerta` — LA SIMETRÍA DE LA EXCLUSIÓN (añadido 2026-08-01, caso FVX1).
+# docs/guia_bi_ventas.md §6.5 fija el invariante: una nota débito que el pipeline no puede
+# enlazar queda fuera de ventas, y su NC "tampoco restaba ⇒ la exclusión es simétrica".
+# NO era simétrica: la NC quedaba fuera pero su EFECTO COLATERAL —haber declarado anulada a
+# su factura— sobrevivía aquí, en `ncr`.
+#   Caso real: FVX1 (12-jun-2024, LEOPHARMA, +159.225.366) reversada por RFEX/2025/0001 y
+#   RFEX/2025/0002 (−174.115.446 c/u), que a su vez están canceladas al peso por NDEXP1 y
+#   NDEXP2 del mismo día. Los cuatro documentos de enero-2025 netean CERO y la factura nunca
+#   se anuló — pero `ncr` sumaba −348.230.892 (cobertura 2,187 ≥ 0,99) y la excluía. Junio-2024
+#   en exportación daba −46.788.256 en vez de +112.437.110. Diagnóstico completo en
+#   `proyecto pocion/intranet/docs/dashboards/reversos-mal-marcados.md`.
+#
+# ⚠ Se restringe a las ND **SIN `referencia`** a propósito. Con `referencia` el enlace
+# documental manda (lo usa `enlazar_notas_debito`), y emparejar a ciegas por
+# tercero+fecha+importe discrepa de él en 4 de 15 casos comprobables (27 % de falsos
+# positivos). Sin `referencia` no hay otra vía, y hoy son solo 3 ND: NDEXP1, NDEXP2 y NDY1.
+#
+# ⚠ NO poner cota superior a la cobertura (una banda [0,99 , 1,01]): hay 8 facturas con la
+# reversión DUPLICADA en Odoo (cobertura ~2,0 sin ND que las cancele) que hoy se excluyen
+# junto con sus dos NC y netean 0, que es lo correcto. Con banda dejarían de excluirse y
+# restarían el valor de la factura una vez de más.
 _SQL_REVERSOS = """
 WITH inv AS (
     SELECT f.factura_id, SUM(f.credito - f.debito) m
     FROM marts.fact_movimiento_contable f JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
     WHERE f.tipo_movimiento = 'out_invoice' AND c.clase_codigo = '4' GROUP BY 1
 ),
+-- Documentos de clase 4 agregados, para emparejar ND ↔ NC.
+doc AS (
+    SELECT f.factura_id,
+           MIN(f.tipo_movimiento)  AS tipo,
+           MIN(f.tercero_id)       AS tercero_id,
+           MIN(f.fecha_factura)    AS fecha_factura,
+           MIN(dj.codigo)          AS diario,
+           MIN(f.referencia)       AS referencia,
+           SUM(f.credito - f.debito) AS m
+    FROM marts.fact_movimiento_contable f
+    JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
+    LEFT JOIN marts.dim_diario dj ON dj.diario_id = f.diario_id
+    WHERE c.clase_codigo = '4' AND f.es_venta IS TRUE
+    GROUP BY f.factura_id
+),
+-- Notas débito sin `referencia`: el pipeline no puede enlazarlas, así que están fuera de
+-- ventas (guia_bi_ventas.md §6.5). El `row_number` es para que el pareo sea UNO A UNO:
+-- NDEXP1 y NDEXP2 son idénticas y sin él las dos casarían con la misma reversión.
+nd_sin_ref AS (
+    SELECT factura_id, tercero_id, fecha_factura, m,
+           row_number() OVER (PARTITION BY tercero_id, fecha_factura, m
+                              ORDER BY factura_id) AS rn
+    FROM doc
+    WHERE diario IN ('NDY', 'NDEXP') AND referencia IS NULL AND m > 0
+),
+rev AS (
+    SELECT factura_id, tercero_id, fecha_factura, m,
+           row_number() OVER (PARTITION BY tercero_id, fecha_factura, m
+                              ORDER BY factura_id) AS rn
+    FROM doc
+    WHERE tipo = 'out_refund'
+),
+nc_muerta AS (
+    SELECT r.factura_id
+    FROM rev r
+    JOIN nd_sin_ref d
+      ON d.tercero_id = r.tercero_id
+     AND d.fecha_factura = r.fecha_factura
+     AND abs(d.m + r.m) <= 1        -- importe exactamente opuesto (1 peso de holgura)
+     AND d.rn = r.rn                -- uno a uno
+),
 ncr AS (
     SELECT f.reversed_factura_id fid, SUM(f.debito - f.credito) m
     FROM marts.fact_movimiento_contable f JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
     WHERE f.tipo_movimiento = 'out_refund' AND f.reversed_factura_id IS NOT NULL
-      AND c.clase_codigo = '4' GROUP BY 1
+      AND c.clase_codigo = '4'
+      -- Una NC ya cancelada por su ND no puede declarar anulada a su factura.
+      AND f.factura_id NOT IN (SELECT factura_id FROM nc_muerta)
+    GROUP BY 1
 ),
 anul AS (
     SELECT i.factura_id FROM inv i JOIN ncr n ON n.fid = i.factura_id
     WHERE i.m > 0 AND n.m >= 0.99 * i.m           -- NC total (≥99%) = anulación real
 )
+-- La 3ª rama es la que cierra la simetría: la NC muerta sale de ventas igual que su ND,
+-- aunque su factura ya NO esté anulada. Sin ella, FVX1 volvería con sus dos reversiones
+-- vivas y restaría −348 M.
 UPDATE marts.fact_movimiento_contable f
 SET es_reverso = (
         (f.tipo_movimiento = 'out_invoice' AND f.factura_id        IN (SELECT factura_id FROM anul))
-     OR (f.tipo_movimiento = 'out_refund'  AND f.reversed_factura_id IN (SELECT factura_id FROM anul)))
+     OR (f.tipo_movimiento = 'out_refund'  AND f.reversed_factura_id IN (SELECT factura_id FROM anul))
+     OR (f.tipo_movimiento = 'out_refund'  AND f.factura_id        IN (SELECT factura_id FROM nc_muerta)))
 WHERE f.es_reverso IS DISTINCT FROM (
         (f.tipo_movimiento = 'out_invoice' AND f.factura_id        IN (SELECT factura_id FROM anul))
-     OR (f.tipo_movimiento = 'out_refund'  AND f.reversed_factura_id IN (SELECT factura_id FROM anul)));
+     OR (f.tipo_movimiento = 'out_refund'  AND f.reversed_factura_id IN (SELECT factura_id FROM anul))
+     OR (f.tipo_movimiento = 'out_refund'  AND f.factura_id        IN (SELECT factura_id FROM nc_muerta)));
 """
 
 

@@ -150,6 +150,12 @@ locales, para **desconectar Power BI del PC**. Lee de Google Drive (`DriveLoader
 - **Ventas sin reversos:** factura anulada (`payment_state='reversed'`) + su NC → `es_reverso=TRUE`,
   excluidas de ventas. Devoluciones **parciales** (factura `paid`) sí restan vía `venta_neta`
   (`marcar_reversos`).
+  ⚠ **Una NC ya cancelada por su nota débito NO cuenta para declarar anulada la factura**
+  (`nc_muerta`, añadido 2026-08-01). Sin eso, `FVX1` (+159,2M) quedaba fuera de ventas sin
+  haberse anulado: sus dos reversiones estaban compensadas al peso por `NDEXP1`/`NDEXP2` del
+  mismo día, los cuatro documentos neteaban cero y aun así sumaban cobertura 2,187. Junio-2024
+  en exportación daba **−46,8M** en vez de **+111,0M**. Detalle en
+  [guia_bi_ventas.md §6.5](guia_bi_ventas.md).
 - **Cartera:** líneas `es_cxc` (`account_type='asset_receivable'`) con `saldo_pendiente`
   (residual por línea) y `fecha_vencimiento_key` para aging. `v_cartera` = `es_cxc` con saldo ≠ 0.
 - **Clasificación estados financieros:** `nivel_movimiento/seccion/subseccion` desde `account.report`
