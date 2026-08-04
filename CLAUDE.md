@@ -44,14 +44,12 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 - `cargar_marketing.py` — carga la hoja de MARKETING de la intranet (TRM de datos.gov.co +
   Supermetrics/GA4/Search Console/Shopify). ⚠ Hoy **solo la TRM funciona**: las otras cuatro
   esperan credenciales que no existen. Enganchado a `run_dw.py` (paso 2b, tick :00).
-- `cargar_cartera_responsables.py` — re-siembra `marts.bi_cartera_responsable` desde la hoja
-  `Responsables` de `base_cartera.xlsx`. A demanda. ⚠ Cruza por `TERCERO_ID`: por razón social
-  se cayó dos veces (FARMATODO COLOMBIA S.A y C&L SOLUTIONS LLC).
-  ⚠⚠ **Hay que volver a correrlo después de re-ejecutar `30_cartera_dashboards.sql`** si la
-  tabla estaba vacía: ese fichero la siembra del volcado viejo de `bi_cartera`. Desde el
-  2026-08-03 la siembra solo entra si la tabla está **vacía** — antes se colaba al lado de las
-  filas del Excel (índices únicos parciales POR NIVEL) y **ganaba**, revirtiendo los
-  responsables en verde y sin un solo error.
+- ⚠⚠ `cargar_cartera_responsables.py` **SE ELIMINO el 2026-08-04 (f)**, con la tabla
+  `marts.bi_cartera_responsable` y la hoja `Responsables` de `base_cartera.xlsx`. El
+  responsable de cobro **lo calcula la intranet** desde sus grupos de ventas: quien vende a un
+  cliente responde de su deuda, asi que esto era una segunda fuente de verdad para las mismas
+  personas — y se desincronizo dos veces en dos dias. Lo unico que queda aqui es el puente de
+  vocabulario: la columna `categoria` de `bi_cartera_tipo_credito`.
 - `refrescar_mv_dashboards.py` — refresca las MV que consumen los **dashboards de la intranet**
   (lo llama `run_dw.py` al final de cada corrida). Ver sección "Dashboards de la INTRANET".
 - `classes/db_loader.py` — `DBLoader`: conexión PG, auto-DDL, UPSERT, carga incremental.

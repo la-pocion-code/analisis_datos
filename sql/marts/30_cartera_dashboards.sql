@@ -78,11 +78,17 @@
 --    `dias_credito`— y el corte por rangos lo hace la intranet contra
 --    `CURRENT_DATE`, en un solo fragmento compartido.
 --
--- 6. ⚠ **EL RESPONSABLE DE COBRO NO EXISTE EN EL ALMACEN.** El `.pbix` repunto la
---    tabla `Cartera` a `v_cartera` y perdio la columna por el camino: hoy es
---    literalmente `Table.AddColumn(ORD, "RESPONSABLE", each null)`. El dato vive
---    en el Excel `base_cartera.xlsx` (hoja `Responsables`) y en el volcado
---    `bi_cartera`. Se modela aqui, en `bi_cartera_responsable`.
+-- 6. ⚠⚠ **EL RESPONSABLE DE COBRO NO SALE DE AQUI, Y ES DELIBERADO** (2026-08-04 f).
+--    El `.pbix` repunto su tabla `Cartera` a `v_cartera` y perdio la columna por el
+--    camino (`Table.AddColumn(ORD, "RESPONSABLE", each null)`), asi que el dato
+--    vivia en un Excel. Se modelo aqui como dimension `bi_cartera_responsable`... y
+--    duro dos dias: **dos sitios donde teclear lo mismo se desincronizan**, y paso
+--    dos veces (el volcado del 23-jul ganandole a la hoja, y un `ON CONFLICT` que
+--    no protegia porque los indices unicos eran parciales por nivel).
+--    Ahora **lo calcula la intranet** desde los grupos de ventas, que ya dicen que
+--    atiende cada persona: quien vende a un cliente responde de su deuda. Esta MV
+--    **no publica `responsable` ni `ubicacion`**; el puente entre vocabularios es la
+--    columna `categoria` de `bi_cartera_tipo_credito`.
 --
 -- 7. ⚠ **`v_cartera` EXPONE EL NIT** (`identificacion`), y por eso esta negada a
 --    `intranet_ro`. Esta MV **no lo propaga**. No añadirlo: la hoja no lo
@@ -133,158 +139,98 @@ CREATE TABLE IF NOT EXISTS marts.bi_cartera_tipo_credito (
     nota         TEXT
 );
 
+-- ════════════════════════════════════════════════════════════════════════════
+-- ⚠⚠ EL PUENTE DE VOCABULARIO (2026-08-04). `categoria` es como se llama ESTE
+-- MISMO canal en el lado de VENTAS.
+--
+-- Existe porque los dos lados hablan distinto —es la trampa 2 de la cabecera— y
+-- desde el 2026-08-04 la intranet **necesita traducir**: los responsables de
+-- cartera pasan a salir de los grupos de ventas (`SalesGroup`), cuyos miembros de
+-- tipo `canal` guardan el nombre NORMALIZADO (`FARMACIA`, `CATALOGO`,
+-- `EXPORTACION`), mientras la cartera filtra por el CRUDO de Odoo (`FARMACIAS`,
+-- `Catalogo`, `EXTERIOR`). Sin la traduccion, un grupo por canal no casaria
+-- ninguna fila de cartera y esa persona apareceria sin cartera — sin ningun error.
+--
+-- ⚠ Se pone aqui y no se lee `marts.map_categoria` por dos motivos, los dos
+-- medidos: esa tabla esta NEGADA a `intranet_ro` (24_rol_intranet.sql), y ademas
+-- **le falta `EXTERIOR -> EXPORTACION`**, que si ocurre en los datos (la
+-- normalizacion de ese caso vive en `consolidar_categoria`, no en el mapeo). Diez
+-- filas explicitas y revisables valen mas que una traduccion que se cae en
+-- silencio en un caso.
+--
+-- ⚠ Puede ser NULL: un tipo que no exista como canal de ventas (los de
+-- `es_credito = FALSE`) no necesita traduccion, y ponerle una inventada haria que
+-- un grupo lo reclamara sin querer.
+-- ════════════════════════════════════════════════════════════════════════════
+ALTER TABLE marts.bi_cartera_tipo_credito
+    ADD COLUMN IF NOT EXISTS categoria TEXT;
+
 COMMENT ON TABLE marts.bi_cartera_tipo_credito IS
   'Que valores de dim_tercero.tipo_cliente son cartera de credito. Los que no '
   'estan aqui (o estan con es_credito=false) se presentan APARTE, no se descartan: '
-  'son 3.280 MM de saldo real. Caja exacta de Odoo, no normalizar.';
+  'son 3.280 MM de saldo real. Caja exacta de Odoo, no normalizar. La columna '
+  '`categoria` es el nombre del MISMO canal en ventas: es el puente que permite '
+  'que un grupo de ventas por canal resuelva tambien en cartera.';
 
-INSERT INTO marts.bi_cartera_tipo_credito (tipo_cliente, es_credito, nota) VALUES
-    ('MAYORISTA NV',    TRUE,  NULL),
-    ('FARMACIAS',       TRUE,  'Ojo: en ventas se normaliza a FARMACIA, singular.'),
-    ('EXTERIOR',        TRUE,  'Exportacion. Dias de credito pactados aparte.'),
-    ('Surticosmeticos', TRUE,  NULL),
-    ('COOPIDROGAS',     TRUE,  NULL),
-    ('Catalogo',        TRUE,  'Novaventa. En ventas se normaliza a CATALOGO.'),
-    ('ESPECIALIZADAS',  TRUE,  NULL),
-    ('Distribuidor',    TRUE,  NULL),
-    ('KRIKA',           TRUE,  'Lucego. Hoy en saldo negativo (−30.922.933).'),
-    ('HOLE COSMETICS',  TRUE,  NULL),
+INSERT INTO marts.bi_cartera_tipo_credito (tipo_cliente, es_credito, categoria, nota) VALUES
+    ('MAYORISTA NV',    TRUE,  'MAYORISTA NV',       NULL),
+    ('FARMACIAS',       TRUE,  'FARMACIA',           'Ojo: en ventas se normaliza a FARMACIA, singular.'),
+    ('EXTERIOR',        TRUE,  'EXPORTACION',        'Exportacion. Dias de credito pactados aparte.'),
+    ('Surticosmeticos', TRUE,  'SURTICOSMETICOS',    NULL),
+    ('COOPIDROGAS',     TRUE,  'COOPIDROGAS',        NULL),
+    ('Catalogo',        TRUE,  'CATÁLOGO',           'Novaventa. En ventas se normaliza a CATÁLOGO (con tilde).'),
+    ('ESPECIALIZADAS',  TRUE,  'ESPECIALIZADAS',     NULL),
+    ('Distribuidor',    TRUE,  'DISTRIBUIDOR',       NULL),
+    ('KRIKA',           TRUE,  'KRIKA',              'Lucego. Hoy en saldo negativo (−30.922.933).'),
+    ('HOLE COSMETICS',  TRUE,  'HOLE COSMETICS SAS', NULL),
     -- Los de abajo se registran para poder EXPLICARLOS en la hoja, no para
     -- incluirlos. Sin fila tambien quedarian fuera, pero sin motivo a la vista.
-    ('CLIENTE',         FALSE, 'Venta de contado. 2.260 MM, el mayor bloque fuera de credito.'),
-    ('Proveedores',     FALSE, 'No es venta: son saldos con proveedores.'),
-    ('Empleado',        FALSE, 'Ventas a empleados.'),
-    ('Wrote Judge.me web review', FALSE,
+    -- ⚠ Sin `categoria`: no son canales de venta, y darles una permitiria que un
+    -- grupo los reclamara sin querer.
+    ('CLIENTE',         FALSE, NULL, 'Venta de contado. 2.260 MM, el mayor bloque fuera de credito.'),
+    ('Proveedores',     FALSE, NULL, 'No es venta: son saldos con proveedores.'),
+    ('Empleado',        FALSE, NULL, 'Ventas a empleados.'),
+    ('Wrote Judge.me web review', FALSE, NULL,
      'Basura literal de Odoo: una opinion de la web quedo grabada como tipo de cliente.'),
     -- Centinela que pone la MV cuando el tercero no tiene `partner_type_id`. Se
     -- registra para poder EXPLICARLO: son 4.982 filas por −3.223 MM, y el grueso
     -- no son clientes (2 filas de «SALDOS INICIALES» valen −2.861 MM y 4.721 no
     -- traen ni nombre de tercero). Sin esta fila la hoja lo mostraria sin motivo.
-    ('(sin tipo)',      FALSE,
+    ('(sin tipo)',      FALSE, NULL,
      'El tercero no tiene tipo en Odoo. Casi todo son asientos contables sin cliente, '
      'no deuda: SALDOS INICIALES y lineas sin tercero.')
 ON CONFLICT (tipo_cliente) DO UPDATE
-    SET es_credito = EXCLUDED.es_credito, nota = EXCLUDED.nota;
+    SET es_credito = EXCLUDED.es_credito, nota = EXCLUDED.nota,
+        categoria  = EXCLUDED.categoria;
 
 
 -- ════════════════════════════════════════════════════════════════════════════
--- bi_cartera_responsable — SEMILLA: quien responde por el cobro.
+-- ⚠⚠ `bi_cartera_responsable` SE ELIMINO el 2026-08-04 (f), con su loader
+-- `cargar_cartera_responsables.py` y la hoja `Responsables` de `base_cartera.xlsx`.
 --
--- Reemplaza el Excel `base_cartera.xlsx` (hoja `Responsables`), que se cruzaba en
--- pandas y no llegaba a ninguna tabla.
+-- El responsable de cobro **lo calcula la intranet** desde los grupos de ventas
+-- (`SalesGroup`), en `cartera._fuente()`. Motivo: quien vende a un cliente
+-- responde de su deuda, asi que esta dimension era una SEGUNDA fuente de verdad
+-- para las mismas personas, alimentada por un Excel que alguien tenia que
+-- mantener. Medido el 2026-08-04: los 36 clientes con cartera de credito tienen
+-- ventas, y CINCO grupos cubren los 6.625 MM enteros — la equivalencia es exacta.
 --
--- ⚠ Se simplifica la regla del pipeline viejo, que asignaba por TIPO CLIENTE
--- salvo cuando un tipo aparecia repetido en la hoja, y entonces desempataba por
--- CLIENTE. Esa condicion —«repetido en la hoja»— depende del contenido del
--- Excel, no del negocio, asi que el mismo cliente podia cambiar de dueño porque
--- alguien añadio una fila en otro sitio. Aqui la precedencia es explicita:
+-- El puente entre los dos vocabularios es la columna `categoria` de
+-- `bi_cartera_tipo_credito` (arriba): el grupo guarda el canal en el nombre de
+-- VENTAS y la cartera filtra por el CRUDO de Odoo.
 --
---     1. fila con `tercero_id` = el id del tercero    (la mas especifica)
---     2. fila con `cliente` = el nombre del tercero
---     3. fila con `cliente IS NULL` y su `tipo_cliente`
---     4. la fila con `es_default`
---     5. si no hay ninguna, '(sin responsable)'
+-- Historia de por que existio, para no repetirla: el `.pbix` repunto su tabla
+-- `Cartera` a `v_cartera` y perdio la columna por el camino, asi que el dato vivia
+-- solo en un Excel. Se modelo aqui como dimension; el problema es que **dos sitios
+-- donde teclear lo mismo se desincronizan**, y de hecho paso dos veces en dos dias
+-- (el volcado viejo del 23-jul ganandole a la hoja, y el `ON CONFLICT` que no
+-- protegia porque los indices unicos eran parciales por nivel).
 --
--- ⚠⚠ `tercero_id` SE AÑADIO EL 2026-08-03 Y ES LA LLAVE BUENA. El cruce por
--- razon social se cae en silencio, y se midio cayendose DOS veces:
---
---   · la hoja dice `FARMATODO COLOMBIA SA` y quien factura en Odoo es
---     `FARMATODO COLOMBIA S.A`, con puntos. Un punto de diferencia dejaba
---     853.168.462 pesos —el 12,7 % de la cartera— SIN RESPONSABLE, y por tanto
---     fuera del informe de todo el mundo. Existe ademas un duplicado del mismo
---     cliente sin ventas, que es el que casa con el nombre de la hoja: el que
---     factura es el `tercero_id` 268476.
---   · el notebook cablea `C&L SOLUTIONS LLC.` y Odoo dice `C&L SOLUTIONS LLC`,
---     asi que ese cliente NO estaba recibiendo sus 120 dias de credito pactados.
---
--- El cruce por texto se conserva como respaldo —una fila sin `tercero_id` sigue
--- funcionando— pero deja de ser el camino principal. Al re-sembrar desde el
--- Excel, rellenar `TERCERO_ID`.
---
--- Arranca con lo que hay en `bi_cartera`, que es el ultimo volcado real del
--- pipeline (2026-07-23): DIANA RIOS, DANIELA DURAN y SHELLSY VELASCO. ⚠ Ese
--- volcado NO es la fuente de verdad y se quedo corto: le faltan ANDRES VASQUEZ,
--- MIRIAM BURGOS y MARIA PAULA, y le sobra DANIELA DURAN. La fuente de verdad es
--- la hoja `Responsables` de `base_cartera.xlsx`, y quien la trae es
--- `cargar_cartera_responsables.py`.
+-- ⚠ Al aplicar este fichero sobre una base que ya la tenga, el DROP de abajo se la
+-- lleva. La intranet ya no la necesita: enumera las columnas de la MV que usa
+-- (`cartera.COLS_MV`) y no incluye `responsable` ni `ubicacion`.
 -- ════════════════════════════════════════════════════════════════════════════
-CREATE TABLE IF NOT EXISTS marts.bi_cartera_responsable (
-    id           BIGSERIAL PRIMARY KEY,
-    -- Cualquiera de los tres manda; varios a la vez acotan mas.
-    tercero_id   INTEGER,
-    tipo_cliente TEXT,
-    cliente      TEXT,
-    responsable  TEXT    NOT NULL,
-    ubicacion    TEXT,
-    es_default   BOOLEAN NOT NULL DEFAULT FALSE,
-    nota         TEXT
-);
-
--- Migracion para las bases que ya tenian la tabla sin `tercero_id`. Va aqui y no
--- en un fichero aparte para no tener que duplicar la definicion de la MV, que es
--- de 100 lineas y se desincronizaria al primer cambio.
-ALTER TABLE marts.bi_cartera_responsable
-    ADD COLUMN IF NOT EXISTS tercero_id INTEGER;
-
--- El CHECK cambia (ahora `tercero_id` tambien vale como llave), asi que se
--- reemplaza. DROP IF EXISTS + ADD es idempotente como pareja.
-ALTER TABLE marts.bi_cartera_responsable
-    DROP CONSTRAINT IF EXISTS bi_cartera_responsable_algo_que_casar;
-ALTER TABLE marts.bi_cartera_responsable
-    ADD  CONSTRAINT bi_cartera_responsable_algo_que_casar
-    CHECK (es_default OR tercero_id IS NOT NULL
-           OR tipo_cliente IS NOT NULL OR cliente IS NOT NULL);
-
--- Un tercero no puede tener dos dueños, ni un cliente, ni un tipo. Y solo puede
--- haber un default: sin esto, `LIMIT 1` elegiria uno al azar en cada refresco.
-CREATE UNIQUE INDEX IF NOT EXISTS ux_bi_cartera_resp_tercero
-    ON marts.bi_cartera_responsable (tercero_id) WHERE tercero_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS ux_bi_cartera_resp_cliente
-    ON marts.bi_cartera_responsable (cliente) WHERE cliente IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS ux_bi_cartera_resp_tipo
-    ON marts.bi_cartera_responsable (tipo_cliente)
-    WHERE cliente IS NULL AND tipo_cliente IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS ux_bi_cartera_resp_default
-    ON marts.bi_cartera_responsable ((TRUE)) WHERE es_default;
-
-COMMENT ON TABLE marts.bi_cartera_responsable IS
-  'Responsable de cobro. Precedencia: tercero_id > cliente > tipo_cliente > '
-  'default. El cruce por tercero_id es el bueno: por razon social se cayo dos '
-  'veces (FARMATODO COLOMBIA S.A y C&L SOLUTIONS LLC). Se mantiene desde la hoja '
-  'Responsables de base_cartera.xlsx con cargar_cartera_responsables.py.';
-
--- ════════════════════════════════════════════════════════════════════════════
--- Arranque desde el ultimo volcado del pipeline viejo — SOLO SI LA TABLA ESTA
--- VACIA.
---
--- ⚠⚠ EL `ON CONFLICT DO NOTHING` NO BASTABA, Y ES UNA TRAMPA CARA (2026-08-03).
--- Parecia idempotente: «si ya hay fila para ese cliente, no se toca». Pero los
--- indices unicos son PARCIALES y por NIVEL, asi que una fila del volcado a nivel
--- CLIENTE nunca colisiona con una fila del Excel a nivel TIPO DE CLIENTE — se
--- inserta al lado. Y como la precedencia de la MV es
--- `tercero_id > cliente > tipo_cliente > default`, **la fila vieja GANA**.
---
--- Medido: re-ejecutar este fichero (que la propia cabecera manda hacer cada vez
--- que se toca la MV) revirtio los responsables al estado del 2026-07-23.
--- `DAVID SANCHEZ` cayo de 1.304 MM a 20.468 pesos y reaparecio
--- `SHELLSY VELASCO` con 1.213 MM, que ya no trabaja esa cartera. En verde, sin
--- un solo error, y `check_marts §7r` no lo caza porque el 100 % de la cartera
--- SIGUE teniendo un responsable: solo que el equivocado.
---
--- La fuente de verdad es la hoja `Responsables` de `base_cartera.xlsx`, y quien
--- la carga es `cargar_cartera_responsables.py`. Este INSERT es solo el arranque
--- de una base nueva.
--- ════════════════════════════════════════════════════════════════════════════
-INSERT INTO marts.bi_cartera_responsable (cliente, responsable, nota)
-SELECT DISTINCT
-       btrim(b.nombre_del_contacto_a_mostrar_en_la_factura),
-       btrim(b.responsable),
-       'Importado de bi_cartera (volcado del pipeline viejo, 2026-07-23).'
-FROM marts.bi_cartera b
-WHERE COALESCE(btrim(b.responsable), '') <> ''
-  AND COALESCE(btrim(b.nombre_del_contacto_a_mostrar_en_la_factura), '') <> ''
-  AND NOT EXISTS (SELECT 1 FROM marts.bi_cartera_responsable)
-ON CONFLICT DO NOTHING;
+DROP TABLE IF EXISTS marts.bi_cartera_responsable CASCADE;
 
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -378,21 +324,8 @@ SELECT
          THEN (f.fecha_vencimiento - f.fecha) END                     AS dias_credito,
 
     -- Precedencia tercero_id > cliente > tipo > default (ver la semilla).
-    COALESCE(ri.responsable, rc.responsable, rt.responsable, rd.responsable,
-             '(sin responsable)')                                     AS responsable,
-    COALESCE(ri.ubicacion, rc.ubicacion, rt.ubicacion)                AS ubicacion
 FROM fechas f
-LEFT JOIN marts.bi_cartera_tipo_credito tc ON tc.tipo_cliente = f.tipo_cliente
--- Por id primero: es la unica llave que sobrevive a que renombren el cliente en
--- Odoo, y renombrarlo ya dejo 853 MM sin dueño una vez.
-LEFT JOIN marts.bi_cartera_responsable  ri ON ri.tercero_id   = f.tercero_id
-LEFT JOIN marts.bi_cartera_responsable  rc ON rc.cliente      = f.tercero
-LEFT JOIN marts.bi_cartera_responsable  rt ON rt.cliente IS NULL
-                                          AND rt.tipo_cliente = f.tipo_cliente
-LEFT JOIN LATERAL (
-    SELECT responsable FROM marts.bi_cartera_responsable
-    WHERE es_default LIMIT 1
-) rd ON TRUE;
+LEFT JOIN marts.bi_cartera_tipo_credito tc ON tc.tipo_cliente = f.tipo_cliente;
 
 -- `linea_id` ya es la PK del hecho, asi que basta para el UNIQUE que
 -- `REFRESH ... CONCURRENTLY` exige.
@@ -403,7 +336,6 @@ CREATE UNIQUE INDEX ux_mv_cartera_saldo ON marts.mv_cartera_saldo (linea_id);
 CREATE INDEX ix_mv_cartera_saldo_mora  ON marts.mv_cartera_saldo
     (admite_mora, es_credito, es_nota_debito);
 CREATE INDEX ix_mv_cartera_saldo_venc  ON marts.mv_cartera_saldo (fecha_vencimiento);
-CREATE INDEX ix_mv_cartera_saldo_resp  ON marts.mv_cartera_saldo (responsable);
 
 COMMENT ON MATERIALIZED VIEW marts.mv_cartera_saldo IS
   'Cartera por linea de CxC. NO trae dias de atraso ni rango de mora: dependen de '

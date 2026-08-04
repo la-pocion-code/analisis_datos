@@ -168,18 +168,12 @@ falta está en el repo de la intranet, `docs/dashboards/marketing-contrato.md` �
 refrescar: `python refrescar_mv_dashboards.py --mv mv_marketing_gasto_dia --mv mv_marketing_web_dia
 --mv mv_marketing_atribucion_dia`.
 
-**`python cargar_cartera_responsables.py`** — re-siembra `marts.bi_cartera_responsable` desde la
-hoja `Responsables` de `base_cartera.xlsx` (Drive). A demanda: **cambiar un responsable es editar
-el Excel y correr esto**. Con `--seco` valida sin escribir.
-
-⚠⚠ La hoja necesita una columna **`TERCERO_ID`**, rellena SOLO en las filas de nivel cliente (las
-de nivel tipo cruzan por `TIPO CLIENTE` y el id las rompería). El cruce por razón social se cae en
-silencio y se le vio caerse dos veces: `FARMATODO COLOMBIA SA` contra `FARMATODO COLOMBIA S.A`
-(853 MM sin responsable) y `C&L SOLUTIONS LLC.` contra `C&L SOLUTIONS LLC`. El id de FARMATODO que
-factura es **268476** — hay un duplicado sin ventas que es justo el que casa por nombre.
-
-Después: `python refrescar_mv_dashboards.py --mv mv_cartera_saldo`, y comprobar desde la intranet
-con `python manage.py check_marts` (la sección 7r debe pasar a verde).
+⚠⚠ **`cargar_cartera_responsables.py` YA NO EXISTE** (2026-08-04 f), ni la tabla
+`marts.bi_cartera_responsable`, ni la hoja `Responsables` de `base_cartera.xlsx`. El responsable
+de cobro lo calcula la intranet desde sus **grupos de ventas** (*Tableros → Responsables
+comerciales*): quien vende a un cliente responde de su deuda, así que esto eran dos sitios donde
+teclear lo mismo — y se desincronizaron dos veces en dos días. Para cambiar un responsable ahora
+se edita el grupo en la intranet; no hay nada que correr aquí.
 
 ### 2.7 Recetas rápidas (síntoma → comando)
 | Situación | Qué correr |

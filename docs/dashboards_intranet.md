@@ -570,9 +570,11 @@ Los tres casts son **perfectos**: 0 filas mal formadas de 573.013 en `vtas_valor
 «1 sem 26-26 fin 28/06/26» y se toma la fecha de cierre, ignorando el número de semana
 del texto (la fecha es lo que permite ordenar y agrupar sin ambigüedad).
 
-### 11.2 Cotejo contra el informe — cuadra al segundo decimal
+### 11.2 Cotejo contra el informe — cuadró al segundo decimal
 
-`TOTAL COLOMBIA FARMACIAS`, todo el histórico:
+Validación original (**export del 2026-07-30**, `TOTAL COLOMBIA FARMACIAS`, todo el histórico
+de entonces: 164 semanas, 2023-05-14 → 2026-06-28). Es el registro de que el modelo es
+correcto:
 
 ```
 total ventas ......... 474.124.569.959     el informe dice «474 mil M»      ✔
@@ -588,10 +590,28 @@ share de ELVIVE mes .. 10,10 / 10,23 / 10,23 / 10,25 / 9,94 / 9,15 / 8,97 /
                        9,13 / 9,75 / 8,60 / 9,68 / 10,17   columna por columna ✔
 ```
 
-⚠ Estas cifras son de **todo el histórico**, así que **no se mueven con el ETL** — al
-contrario que las de 2026 de Ventas. Se pueden fijar en un test.
+⚠⚠ **CORRECCIÓN (2026-08-04): estas cifras SÍ se mueven, y aquí se afirmaba lo contrario.**
+Decía que al ser «todo el histórico» no las movía el ETL y que **se podían fijar en un test**.
+Es falso, y por un motivo que no se había visto: **el export de Nielsen es una VENTANA MÓVIL**
+(ver trampa 10). El export del 2026-08-04 da, sobre el mismo market y «todo el histórico»:
 
-### 11.3 Las seis trampas del dataset
+```
+total ventas ......... 484.179.801.326     (era 474.124.569.959)
+total unidades ....... 18.907.635          (era 18.586.406)
+precio medio ......... 25.607,63           (era 25.509,21)
+marcas / productos ... 207 / 2.590         (era 207 / 2.589)
+presentaciones ....... 13                  igual
+categorías ........... SHAMPOO      285.301.200.000 aprox  58,92 %
+                       TRATAMIENTOS 115.975.100.000 aprox  23,95 %
+                       BALSAMOS      82.903.540.000 aprox  17,12 %
+ventana .............. 164 semanas, 2023-06-11 → 2026-07-26
+```
+
+Un cambio en estos números **no es una regresión**: es el export nuevo. Lo que sí se puede
+fijar en un test son los **invariantes** (los 4 markets no se suman, Supermercados sin valor,
+las 3 categorías, el orden del ranking), no los importes.
+
+### 11.3 Las trampas del dataset
 
 1. ⚠ **LOS 4 MARKETS NO SE SUMAN.** `NEW TOTAL COLOMBIA` (1.998.446.266.413) ya
    contiene a los otros. El KPI «2.549 mil M» de la hoja *Comparar* del informe es
@@ -616,6 +636,40 @@ contrario que las de 2026 de Ventas. Se pueden fijar en un test.
 6. ⚠ **El UPC de Nielsen no casa con ningún código propio** (0 de 18 ítems de la
    marca). Nielsen es *sell-out* de mercado y las ventas propias son *sell-in*: la hoja
    es **autónoma** y no se cruza con `mv_ventas_*`.
+7. ⚠ **NIELSEN NO USA UN NOMBRE ESTABLE PARA NUESTRA MARCA** (medido 2026-08-04). Además
+   de `TONGOLE`, apareció **`PCN POCION`**: es **un** producto, `PCN POCION DEFENSA TOTAL
+   ANTICASPA BOTELLA 450ML`, desde la semana que cierra el **08/03/26**, en FARMACIAS y
+   ECOMMERCE, con ese nombre en **marca Y fabricante** (los 16 ítems de POCION traen
+   fabricante `POCION`). Como `bi_nielsen_marca_propia` solo lista `'POCION'`, ese
+   producto **no contaba como marca nuestra**: el share propio salía subestimado desde
+   marzo-2026 y en el ranking aparecía como competencia.
+   Se unifica en el **loader** (`cargar_bi_datasets.ALIAS_MARCA`), en las dos columnas —
+   el grano de las dos MV incluye `fabricante`, así que unificar solo la marca dejaría la
+   misma casa partida en dos. `marca_origen` conserva la etiqueta original y
+   `mv_nielsen_item_semana` la expone. **Si aparece otra variante, es una línea en
+   `ALIAS_MARCA` + recargar** (~8,5 min); no se usa una regla genérica de prefijo «PCN»
+   porque fusionaría en silencio cualquier marca ajena que lo usara.
+8. ⚠ **`periods` es `VARCHAR`: un `min()`/`max()` sobre él MIENTE.** Ordena
+   alfabéticamente, así que `'1 sem 9-26 fin 01/03/26'` > `'1 sem 26-26 fin 28/06/26'`
+   (`'9' > '2'`). Eso hizo creer que la serie de POCION terminaba el 01/03/26 y que
+   `PCN POCION` la continuaba — falso: POCION llega al 28/06/26. Para cualquier rango,
+   `to_date(split_part(periods, 'fin ', 2), 'DD/MM/YY')`, que es lo que ya hacen las dos MV.
+9. ⚠ **La carpeta de Drive se mantiene A MANO** (3 archivos por categoría). Subir el
+   export nuevo **sin borrar el anterior** duplica semanas, y el daño es asimétrico:
+   `mv_nielsen_item_semana` fallaría al refrescar (índice único) pero
+   **`mv_nielsen_semana` doblaría los valores en silencio** (agrega con `GROUP BY`). El
+   loader lo detecta antes de cargar y **aborta**; `--seco` lo comprueba sin escribir.
+10. ⚠⚠ **EL EXPORT ES UNA VENTANA MÓVIL DE 164 SEMANAS, Y LA RECARGA BORRA LO QUE SE CAE
+    DEL BORDE** (medido 2026-08-04). El export del 30-jul iba de **2023-05-14** a
+    2026-06-28; el del 4-ago va de **2023-06-11** a 2026-07-26 — **las mismas 164 semanas**:
+    entraron 4 nuevas y **se cayeron las 4 primeras de 2023**. Como `bi_nielsen` se recarga
+    completa (`if_exists='replace'`), esas semanas **desaparecieron de la base** y no hay
+    forma de recuperarlas salvo volver a exportarlas de NielsenIQ.
+    Hoy se acepta: el panel mira mercado, no serie larga, y 3 años rodantes bastan. **Si
+    alguna vez se necesita historia más allá de la ventana, hay que cambiar la estrategia de
+    carga a acumulativa** (UPSERT por la clave natural en vez de reemplazo) — decisión de
+    negocio, no la toma el loader por su cuenta. Es también el motivo por el que los importes
+    de §11.2 se mueven de un export a otro.
 
 ### 11.4 Objetos
 
@@ -863,6 +917,10 @@ DDL): anticipos −4.922.033.134 + cartera con mora 6.763.624.037 + crédito sin
    (que la propia cabecera manda hacer al tocar la MV) revertía los responsables al estado
    del 2026-07-23, en verde y sin un error. La fuente de verdad es la hoja `Responsables`
    y quien la carga es `cargar_cartera_responsables.py`.
+   ⚠⚠ **Nada de esto existe desde el 2026-08-04 (f)**: la tabla, el loader y la hoja se
+   eliminaron. El responsable lo calcula la intranet desde sus grupos de ventas, y esta MV
+   ya **no publica `responsable` ni `ubicacion`**. El puente entre los dos vocabularios es
+   la columna `categoria` de `bi_cartera_tipo_credito`.
 7. ⚠⚠ **Una nota débito se disfraza de factura y nace vencida** (2026-08-03). Odoo las
    emite con `move_type = 'out_invoice'`, idéntico a una factura, y **sin término de
    pago**: `date_maturity = date`, cero días de crédito. Pasan `admite_mora` y entran
