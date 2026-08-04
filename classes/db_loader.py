@@ -64,6 +64,11 @@ class DBLoader:
         self.dbname   = os.getenv('DB_NAME')
         self.user     = os.getenv('DB_USER')
         self.password = os.getenv('DB_PASSWORD')
+        # Motivo del ultimo fallo de cargar(). Existe porque cargar() devuelve un bool
+        # y el llamador no tenia forma de imprimir POR QUE fallo: el resumen de
+        # cargar_bi_datasets.py decia "ERROR carga" con el numero de filas al lado, que
+        # se lee como exito. El detalle quedaba solo en db_loader.log.
+        self.ultimo_error = None
 
     # ========================
     # CONEXION
@@ -152,6 +157,112 @@ class DBLoader:
         return df
 
     # ========================
+    # DEPENDENCIAS DE UNA TABLA (vistas y vistas materializadas que la LEEN)
+    # ========================
+    def _dependientes(self, cur, schema: str, table_name: str) -> list:
+        """
+        Devuelve [(objeto, tipo)] de las vistas/MV que leen esta tabla.
+
+        ⚠ POR QUE EXISTE: `if_exists='replace'` se implementaba con DROP TABLE (sin
+        CASCADE), y PostgreSQL lo RECHAZA en cuanto una vista o MV cuelga de la tabla:
+
+            cannot drop table marts.bi_presupuesto because other objects depend on it
+            DETAIL: materialized view marts.mv_presupuesto_mes depends on ...
+
+        Eso dejo `marts.bi_presupuesto` y `marts.bi_nielsen` imposibles de recargar
+        desde que se crearon las MV de los dashboards (28-jul-2026): el DROP fallaba,
+        NO se insertaba ni una fila, y la tabla se quedaba con el dato viejo. Las mismas
+        cargas funcionaban el 22 y 23-jul, cuando las MV aun no existian.
+
+        ⚠ La salida NO se usa para hacer DROP ... CASCADE (que es lo que sugiere el HINT
+        de Postgres): eso se llevaria por delante las MV y sus GRANT a intranet_ro, y la
+        intranet responderia "relation does not exist" hasta re-ejecutar su DDL y el
+        24_rol_intranet.sql. Se usa para elegir la ruta TRUNCATE, que preserva la tabla,
+        sus tipos, sus permisos y las MV.
+        """
+        cur.execute(
+            """
+            SELECT DISTINCT
+                   dep_ns.nspname || '.' || dep.relname                    AS objeto,
+                   CASE dep.relkind WHEN 'm' THEN 'vista materializada'
+                                    WHEN 'v' THEN 'vista'
+                                    ELSE dep.relkind::TEXT END             AS tipo
+            FROM pg_depend d
+            JOIN pg_rewrite     r      ON r.oid       = d.objid
+            JOIN pg_class       dep    ON dep.oid     = r.ev_class
+            JOIN pg_namespace   dep_ns ON dep_ns.oid  = dep.relnamespace
+            JOIN pg_class       src    ON src.oid     = d.refobjid
+            JOIN pg_namespace   src_ns ON src_ns.oid  = src.relnamespace
+            WHERE src_ns.nspname = %s
+              AND src.relname    = %s
+              AND d.classid      = 'pg_rewrite'::regclass
+              AND d.refclassid   = 'pg_class'::regclass
+              AND dep.oid       <> src.oid
+            ORDER BY 1
+            """,
+            (schema, table_name),
+        )
+        return [(objeto, tipo) for objeto, tipo in cur.fetchall()]
+
+    def _columnas_actuales(self, cur, schema: str, table_name: str) -> list:
+        """Columnas que ya tiene la tabla en la base, en orden."""
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+            ORDER BY ordinal_position
+            """,
+            (schema, table_name),
+        )
+        return [col for (col,) in cur.fetchall()]
+
+    def _preparar_truncate(self, cur, conn, schema, table_name, full_table, df, deps) -> None:
+        """
+        Reconcilia las columnas de la tabla con las del DataFrame ANTES de un
+        TRUNCATE + INSERT. En la ruta DROP + CREATE la estructura se rehacia sola; aqui
+        la tabla sobrevive, asi que hay que mirar si el origen cambio de forma.
+
+        - Columna NUEVA en el archivo -> ALTER TABLE ADD COLUMN. Es aditivo: no puede
+          romper una vista/MV, que solo nombran las columnas que ya usaban.
+        - Columna que la tabla TIENE y el archivo YA NO trae -> se ABORTA. Truncar e
+          insertar sin ella dejaria a la MV leyendo una columna que nadie alimenta: se
+          quedaria toda en NULL sin un solo error, y el tablero mostraria huecos o
+          buckets '(sin ...)' como si fuera un problema de datos del negocio.
+          Renombrar una columna en el Excel se ve exactamente asi (una que falta + una
+          nueva), y es el caso mas probable.
+
+        Levanta RuntimeError con instrucciones; lo captura el except de cargar().
+        """
+        actuales = self._columnas_actuales(cur, schema, table_name)
+        if not actuales:      # la tabla no existe: no hay nada que reconciliar
+            return
+
+        # `id` es el SERIAL que pone esta clase, nunca viene en el archivo.
+        faltantes = [c for c in actuales if c != 'id' and c not in df.columns]
+        nuevas    = [c for c in df.columns if c not in actuales]
+
+        if faltantes:
+            objetos = ", ".join(o for o, _ in deps)
+            raise RuntimeError(
+                f"el origen ya no trae {len(faltantes)} columna(s) que {full_table} si "
+                f"tiene: {', '.join(faltantes)}. No se recarga para no dejar en NULL algo "
+                f"que leen {objetos}. Revisa el encabezado del archivo (¿renombrada?); si "
+                f"el cambio es intencional: DROP de esas vistas/MV, recargar, re-ejecutar "
+                f"su DDL y despues sql/marts/24_rol_intranet.sql para devolver los GRANT"
+            )
+
+        for col in nuevas:
+            # Mismo tipo que habria puesto el CREATE TABLE de la ruta DROP+CREATE: en este
+            # punto cargar() ya hizo astype(object), asi que _pg_type da VARCHAR(512) —
+            # que es justo como estan hoy todas las columnas de las bi_*.
+            tipo = self._pg_type(df[col].dtype, col)
+            cur.execute(f"ALTER TABLE {full_table} ADD COLUMN {col} {tipo};")
+            logging.info(f"  {full_table}: columna nueva {col} {tipo} agregada")
+        if nuevas:
+            conn.commit()
+
+    # ========================
     # CARGA PRINCIPAL
     # ========================
     def cargar(
@@ -172,15 +283,19 @@ class DBLoader:
             table_name:   Nombre de la tabla destino (sin esquema).
             schema:       Esquema destino. Default: 'raw'.
             if_exists:    'append'  -> solo inserta filas (incremental).
-                          'replace' -> borra y recrea la tabla completa.
+                          'replace' -> recarga completa. Si la tabla NO tiene vistas/MV
+                                       encima: DROP + CREATE (como siempre). Si las
+                                       tiene: TRUNCATE + INSERT, porque el DROP es
+                                       imposible sin CASCADE (ver _dependientes).
             batch_size:   Filas por lote.
             source_file:  Nombre del archivo origen para auditoria.
             fecha_col:    Nombre de la columna que contiene las fechas.
         Returns:
-            True si fue exitoso, False si hubo error.
+            True si fue exitoso, False si hubo error (motivo en self.ultimo_error).
         """
         start = time.time()
         full_table = f"{schema}.{table_name}"
+        self.ultimo_error = None
 
         # Limpiar columnas
         df = self._limpiar_columnas(df)
@@ -200,10 +315,23 @@ class DBLoader:
                 # Crear esquema si no existe
                 cur.execute(f"CREATE SCHEMA IF NOT EXISTS {schema};")
 
-                # Si replace: borrar tabla existente
+                # ── Si replace: elegir COMO se hace la recarga ──────────────────
+                # Con vistas/MV encima el DROP es imposible (sin CASCADE, que no es
+                # opcion) => se recarga con TRUNCATE, que las preserva.
+                modo_truncate = False
                 if if_exists == 'replace':
-                    cur.execute(f"DROP TABLE IF EXISTS {full_table};")
-                    logging.info(f"Tabla {full_table} eliminada para recreacion")
+                    deps = self._dependientes(cur, schema, table_name)
+                    if deps:
+                        modo_truncate = True
+                        detalle = ", ".join(f"{o} ({t})" for o, t in deps)
+                        logging.info(
+                            f"{full_table}: recarga por TRUNCATE (no se puede DROP, "
+                            f"dependen {len(deps)}: {detalle})"
+                        )
+                        self._preparar_truncate(cur, conn, schema, table_name, full_table, df, deps)
+                    else:
+                        cur.execute(f"DROP TABLE IF EXISTS {full_table};")
+                        logging.info(f"Tabla {full_table} eliminada para recreacion")
 
                 # Crear tabla si no existe (auto-detecta tipos desde el DataFrame)
                 cols_def = ", ".join([
@@ -229,28 +357,54 @@ class DBLoader:
                 filas_ok  = 0
                 filas_err = 0
 
+                # ⚠ En modo TRUNCATE el vaciado y los INSERT van en UNA SOLA transaccion
+                # (un unico commit al final). Con un commit por lote habria una ventana en
+                # la que la tabla se ve VACIA: Power BI leyendo, o un REFRESH de la MV que
+                # cayera ahi, publicarian cero. Y si un lote falla, el rollback deshace
+                # tambien el TRUNCATE => la tabla conserva el dato anterior COMPLETO, que
+                # es mejor que media tabla.
+                if modo_truncate:
+                    cur.execute(f"TRUNCATE TABLE {full_table} RESTART IDENTITY;")
+                    logging.info(f"  {full_table} vaciada (misma transaccion que los INSERT)")
+
                 for i in range(0, len(values), batch_size):
                     batch = values[i:i + batch_size]
                     try:
                         psycopg2.extras.execute_batch(cur, insert_sql, batch, page_size=batch_size)
-                        conn.commit()
+                        if not modo_truncate:
+                            conn.commit()
                         filas_ok += len(batch)
                         logging.info(f"  Lote {i // batch_size + 1}: {len(batch)} filas insertadas")
                     except psycopg2.Error as e:
                         conn.rollback()
                         filas_err += len(batch)
                         logging.error(f"  Error en lote {i // batch_size + 1}: {e}")
+                        if modo_truncate:
+                            self.ultimo_error = f"lote {i // batch_size + 1}: {e}"
+                            logging.error(
+                                f"{full_table}: recarga ABORTADA y revertida; la tabla "
+                                f"conserva el dato anterior completo"
+                            )
+                            cur.close()
+                            return False
+
+                if modo_truncate:
+                    conn.commit()
 
                 elapsed = time.time() - start
                 logging.info(f"OK {filas_ok:,} filas cargadas en {full_table} ({elapsed:.1f}s)")
                 if filas_err:
+                    # ⚠ Antes esto devolvia True igual: una carga a medias se reportaba
+                    # como OK y el llamador no tenia forma de enterarse.
                     logging.warning(f"AVISO {filas_err:,} filas con error")
+                    self.ultimo_error = f"{filas_err} filas no se insertaron (ver db_loader.log)"
 
                 cur.close()
-                return True
+                return filas_err == 0
 
         except Exception as e:
             logging.error(f"Error cargando {full_table}: {e}")
+            self.ultimo_error = str(e).strip().splitlines()[0] if str(e).strip() else repr(e)
             return False
 
     # ========================

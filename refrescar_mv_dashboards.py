@@ -140,6 +140,68 @@ MVS = (MVS_VENTAS + MVS_CONTAB + MVS_NIELSEN + MVS_CCLAVE + MVS_CARTERA
        + MVS_MARKETING)
 
 
+# ── QUE MV DEPENDE DE CADA TABLA DE ATERRIZAJE `bi_*` ──────────────────────────
+# Lo usan los cargadores de Drive (`cargar_bi_datasets.py`, `cargar_cuentas_clave.py`)
+# para refrescar SOLO lo que acaban de tocar: si cambia el Excel del presupuesto no hay
+# ninguna razon para reescanear las 573.013 filas de Nielsen.
+#
+# Vive aqui y no en cada cargador porque es conocimiento de las MV; duplicado en dos
+# scripts se desincroniza en cuanto alguien anada una MV.
+#
+# ⚠ El orden dentro de cada tupla NO es negociable donde hay derivadas:
+# `mv_ventas_presupuesto_mes` lee de `mv_presupuesto_mes`. Al reves publicaria el cruce
+# contra el presupuesto ANTERIOR con un `refreshed_at` nuevo — la intranet invalidaria su
+# cache y mostraria el dato viejo como fresco, sin que nada lo delatara.
+#
+# Las `bi_*` que NO aparecen aqui no tienen MV encima (bi_lineas, bi_ofertas,
+# bi_clientes_impulso, bi_cuentas_clave, bi_cliente_credito) o solo se usaron como
+# semilla de una sola vez (bi_cartera, en 30_cartera_dashboards.sql): recargarlas no
+# obliga a refrescar nada. Las `bi_marketing_*`/`bi_trm_dia` tampoco estan porque su
+# cargador hace UPSERT, no recarga completa.
+MVS_POR_TABLA = {
+    "bi_presupuesto":          ("mv_presupuesto_mes", "mv_ventas_presupuesto_mes"),
+    "bi_nielsen":              ("mv_nielsen_semana", "mv_nielsen_item_semana"),
+    "bi_cuentas_clave_ventas": ("mv_cclave_venta_mes",),
+    "bi_inventario_cclave":    ("mv_cclave_inventario",),
+    "bi_tiendas_cclave":       ("mv_cclave_tienda",),
+}
+
+
+def refrescar_dependientes(tablas, concurrente: bool = True) -> dict:
+    """
+    Refresca las MV que dependen de las tablas `bi_*` recien cargadas.
+
+    Pensado para llamarse al final de un cargador de Drive: recargar la tabla NO
+    actualiza la MV, asi que sin esto el dato nuevo no se ve en el tablero hasta el
+    siguiente tick del cron (hasta 1 hora en Nielsen y cuentas clave, que solo se
+    refrescan en el tick :00).
+
+    `tablas` = nombres de tabla SIN esquema, solo las que cargaron BIEN. Refrescar
+    despues de una carga fallida solo serviria para sellar el dato viejo con una marca
+    de tiempo fresca, que es peor que no refrescar.
+
+    Devuelve el mismo dict que refrescar(); {'ok': [], 'fallidas': []} si no hay nada
+    que refrescar.
+    """
+    pendientes = []
+    for tabla in tablas:
+        for mv in MVS_POR_TABLA.get(tabla, ()):
+            if mv not in MVS:
+                # Un typo aqui seria invisible: REFRESH fallaria en produccion y el
+                # cargador lo tragaria en su try/except.
+                logging.warning("MVS_POR_TABLA: '%s' no esta en MVS; se ignora", mv)
+                continue
+            if mv not in pendientes:      # dedup conservando el orden (importa)
+                pendientes.append(mv)
+
+    if not pendientes:
+        logging.info("Nada que refrescar: ninguna MV depende de %s", ", ".join(tablas) or "(nada)")
+        return {"ok": [], "fallidas": []}
+
+    logging.info("Refrescando %s MV dependientes: %s", len(pendientes), ", ".join(pendientes))
+    return refrescar(mvs=pendientes, concurrente=concurrente)
+
+
 def _registrar(cur, mv: str, filas, duracion_ms: int, ok: bool, error: str | None) -> None:
     """Deja constancia en marts.bi_mv_refresh (upsert por mv_name)."""
     cur.execute(

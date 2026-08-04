@@ -113,6 +113,33 @@ locales, para **desconectar Power BI del PC**. Lee de Google Drive (`DriveLoader
 | `bi_cliente_credito` | cliente_cartera.xlsx |
 | `bi_nielsen` | consolida los 9 Excel de la carpeta `nielseiq` (⚠ columnas `unnamed_*`: los Excel no traen encabezado limpio) |
 
+**Cargar SOLO el archivo que cambió** (lo normal: la corrida completa tarda ~4 min, casi todo en
+descargar los 9 Excel de Nielsen):
+
+```
+python cargar_bi_datasets.py --dataset presupuesto_general   # ~8 s
+python cargar_bi_datasets.py --dataset bi_presupuesto        # acepta también el nombre de tabla
+python cargar_bi_datasets.py --listar                        # qué claves existen
+```
+
+Al terminar refresca **solo las MV que dependen de lo cargado**
+(`refrescar_mv_dashboards.MVS_POR_TABLA`) y lo registra en `marts.bi_mv_refresh`. Sin ese refresco la
+tabla queda nueva y el tablero sigue mostrando lo viejo hasta el siguiente tick del cron — y las MV
+de Nielsen y cuentas clave solo se refrescan en el tick `:00`, o sea hasta **una hora** después.
+`--sin-refresco` lo salta.
+
+⚠ **Recargar una `bi_*` que tiene una MV encima**: `DROP TABLE` es **imposible** (Postgres lo rechaza
+sin `CASCADE`, y `CASCADE` se llevaría las MV **y sus `GRANT` a `intranet_ro`**). `DBLoader.cargar` lo
+detecta con `_dependientes()` y recarga con **`TRUNCATE` + `INSERT` en una sola transacción**; no hay
+nada que hacer a mano. Esto tuvo roto el presupuesto entre el 28-jul y el 3-ago-2026: el `DROP`
+fallaba, no se insertaba ni una fila, la tabla se quedaba con el dato viejo y el resumen solo decía
+`ERROR carga`. Hoy afecta a `bi_presupuesto`, `bi_nielsen` y las tres de cuentas clave.
+
+⚠ **`bi_nielsen` tarda ~8,5 min** (573.013 filas, medido 2026-08-03: 506 s de inserción en una sola
+transacción + 19 s de refresco de sus dos MV). Durante la inserción la tabla queda con lock
+exclusivo, así que **no lanzarla justo en el `:00`**: es cuando el cron refresca `MVS_NIELSEN` y el
+`REFRESH` se quedaría esperando a que termine la carga. Las demás tablas son de segundos.
+
 **Pendiente / decisiones:**
 - `bi_base_pyg` (base_consolidada.csv, ~1.09M filas) **NO se migra por defecto**: es redundante con el
   modelo contable del DW (`fact_movimiento_contable` / `v_balance_comprobacion`). El BI debería leer el
@@ -162,7 +189,8 @@ con `python manage.py check_marts` (la sección 7r debe pasar a verde).
 | Cambié la clasificación de cuentas (estados financieros) | aplicar el DDL si tocó columnas + `python etl_dw_marts.py --dims` |
 | Poblar enriquecimiento de ventas / kits (tel/email/etiqueta/es_kit) | aplicar DDL 15/15b + `python etl_dw_marts.py --dims` |
 | Cambió un Excel de zonas / clientes padres / categorías | `python cargar_mapeos.py` |
-| Cambió un dataset del BI (líneas/ofertas/presupuesto/nielsen/cartera/…) | `python cargar_bi_datasets.py` |
+| Cambió **un** dataset del BI (ajusté el presupuesto en Drive, p. ej.) | `python cargar_bi_datasets.py --dataset presupuesto_general` (solo ese, ~8 s, y refresca sus MV) |
+| Cambiaron varios datasets del BI (líneas/ofertas/nielsen/cartera/…) | `python cargar_bi_datasets.py` (todos, ~4 min) |
 | Cambió un archivo de CUENTAS CLAVE (ventas/inventarios por retailer) | `python cargar_cuentas_clave.py cargar` · `... inventarios` · `... tiendas` |
 | Un **mes no cuadra** (partida doble ≠ 0) | `python etl_dw_marts.py --rebuild --desde AAAA-MM-01 --hasta AAAA-MM-31` |
 | El **año en curso** trae datos raros/borrados | `python etl_dw_marts.py --rebuild` |

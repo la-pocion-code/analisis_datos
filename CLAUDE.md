@@ -394,6 +394,32 @@ definidos por el admin). **Contrato de datos completo:
   obligaciones financieras de −1.702.189.935,80; y los KPIs salían en **días negativos**. Con
   `saldo_acum` el balance cuadra: `ACTIVO = PASIVO + PATRIMONIO + resultado`, diferencia **0,00** en
   la empresa 8. **No volver a "arreglarlo" para que cuadre con Power BI.**
+- ⚠⚠ **CREAR UNA MV SOBRE UNA `bi_*` LE CAMBIA LA FORMA DE RECARGARSE** (medido 2026-08-03).
+  `DBLoader.cargar(if_exists='replace')` recargaba con `DROP TABLE` + `CREATE`, y Postgres **rechaza
+  el DROP** en cuanto una vista/MV cuelga de la tabla. Resultado entre el 28-jul y el 3-ago: la carga
+  del presupuesto fallaba, **no se insertaba ni una fila**, `bi_presupuesto` se quedaba con el dato
+  del 23-jul y el resumen solo decía `ERROR carga` con las 348 filas al lado — se lee como éxito. El
+  ETL nunca se enteró porque estas cargas son a demanda, no del cron.
+  **Ya está resuelto**: `cargar()` detecta dependientes (`_dependientes()`, vía `pg_depend`) y recarga
+  con **`TRUNCATE` + `INSERT` en UNA transacción** (un commit por lote dejaría una ventana con la tabla
+  vacía, y un fallo revierte también el TRUNCATE ⇒ se conserva el dato anterior completo).
+  ⚠ **NO usar `DROP ... CASCADE`** aunque lo sugiera el `HINT` de Postgres: se lleva las MV **y sus
+  `GRANT` a `intranet_ro`**, y la intranet responde *relation does not exist* hasta re-ejecutar el DDL
+  de la hoja **y** `24_rol_intranet.sql`.
+  Afecta a 5 tablas: `bi_presupuesto`, `bi_nielsen` y las tres de cuentas clave
+  (`bi_cuentas_clave_ventas`, `bi_inventario_cclave`, `bi_tiendas_cclave`). `bi_cartera` **no**, aunque
+  aparezca en `30_cartera_dashboards.sql`: ahí es un `INSERT … SELECT` de siembra, no una vista.
+  ⚠ Si el Excel origen **pierde o renombra** una columna, la recarga **se aborta a propósito** con
+  mensaje: truncar sin ella dejaría a la MV leyendo una columna que nadie alimenta —toda en NULL, sin
+  un solo error— y el tablero mostraría huecos como si fuera un problema del negocio.
+- **Recargar un dataset del BI**: `python cargar_bi_datasets.py --dataset presupuesto_general` carga
+  **solo** ese archivo (~8 s contra ~4 min de la corrida completa, que se va casi entera en descargar
+  los 9 Excel de Nielsen) y refresca **solo** las MV que dependen de él. El mapa tabla→MV es
+  `refrescar_mv_dashboards.MVS_POR_TABLA` y vive ahí, no en los cargadores, para que no se
+  desincronice; su orden respeta las derivadas (`mv_presupuesto_mes` antes de
+  `mv_ventas_presupuesto_mes`). ⚠ Recargar la tabla **no** actualiza la MV: sin ese refresco el
+  tablero sigue mostrando lo viejo hasta el siguiente tick, y las de Nielsen/cuentas clave hasta el
+  próximo `:00`.
 - **Refresco separado**: `refrescar_mv_dashboards.py` divide `MVS_VENTAS` (cada tick) de
   `MVS_CONTAB` (**solo el tick `:00`**, cuando `run_dw` corre completo). Las contables son de grano
   mensual y en los ticks ligeros las líneas nuevas llegan aún **sin `categoria`**.

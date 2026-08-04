@@ -476,20 +476,40 @@ def combinar_tiendas(dl, base, kits):
     return t
 
 
+def _refrescar_mv(tabla, ok):
+    """
+    Refresca la MV que cuelga de la tabla recién cargada (mapa en
+    refrescar_mv_dashboards.MVS_POR_TABLA). Sin esto el dato nuevo no se ve en el tablero
+    hasta el tick :00 del cron, que es cuando se refrescan las MV de cuentas clave.
+
+    En try/except: la carga ya está commiteada y es lo que importa; si el refresco falla,
+    el cron lo reintenta en el siguiente tick.
+    """
+    if not ok:      # refrescar tras una carga fallida solo sella el dato viejo con fecha nueva
+        return
+    try:
+        from refrescar_mv_dashboards import refrescar_dependientes
+        refrescar_dependientes([tabla])
+    except Exception as e:                                    # noqa: BLE001
+        logging.error(f"refresco de MV de {tabla}: {e}")
+
+
 def cargar_inventarios():
     from classes.db_loader import DBLoader
     dl, lo = DriveLoader(), DBLoader()
     df = combinar_inventarios(dl, leer_base(dl))
-    lo.cargar(df, "bi_inventario_cclave", schema="marts", if_exists="replace", source_file="inventarios (Drive)")
-    logging.info(f"bi_inventario_cclave: {len(df):,} filas, {df['CLIENTE'].nunique()} clientes")
+    ok = lo.cargar(df, "bi_inventario_cclave", schema="marts", if_exists="replace", source_file="inventarios (Drive)")
+    logging.info(f"bi_inventario_cclave: {len(df):,} filas, {df['CLIENTE'].nunique()} clientes, ok={ok}")
+    _refrescar_mv("bi_inventario_cclave", ok)
 
 
 def cargar_tiendas():
     from classes.db_loader import DBLoader
     dl, lo = DriveLoader(), DBLoader()
     df = combinar_tiendas(dl, leer_base(dl), leer_kits(dl))
-    lo.cargar(df, "bi_tiendas_cclave", schema="marts", if_exists="replace", source_file="cuentas_clave (Drive)")
-    logging.info(f"bi_tiendas_cclave: {len(df):,} filas")
+    ok = lo.cargar(df, "bi_tiendas_cclave", schema="marts", if_exists="replace", source_file="cuentas_clave (Drive)")
+    logging.info(f"bi_tiendas_cclave: {len(df):,} filas, ok={ok}")
+    _refrescar_mv("bi_tiendas_cclave", ok)
 
 
 def validar_inventarios():
@@ -540,6 +560,7 @@ def cargar_ventas(incluir_ecuador=False):
     ok = lo.cargar(df, "bi_cuentas_clave_ventas", schema="marts", if_exists="replace",
                    source_file="cuentas_clave (Drive)")
     logging.info(f"bi_cuentas_clave_ventas: {len(df):,} filas, {df['CLIENTE'].nunique()} clientes, ok={ok}")
+    _refrescar_mv("bi_cuentas_clave_ventas", ok)
 
 
 def main():
