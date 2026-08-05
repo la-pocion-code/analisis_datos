@@ -42,8 +42,14 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 - `cargar_cuentas_clave.py` — reproduce en `marts.bi_cuentas_clave_ventas/bi_inventario_cclave/
   bi_tiendas_cclave` las tablas de CUENTAS CLAVE (ventas/inventarios por retailer + países) desde Drive.
 - `cargar_marketing.py` — carga la hoja de MARKETING de la intranet (TRM de datos.gov.co +
-  Supermetrics/GA4/Search Console/Shopify). ⚠ Hoy **solo la TRM funciona**: las otras cuatro
-  esperan credenciales que no existen. Enganchado a `run_dw.py` (paso 2b, tick :00).
+  Supermetrics/GA4/Search Console/Shopify). ✅ Desde el 2026-08-05 funcionan **la TRM y el
+  GASTO PUBLICITARIO** (Meta/Google/TikTok por la Query API de Supermetrics, probado contra
+  la API real: 1.296 filas desde 2026-01-01). ⚠ **Shopify, GA4 y Search Console siguen
+  siendo esqueletos SIN IMPLEMENTAR** — tienen firma y comprueban su credencial, pero no hay
+  codigo que llame a esas APIs: no confundir «escrito» con «implementado», que es justo lo
+  que hizo perder una sesion. ⚠⚠ El mapeo de la respuesta de Supermetrics es **posicional**:
+  la API devuelve etiquetas humanas (`Cost`, `Total conversion value`), no los codigos que se
+  le piden. Enganchado a `run_dw.py` (paso 2b, tick :00).
 - ⚠⚠ `cargar_cartera_responsables.py` **SE ELIMINO el 2026-08-04 (f)**, con la tabla
   `marts.bi_cartera_responsable` y la hoja `Responsables` de `base_cartera.xlsx`. El
   responsable de cobro **lo calcula la intranet** desde sus grupos de ventas: quien vende a un

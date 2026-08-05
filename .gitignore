@@ -9,6 +9,10 @@ __pycache__/
 
 # Variables de entorno
 .env
+# ⚠ Y sus copias: un `.env.bak-<fecha>` lleva los MISMOS secretos y no lo cubria
+# la linea de arriba, asi que un `git add -A` lo habria publicado en GitHub.
+.env.*
+!.env.example
 
 # Jupyter
 .ipynb_checkpoints/

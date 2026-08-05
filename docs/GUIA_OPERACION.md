@@ -160,9 +160,19 @@ no se carga** (las cuatro fuentes lo entregan incompleto).
 | `--solo-trm` | solo la tasa de cambio (la única fuente que funciona hoy) |
 | `--seco` | valida e informa, no escribe |
 
-⚠⚠ **Solo la TRM funciona.** Supermetrics, GA4, Search Console y Shopify esperan credenciales que
-no existen en este repo. Cada conector avisa y devuelve vacío; la corrida no se cae. Lo que hace
-falta está en el repo de la intranet, `docs/dashboards/marketing-contrato.md` §0 Fase A.
+✅ **Funcionan la TRM y el gasto publicitario** (2026-08-05). Meta, Google Ads y TikTok entran por
+la Query API de Supermetrics; probado contra la API real, 1.296 filas desde 2026-01-01.
+
+⚠⚠ **Shopify, GA4 y Search Console son esqueletos SIN IMPLEMENTAR.** Tienen firma y comprueban su
+credencial, pero no hay código que llame a esas APIs: poner la credencial **no** los enciende. Cada
+uno avisa y devuelve vacío; la corrida no se cae. Lo que falta está en el repo de la intranet,
+`docs/dashboards/marketing-contrato.md` §0 Fase A.
+
+⚠ Dos cosas que **no se arreglan con código**:
+· **RD/Meta da HTTP 500** — la cuenta no está como *prioritised account* en la suscripción de
+  Supermetrics (`hub.supermetrics.com/subscriptions/1770762#datasource-FA`).
+· **EC/Meta carga 0 filas y es correcto** — su filtro limita a campañas `OUTCOME_SALES` y Ecuador
+  en 2026 solo ha corrido `OUTCOME_AWARENESS`. El gasto existe y el filtro lo excluye a propósito.
 
 ⚠ Va enganchado a `run_dw.py` (paso 2b, solo tick `:00`) con import perezoso. Después hay que
 refrescar: `python refrescar_mv_dashboards.py --mv mv_marketing_gasto_dia --mv mv_marketing_web_dia

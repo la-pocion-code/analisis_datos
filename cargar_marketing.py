@@ -11,13 +11,26 @@ Escribe en las tablas de aterrizaje de `sql/marts/31_marketing_dashboards.sql`
 `bi_marketing_atribucion_dia`). Las MV que lee la intranet se refrescan aparte,
 con `refrescar_mv_dashboards.py`.
 
-⚠⚠ ESTADO: SOLO LA TRM FUNCIONA HOY (2026-08-03)
-Las otras cuatro fuentes necesitan credenciales que **no existen todavia en este
-repo**: no hay ni un rastro de SUPERMETRICS, GA4, SEARCH_CONSOLE ni SHOPIFY en el
-`.env`. Sus funciones estan escritas y aisladas, pero **no se han podido probar
-contra las APIs reales**. Cada una comprueba su credencial y, si falta, avisa y
-devuelve vacio: la corrida no se cae y las demas siguen. Lo que hace falta para
-encenderlas esta en el contrato, `marketing-contrato.md` §0 Fase A.
+⚠⚠ ESTADO (2026-08-05): FUNCIONAN LA TRM Y EL GASTO PUBLICITARIO
+`gasto_publicidad` esta **implementado y probado contra la API real**: carga Meta,
+Google Ads y TikTok por la Query API de Supermetrics. Medido ese dia, 1.296 filas
+desde 2026-01-01.
+
+Las otras TRES fuentes —Shopify, GA4 y Search Console— **siguen siendo esqueletos
+sin implementar**: tienen su firma, comprueban su credencial y devuelven vacio,
+pero **no hay codigo que llame a esas APIs**. No confundir «escrito» con
+«implementado»: esa frase en el contrato es la que hizo creer que bastaba con
+poner la credencial. Lo que falta esta en `marketing-contrato.md` §0 Fase A.
+
+Consecuencia directa mientras sigan asi: la hoja muestra INVERSION pero no venta,
+y el ROAS del Resumen sale `null` **con su razon** (nunca 0, que seria mentira).
+
+⚠ Dos huecos que NO son de codigo y hay que resolver fuera (medidos el 2026-08-05):
+  · **RD/Meta responde HTTP 500**: esa cuenta no esta como «prioritised account»
+    en la suscripcion de Supermetrics. Se arregla en hub.supermetrics.com, no aqui.
+  · **EC/Meta carga 0 filas**, y es correcto: su `filtro` limita a campanas
+    `OUTCOME_SALES` y en 2026 Ecuador solo ha corrido `OUTCOME_AWARENESS`. Hay
+    gasto real que el filtro excluye a proposito — el artefacto hace lo mismo.
 
 ⚠ EL DIA EN CURSO NO SE CARGA. Las cuatro fuentes lo entregan incompleto y un dia
 a medias hunde el promedio. Es tambien lo que hacia el artefacto de Cowork, y la
@@ -139,25 +152,210 @@ def trm(desde: date, hasta: date) -> pd.DataFrame:
     return pd.DataFrame(filas)
 
 
-# ── Las cuatro fuentes que esperan credenciales ───────────────────────────────
+# ── Gasto publicitario, via la Query API de Supermetrics ──────────────────────
+
+#: La API de Supermetrics. ⚠ Es la de plan **Enterprise**: con una clave de otro
+#: nivel responde 401/403, y eso se propaga como error en vez de como «no hubo
+#: gasto» (ver `ErrorSupermetrics`).
+SM_BASE = "https://api.supermetrics.com/enterprise/v2/query"
+SM_ESPERA_S = 5          # entre sondeos
+SM_MAX_SONDEOS = 60      # 5 min por cuenta; una consulta de 7 dias tarda segundos
+
+#: Los campos que pide cada plataforma, EN ORDEN: fecha, gasto, compras, valor,
+#: roas. Salen del artefacto de Cowork, que es lo que produce las cifras que
+#: marketing usa hoy.
+#:
+#: ⚠⚠ LA RESPUESTA NO VIENE CON ESTAS CLAVES, VIENE CON ETIQUETAS HUMANAS. Se pide
+#: `cost` y vuelve `Cost`; se pide `date` y vuelve `Date`; se pide
+#: `ConversionValue` y vuelve `Total conversion value`. Por eso el mapeo es
+#: **POSICIONAL** y no por nombre — ver `_filas_a_gasto`. Mapear por nombre es lo
+#: que tuvo esta carga en cero: con `date` en minuscula ninguna fila de Google ni
+#: de TikTok casaba y se descartaban todas, y en Meta la fecha coincidia de
+#: casualidad pero `cost` no, asi que el gasto entraba en NULL. Medido el
+#: 2026-08-05.
+#:
+#: Etiquetas que devolvio la API ese dia, por si hay que depurar:
+#:   FA  -> Date · Cost · Website purchases · Website purchases conversion value ·
+#:          Website purchase ROAS (return on advertising spend)
+#:   AW  -> Date · Cost · Conversions · Total conversion value ·
+#:          Return on ad spend (ROAS)
+#:   TIK -> Date · Cost · Complete payment events · Total complete payment value ·
+#:          Complete payment ROAS
+#:
+#: ⚠ `total_complete_payment_rate` de TikTok **no es una tasa** pese al nombre:
+#: devuelve «Total complete payment value», el importe. Comprobado, no suponer.
+CAMPOS_GASTO = {
+    "FA": ["Date", "cost", "offsite_conversions_fb_pixel_purchase",
+           "offsite_conversion_value_fb_pixel_purchase", "website_purchase_roas"],
+    "AW": ["date", "cost", "Conversions", "ConversionValue", "ROAS"],
+    "TIK": ["date", "cost", "complete_payment", "total_complete_payment_rate",
+            "complete_payment_roas"],
+}
+
+
+class ErrorSupermetrics(RuntimeError):
+    """
+    Fallo de la API, distinto de «esa cuenta no gasto nada esos dias».
+
+    ⚠⚠ Existe porque confundir las dos cosas es justo lo que dejo esta carga
+    muerta y en verde: el esqueleto devolvia un DataFrame vacio ante cualquier
+    problema, asi que un 401 por plan equivocado se veia igual que un dia sin
+    inversion. Un vacio legitimo se informa; un error se levanta.
+    """
+
+
+def _sm_pedir(sesion, ruta: str, params: dict) -> dict:
+    """Una llamada a la API. Traduce cualquier problema a `ErrorSupermetrics`."""
+    r = sesion.get(f"{SM_BASE}/{ruta}", params=params, timeout=120)
+    if r.status_code >= 400:
+        # El cuerpo lleva el motivo real (clave invalida, cuenta sin permiso,
+        # campo inexistente). Sin el, depurar esto a ciegas es imposible.
+        raise ErrorSupermetrics(
+            f"{ruta}: HTTP {r.status_code} - {r.text[:400]}")
+    try:
+        return r.json()
+    except ValueError as exc:
+        raise ErrorSupermetrics(f"{ruta}: respuesta no es JSON - {r.text[:200]}") from exc
+
+
+def _sm_filas(payload: dict) -> list[dict]:
+    """
+    Las filas de una respuesta, venga como lista de listas o de diccionarios.
+
+    Supermetrics devuelve `data` como matriz con la PRIMERA FILA de encabezados.
+    Se admiten las dos formas porque el formato depende de ajustes de la cuenta y
+    equivocarse aqui daria cero filas sin ningun error.
+    """
+    datos = (payload or {}).get("data")
+    if not datos:
+        return []
+    if isinstance(datos, dict):                       # {"data": {"rows": [...]}}
+        datos = datos.get("rows") or []
+    if not datos:
+        return []
+    if isinstance(datos[0], dict):
+        return datos
+    cabecera = [str(c) for c in datos[0]]
+    return [dict(zip(cabecera, fila)) for fila in datos[1:]]
+
+
+def _sm_consultar(sesion, api_key: str, params: dict) -> list[dict]:
+    """
+    Envia una consulta y devuelve sus filas, sondeando si va en asincrono.
+
+    Se pide en **sincrono** primero (`sync_timeout` alto): una ventana de 7 dias
+    de una cuenta tarda segundos, y el ida y vuelta asincrono solo anade puntos
+    de fallo. Si la API decide encolarla igualmente (202 + `schedule_id`), se
+    sondea `status` hasta que termine.
+    """
+    import time
+
+    payload = _sm_pedir(sesion, "data/json", {**params, "api_key": api_key})
+
+    meta = payload.get("meta") or {}
+    schedule_id = meta.get("schedule_id") or payload.get("schedule_id")
+    estado = str(meta.get("status_code") or payload.get("status_code") or "").upper()
+
+    # Ya vinieron los datos: nada que sondear.
+    if not schedule_id or _sm_filas(payload):
+        return _sm_filas(payload)
+
+    for _ in range(SM_MAX_SONDEOS):
+        if estado in ("SUCCESS", "COMPLETED", "DONE"):
+            break
+        if estado in ("FAILURE", "FAILED", "ERROR", "CANCELLED"):
+            raise ErrorSupermetrics(f"la consulta termino en {estado}: "
+                                    f"{str(payload)[:400]}")
+        time.sleep(SM_ESPERA_S)
+        payload = _sm_pedir(sesion, "status",
+                            {"api_key": api_key, "schedule_id": schedule_id})
+        meta = payload.get("meta") or {}
+        estado = str(meta.get("status_code") or payload.get("status_code") or "").upper()
+        if _sm_filas(payload):
+            return _sm_filas(payload)
+    else:
+        raise ErrorSupermetrics(
+            f"la consulta sigue en {estado or 'estado desconocido'} tras "
+            f"{SM_MAX_SONDEOS * SM_ESPERA_S}s (schedule_id={schedule_id})")
+
+    return _sm_filas(_sm_pedir(sesion, "results",
+                               {"api_key": api_key, "schedule_id": schedule_id}))
+
+
+def _num(valor):
+    """Un numero, o None. Nunca 0 por defecto: un cero inventado es un dato falso."""
+    if valor in (None, "", "-"):
+        return None
+    try:
+        return float(str(valor).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def _filas_a_gasto(crudas: list[dict], cuenta, etiqueta: str) -> list[dict]:
+    """
+    Traduce las filas de la API a las columnas de `bi_marketing_gasto_dia`.
+
+    ⚠⚠ POR POSICION, no por nombre: la API responde con etiquetas humanas
+    (`Cost`, `Total conversion value`…) y no con los codigos que se le piden.
+    Se pide UNA dimension (la fecha) y CUATRO metricas, y Supermetrics devuelve
+    las dimensiones primero y luego las metricas en el orden pedido, asi que la
+    posicion es estable.
+
+    ⚠ Y por eso hay guardian: si la respuesta no trae exactamente 5 columnas o la
+    primera no es una fecha, se levanta en vez de rellenar con None. Un mapeo
+    silenciosamente desalineado produciria gasto en la columna de compras — un
+    numero creible y falso, que es peor que no cargar nada.
+    """
+    filas = []
+    for r in crudas:
+        valores = list(r.values())
+        if len(valores) != 5:
+            raise ErrorSupermetrics(
+                f"{etiqueta}: se pidieron 5 campos y la respuesta trae "
+                f"{len(valores)} ({list(r.keys())}). El mapeo posicional no es "
+                f"fiable asi: revisa `CAMPOS_GASTO`.")
+        try:
+            fecha = pd.to_datetime(valores[0]).date()
+        except (TypeError, ValueError) as exc:
+            raise ErrorSupermetrics(
+                f"{etiqueta}: la primera columna deberia ser la fecha y vino "
+                f"{valores[0]!r} (claves: {list(r.keys())}).") from exc
+
+        filas.append({
+            "fecha": fecha,
+            "pais": cuenta["pais"],
+            "plataforma": cuenta["plataforma"],
+            "gasto_nativo": _num(valores[1]),
+            "moneda_nativa": cuenta["moneda_nativa"],
+            "compras_auto": _num(valores[2]),
+            "valor_compras_auto": _num(valores[3]),
+            "roas_auto": _num(valores[4]),
+        })
+    return filas
+
 
 def gasto_publicidad(cuentas: pd.DataFrame, desde: date, hasta: date) -> pd.DataFrame:
     """
     Gasto, compras y ROAS auto-reportado de Meta, Google Ads y TikTok, via la
     Query API de Supermetrics.
 
-    ⚠ SIN PROBAR: requiere `SUPERMETRICS_API_KEY`, que no existe todavia.
-
-    El patron de la API es asincrono y esta documentado en el artefacto de Cowork
-    (lineas 1144-1199): se envia la consulta, devuelve un `schedule_id`, y se
-    sondea `get_async_query_results` hasta que el estado sea `completed`.
+    Una consulta por cuenta (8 hoy: 3 Meta, 3 Google, 2 TikTok). Se hacen por
+    separado y no en una sola porque cada `ds_id` tiene su propio juego de campos
+    y su propio filtro.
 
     ⚠ `filtro` y `ajustes` de `bi_marketing_cuenta` se pasan TAL CUAL. Sin ellos
     las cifras no cuadran con las que marketing usa hoy: Colombia limita Google a
     Search y Performance Max, y Ecuador y Rep. Dominicana limitan Meta a las
     campanas de conversion.
 
-    ⚠ El gasto se guarda en `moneda_nativa`, sin convertir (ver la cabecera).
+    ⚠⚠ El gasto se guarda en `moneda_nativa`, SIN convertir (ver la cabecera del
+    modulo). La conversion la hace `mv_marketing_gasto_dia` con la TRM del dia, y
+    es lo que evita repetir el error de la tasa cableada a 4.000.
+
+    ⚠ Un fallo de UNA cuenta no tumba las demas: se registra y se sigue. Pero si
+    fallan TODAS se levanta, porque eso no es «no hubo gasto», es que la API o la
+    credencial no sirven — y devolver vacio ahi es como nacio este problema.
     """
     faltan = _falta("SUPERMETRICS_API_KEY")
     if faltan:
@@ -165,19 +363,94 @@ def gasto_publicidad(cuentas: pd.DataFrame, desde: date, hasta: date) -> pd.Data
             "  [aviso] gasto publicitario: falta %s. Se omiten las %d cuentas; "
             "el resto de la carga sigue.", ", ".join(faltan), len(cuentas))
         return pd.DataFrame()
+    if cuentas.empty:
+        logging.warning("  [aviso] gasto publicitario: no hay cuentas activas en "
+                        "marts.bi_marketing_cuenta.")
+        return pd.DataFrame()
 
-    # TODO(credenciales): implementar contra la Query API de Supermetrics.
-    # Campos por plataforma, tal como los pide el artefacto (linea 1138):
-    #   meta:   cost,Date,offsite_conversions_fb_pixel_purchase,
-    #           offsite_conversion_value_fb_pixel_purchase,website_purchase_roas
-    #   google: cost,date,Conversions,ConversionValue,ROAS
-    #   tiktok: cost,date,complete_payment,total_complete_payment_rate,
-    #           complete_payment_roas
-    # Salida esperada, una fila por (fecha, pais, plataforma):
-    #   gasto_nativo, moneda_nativa, compras_auto, valor_compras_auto, roas_auto
-    logging.warning("  [aviso] gasto publicitario: conector sin implementar "
-                    "(pendiente de credenciales).")
-    return pd.DataFrame()
+    import json
+
+    import requests
+
+    api_key = os.getenv("SUPERMETRICS_API_KEY")
+    team_id = os.getenv("SUPERMETRICS_TEAM_ID")
+    sesion = requests.Session()
+
+    filas, errores = [], []
+    for _, c in cuentas.iterrows():
+        etiqueta = f"{c['pais']}/{c['plataforma']}"
+        campos = CAMPOS_GASTO.get(c["ds_id"])
+        if not campos:
+            errores.append(f"{etiqueta}: ds_id '{c['ds_id']}' sin mapa de campos")
+            continue
+
+        params = {
+            "ds_id": c["ds_id"],
+            "ds_accounts": c["cuenta_id"],
+            "start_date": desde.isoformat(),
+            "end_date": hasta.isoformat(),
+            # ⚠ EL ORDEN ES EL CONTRATO: la fecha primero y las cuatro metricas
+            # despues, porque el mapeo de la respuesta es posicional.
+            "fields": ",".join(campos),
+            "max_rows": 100000,
+            # Sincrono: una ventana de 7 dias tarda segundos.
+            "sync_timeout": 300,
+        }
+        if team_id:
+            params["team_id"] = team_id
+        if c.get("filtro"):
+            params["filter"] = c["filtro"]
+        if c.get("ajustes"):
+            # `ajustes` es JSON en la semilla (`asset_level`, `report_type`) y sus
+            # claves son parametros de la API: se expanden, no se mandan como blob.
+            try:
+                extra = c["ajustes"] if isinstance(c["ajustes"], dict) \
+                    else json.loads(c["ajustes"])
+                params.update(extra)
+            except (TypeError, ValueError):
+                errores.append(f"{etiqueta}: `ajustes` no es JSON valido")
+                continue
+
+        try:
+            nuevas = _filas_a_gasto(_sm_consultar(sesion, api_key, params),
+                                    c, etiqueta)
+        except ErrorSupermetrics as exc:
+            logging.error("  [ERROR] %s: %s", etiqueta, exc)
+            errores.append(f"{etiqueta}: {exc}")
+            continue
+
+        filas.extend(nuevas)
+        # El conteo y el gasto por cuenta son lo unico que delata un `filtro` que
+        # dejo una cuenta en cero sin que la API se queje — le paso justo a
+        # EC/Meta, cuyo filtro de campanas de conversion excluye TODO su gasto.
+        total = sum(f["gasto_nativo"] or 0 for f in nuevas)
+        logging.info("  %-12s %4d filas  %15.2f %s", etiqueta, len(nuevas),
+                     total, c["moneda_nativa"])
+        if nuevas and not total:
+            logging.warning("      [aviso] %s trae filas pero gasto 0. Si tiene "
+                            "`filtro`, puede estar excluyendo todo.", etiqueta)
+
+    if errores and not filas:
+        raise ErrorSupermetrics(
+            f"fallaron las {len(errores)} cuentas y no se trajo ni una fila. "
+            f"Primer motivo -> {errores[0]}")
+    if errores:
+        logging.warning("  [aviso] %d de %d cuentas fallaron: %s",
+                        len(errores), len(cuentas), "; ".join(errores[:3]))
+
+    if not filas:
+        logging.warning("  [aviso] gasto publicitario: la API respondio bien pero "
+                        "no hay ni una fila en la ventana. Es un vacio legitimo.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(filas)
+    # Una cuenta puede devolver el mismo dia partido en varias filas (moneda o
+    # campana); la clave de la tabla es (fecha, pais, plataforma), asi que se
+    # agrega aqui. Sin esto el UPSERT se quedaria con una fila arbitraria.
+    df = (df.groupby(["fecha", "pais", "plataforma", "moneda_nativa"], as_index=False)
+            .agg({"gasto_nativo": "sum", "compras_auto": "sum",
+                  "valor_compras_auto": "sum", "roas_auto": "mean"}))
+    return df
 
 
 def web_shopify(paises: pd.DataFrame, desde: date, hasta: date) -> pd.DataFrame:
@@ -282,7 +555,7 @@ def _escribir(loader, df, tabla, pk, resumen, seco):
 
 
 def cargar(desde: str | None = None, solo_trm: bool = False,
-           seco: bool = False) -> list:
+           seco: bool = False, solo_gasto: bool = False) -> list:
     """Carga todo lo que se pueda. Devuelve el resumen para imprimir."""
     d0, d1 = _ventana(desde)
     logging.info("Ventana: %s -> %s (el dia en curso NO se carga)", d0, d1)
@@ -292,13 +565,16 @@ def cargar(desde: str | None = None, solo_trm: bool = False,
 
     # 1) TRM. Va PRIMERO porque la MV del gasto la necesita para convertir: sin
     #    tasa del dia, el gasto convertido saldria NULL.
-    try:
-        _escribir(loader, trm(d0, d1), "bi_trm_dia",
-                  pk=["fecha", "moneda_origen", "moneda_destino"], resumen=resumen,
-                  seco=seco)
-    except Exception as exc:                                # noqa: BLE001
-        logging.error("TRM: %s", exc)
-        resumen.append(("bi_trm_dia", 0, f"ERROR {exc}"))
+    #    ⚠ Con `--solo-gasto` se salta, y por eso ese modo es para DEPURAR el
+    #    conector, no para dejar el almacen al dia.
+    if not solo_gasto:
+        try:
+            _escribir(loader, trm(d0, d1), "bi_trm_dia",
+                      pk=["fecha", "moneda_origen", "moneda_destino"], resumen=resumen,
+                      seco=seco)
+        except Exception as exc:                            # noqa: BLE001
+            logging.error("TRM: %s", exc)
+            resumen.append(("bi_trm_dia", 0, f"ERROR {exc}"))
 
     if solo_trm:
         return resumen
@@ -319,6 +595,9 @@ def cargar(desde: str | None = None, solo_trm: bool = False,
     except Exception as exc:                                # noqa: BLE001
         logging.error("gasto: %s", exc)
         resumen.append(("bi_marketing_gasto_dia", 0, f"ERROR {exc}"))
+
+    if solo_gasto:
+        return resumen
 
     # 3) Web: las tres fuentes se combinan en una fila por (fecha, pais). Van
     #    juntas a proposito — comparten clave, y escribirlas por separado con
@@ -352,11 +631,15 @@ def main():
     ap = argparse.ArgumentParser(description="Carga los datos de la hoja de Marketing.")
     ap.add_argument("--desde", help="Fecha inicial AAAA-MM-DD (backfill).")
     ap.add_argument("--solo-trm", action="store_true",
-                    help="Solo la tasa de cambio (la unica fuente sin credenciales).")
+                    help="Solo la tasa de cambio (no necesita credenciales).")
+    ap.add_argument("--solo-gasto", action="store_true",
+                    help="Solo el gasto publicitario, para depurar el conector de "
+                         "Supermetrics. NO carga la TRM: no deja el almacen al dia.")
     ap.add_argument("--seco", action="store_true", help="No escribe, solo informa.")
     args = ap.parse_args()
 
-    resumen = cargar(desde=args.desde, solo_trm=args.solo_trm, seco=args.seco)
+    resumen = cargar(desde=args.desde, solo_trm=args.solo_trm, seco=args.seco,
+                     solo_gasto=args.solo_gasto)
 
     print("\n" + "=" * 70)
     print(f"RESUMEN - marketing{'  (SECO)' if args.seco else ''}")

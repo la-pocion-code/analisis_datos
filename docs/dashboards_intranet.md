@@ -1063,15 +1063,26 @@ el ETL de Odoo.
 
 ### 14.7 Fuera de alcance
 
-⚠⚠ **Solo la TRM funciona.** No hay ninguna credencial de Supermetrics, GA4, Search
-Console ni Shopify en este repo — cero rastros en el `.env`. El `google_credentials.json`
+✅ **Funcionan la TRM y el GASTO PUBLICITARIO** (2026-08-05). `SUPERMETRICS_API_KEY` y
+`SUPERMETRICS_TEAM_ID` ya están en el `.env`, y `gasto_publicidad` está implementado y
+**probado contra la API real**: 1.296 filas desde 2026-01-01, con la conversión por TRM
+verificada (EC/Google 18.636.076 COP → 5.197 USD a 3.590,95).
+
+⚠⚠ **Los otros tres conectores son ESQUELETOS SIN IMPLEMENTAR**, no «escritos sin probar».
+La diferencia importa y costó una sesión: tienen firma y comprueban su credencial, pero **no
+hay código que llame a esas APIs**, así que poner la credencial no los enciende — el cron
+sale verde con cero filas. Siguen pendientes Shopify, GA4 y Search Console.
+
+No hay credencial de GA4, Search Console ni Shopify en este repo. El `google_credentials.json`
 que existe es una cuenta de servicio con **un único scope, `drive.readonly`**; sirve como
 identidad (mismo `client_email` que dar de alta en GA4 y Search Console) pero los scopes
 se piden en código y las APIs hay que habilitarlas en el proyecto `loginlapocion`.
 
-Los cuatro conectores de `cargar_marketing.py` están **escritos y aislados pero sin
-probar**: cada uno comprueba su credencial y, si falta, avisa y devuelve vacío. La hoja de
-la intranet responde 200 y dice «sin dato» con la razón, que es su comportamiento honesto.
+⚠ Y falta sembrar `ga4_property_id` y `gsc_site_url` en `bi_marketing_pais`: hoy están **NULL
+en los tres países**, así que esos dos conectores se rendirían aunque tuvieran credencial.
+
+Consecuencia mientras siga así: la hoja muestra **inversión** pero no venta, y el ROAS del
+Resumen vuelve `null` **con su razón** — nunca un 0, que sería mentira.
 
 Lo que hace falta para encenderlos, paso a paso, está en el repo de la intranet:
 `docs/dashboards/marketing-contrato.md` §0 Fase A. El bloqueante duro es confirmar que hay

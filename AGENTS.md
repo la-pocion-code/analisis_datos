@@ -36,7 +36,9 @@ Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
 - `cargar_mapeos.py` — carga los mapeos NO-Odoo de ventas (zona/cliente_padre/categoría) de Drive a
   `marts.map_*`. A demanda (ver sección Data Warehouse).
 - `cargar_marketing.py` — carga la hoja de MARKETING de la intranet (TRM + Supermetrics/GA4/
-  Search Console/Shopify). ⚠ Hoy **solo la TRM funciona**; las otras cuatro esperan credenciales.
+  Search Console/Shopify). ✅ Desde el 2026-08-05 funcionan **la TRM y el gasto publicitario**
+  (Supermetrics, probado contra la API real). ⚠ **Shopify, GA4 y Search Console siguen siendo
+  esqueletos sin implementar**: no confundir «escrito» con «implementado».
   Enganchado a `run_dw.py` (paso 2b, tick :00).
 - ⚠⚠ `cargar_cartera_responsables.py` **SE ELIMINO el 2026-08-04 (f)**, con la tabla
   `marts.bi_cartera_responsable` y la hoja `Responsables` de `base_cartera.xlsx`. El
