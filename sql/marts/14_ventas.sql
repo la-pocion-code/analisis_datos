@@ -70,6 +70,31 @@ DROP VIEW IF EXISTS marts.v_ventas_producto;
 -- ⚠ Signo: `debito − credito` en la CxC ⇒ POSITIVO en factura y NEGATIVO en nota crédito, igual
 -- que la convención de `venta_neta`. Una factura con varios vencimientos tiene varias líneas de
 -- CxC: se suman.
+--
+-- ── RENDIMIENTO (medido 2026-08-05) — NO hace falta materializar esta vista ──────────
+-- Esta vista sola: **1,0 s** (195.666 asientos). Usarla en `v_ventas_producto` suma **1,5 s** en un
+-- agregado de 2026 (1,0 s → 2,5 s).
+--
+-- ⭐ **Las MV del cron no pagan NADA por ella.** `mv_ventas_dia/mes/kpi_mes/kit_mes/...` no
+-- seleccionan `venta_subtotal_con_iva` ni `venta_total_factura`, y el planner **elimina el LEFT JOIN
+-- completo**: en el `EXPLAIN` de `mv_ventas_mes` la condición del IVA (`2408`) **no aparece**, y
+-- `fact_movimiento_contable` sale 2 veces, que son las de siempre (ramas INDIVIDUAL y KIT del
+-- UNION ALL de `v_ventas_explotada`). Postgres puede quitarlo porque el `GROUP BY factura_id` le
+-- prueba unicidad ⇒ el LEFT JOIN no puede duplicar filas. Tiempos actuales: `mv_ventas_dia` 6,8 s ·
+-- `mv_ventas_mes` 7,9 s · `mv_ventas_kit_mes` 1,1 s (aplicar 23_mv_dashboards.sql tardó 55,5 s ANTES
+-- de este cambio y 52,0 s después: sin regresión).
+--
+-- Coste solo cuando alguien SÍ usa las medidas, sobre `v_ventas_bi` completa (920.084 filas):
+--     solo la medida sin IVA (el cron hoy) ....  7,7 s
+--     + venta_componente_con_iva ............. 10,4 s   (+2,7 s)
+--     + las tres medidas ..................... 11,8 s   (+4,1 s)
+-- Asumible ⇒ si algún día se llevan las medidas a las MV, **no hay que materializar esta vista**.
+-- Si aun así se materializara, tendría que entrar en `MVS_VENTAS` ANTES de las MV que la usen, con
+-- índice único (lo exige REFRESH CONCURRENTLY) y su GRANT en 24_rol_intranet.sql.
+--
+-- ⚠ CÓMO **NO** MEDIR ESTO: sobre la vista completa, volviendo a unir el hecho (4,4 M filas) y
+-- `dim_cuenta` con un `ILIKE '%EXPORTACION%'`. Eso tarda >120 s y la culpa parece de esta vista
+-- (pasó: se avisó de una regresión que no existía). Medir con una consulta PLANA sobre la vista.
 -- ============================================================================
 DROP VIEW IF EXISTS marts.v_impuestos_asiento;
 
