@@ -321,9 +321,11 @@ SELECT
 
     -- Estatico: no depende de hoy, al contrario que los dias de atraso.
     CASE WHEN f.fecha_vencimiento IS NOT NULL AND f.fecha IS NOT NULL
-         THEN (f.fecha_vencimiento - f.fecha) END                     AS dias_credito,
-
-    -- Precedencia tercero_id > cliente > tipo > default (ver la semilla).
+         THEN (f.fecha_vencimiento - f.fecha) END                     AS dias_credito
+-- ⚠ Aqui NO va `responsable`: lo calcula la intranet desde los grupos de ventas
+-- (ver el punto 6 de la cabecera). Al quitar esas dos columnas el 2026-08-04 se
+-- quedo una coma colgando en `dias_credito` y este SELECT no compilaba: el
+-- fichero se commiteo sin aplicarse ni probarse una sola vez.
 FROM fechas f
 LEFT JOIN marts.bi_cartera_tipo_credito tc ON tc.tipo_cliente = f.tipo_cliente;
 
