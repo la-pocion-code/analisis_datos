@@ -68,6 +68,38 @@ El kit se factura como **un producto con un valor único**. Ambas presentaciones
 | **Por producto** (kit repartido) | `dim_producto[nombre_comercial/codigo/nombre]` | activa por `componente_id` | `SUM(venta_componente)` | `SUM(cantidad_componente)` |
 | **Tal como se factura** (kit como unidad) | `dim_producto` **(2.ª copia)** `[nombre_comercial/codigo]` | por `producto_id` | `SUM(venta_componente)` | `[Kits vendidos]` (§5) |
 
+### Las TRES lecturas del mismo dinero (sin IVA · con IVA · total factura)
+
+Las tres están en **COP** y las tres se prorratean por componente con el mismo reparto.
+⚠⚠ **No se suman entre sí**: son el mismo dinero leído de tres formas.
+
+| Medida (`v_ventas_bi` / `v_ventas_explotada`) | Qué es | 2025 |
+|---|---|---|
+| `venta_componente` | base, **sin** impuestos — **la medida de VENTAS** | 82.418.538.975 |
+| `venta_componente_con_iva` | base **+ IVA** (lo que dice la factura) | 97.611.567.272 |
+| `venta_componente_total_factura` | base + IVA **− retenciones** = lo que **paga** el cliente | 95.820.878.823 |
+
+En `v_ventas_producto` se llaman `venta_subtotal`, `venta_subtotal_con_iva` y `venta_total_factura`.
+La diferencia entre las dos últimas es **exactamente la retención** (2,5 % o 3,5 % de la base).
+
+**Cuál usar:** para reportar ventas, `venta_componente` (o la de con IVA si el informe se pide con
+impuesto). `venta_componente_total_factura` sirve para **conciliar contra cartera** o contra el valor
+del documento — **no** para medir ventas: la retención es un anticipo de *nuestro* impuesto de renta
+que el cliente consigna por nosotros, no un menor ingreso.
+
+El IVA no está en la línea de venta (vive en otra línea del mismo asiento), así que los factores
+salen de `marts.v_impuestos_asiento`, que agrega por documento la base (clase 4), el IVA (cuentas
+2408), la retención (1355) y el total a cobrar (líneas de CxC). Factor **1,19** en lo gravado y
+**1,00** en exportación, excluido y exento.
+
+⚠⚠ **La moneda.** `subtotal`, `total_con_impuesto` y `precio_unitario` vienen de Odoo **en la moneda
+de la factura**, y las exportaciones se facturan en **USD** (medido: `price_subtotal` 500,00 USD
+contra un `balance` de −1.851.640 COP en la misma línea). **Nunca se suman.** Todo el cálculo de las
+tres medidas se hace con importes en COP del asiento, así que jamás mezcla dólares con pesos:
+verificado, las tres columnas dan lo mismo en las líneas de exportación (factor 1,00).
+⚠ `precio_unitario` además **incluye IVA** (58.900 con un `subtotal` de 49.496): no es un precio
+neto y `precio_unitario × cantidad` no da `venta_componente`.
+
 > **Nombre para mostrar:** usa `dim_producto[nombre_comercial]` (el nombre por el que se conoce el
 > producto, ej. `PCN19` → "DUTONIC (TONICO CAPILAR)"). `nombre` es el técnico en idioma base
 > (`product.product.name`, ej. "Kit anticaída…"); `nombre_comercial` es la **traducción es_CO** del

@@ -58,7 +58,9 @@ SELECT v.*,
        v.producto         AS componente_nombre,
        'INDIVIDUAL'::text AS origen,
        v.cantidad_neta    AS cantidad_componente,
-       v.venta_subtotal   AS venta_componente
+       v.venta_subtotal   AS venta_componente,
+       v.venta_subtotal_con_iva AS venta_componente_con_iva,
+       v.venta_total_factura    AS venta_componente_total_factura
 FROM marts.v_ventas_producto v
 WHERE NOT EXISTS (
     SELECT 1 FROM marts.dim_kit_componente k WHERE k.kit_producto_id = v.producto_id
@@ -79,7 +81,21 @@ SELECT * FROM (
                (COALESCE(pc.precio_unitario_ref, pg.precio_unitario_ref, 1) * k.cantidad)
                / NULLIF(SUM(COALESCE(pc.precio_unitario_ref, pg.precio_unitario_ref, 1) * k.cantidad)
                             OVER (PARTITION BY v.linea_id), 0)
-           ) AS venta_componente
+           ) AS venta_componente,
+           -- ⚠ EL MISMO reparto, letra por letra, que `venta_componente`: si se usara otro peso,
+           -- la base, el IVA y el total del mismo kit dejarían de cuadrar entre sí. Se reparten
+           -- los valores YA calculados en v_ventas_producto (en COP, con el factor del asiento
+           -- aplicado); aquí no se vuelve a tocar el impuesto.
+           v.venta_subtotal_con_iva * (
+               (COALESCE(pc.precio_unitario_ref, pg.precio_unitario_ref, 1) * k.cantidad)
+               / NULLIF(SUM(COALESCE(pc.precio_unitario_ref, pg.precio_unitario_ref, 1) * k.cantidad)
+                            OVER (PARTITION BY v.linea_id), 0)
+           ) AS venta_componente_con_iva,
+           v.venta_total_factura * (
+               (COALESCE(pc.precio_unitario_ref, pg.precio_unitario_ref, 1) * k.cantidad)
+               / NULLIF(SUM(COALESCE(pc.precio_unitario_ref, pg.precio_unitario_ref, 1) * k.cantidad)
+                            OVER (PARTITION BY v.linea_id), 0)
+           ) AS venta_componente_total_factura
     FROM marts.v_ventas_producto v
     JOIN marts.dim_kit_componente k ON k.kit_producto_id = v.producto_id
     LEFT JOIN marts.dim_producto  p ON p.producto_id     = k.componente_id

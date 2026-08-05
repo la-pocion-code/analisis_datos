@@ -141,9 +141,14 @@ CREATE TABLE IF NOT EXISTS marts.fact_movimiento_contable (
     tipo_producto     TEXT,
     pais_analitico    TEXT,
     -- medidas
+    -- ⚠ precio_unitario / subtotal / total_con_impuesto vienen de Odoo EN LA MONEDA DE LA
+    -- FACTURA (USD en exportación) y precio_unitario además INCLUYE IVA. Los importes en COP
+    -- son debito/credito/saldo/venta_neta. Detalle y medición: sql/marts/32_iva_ventas.sql.
     cantidad          NUMERIC,
-    precio_unitario   NUMERIC,
-    subtotal          NUMERIC,                                            -- price_subtotal
+    precio_unitario   NUMERIC,                                            -- price_unit (¡con IVA!)
+    subtotal          NUMERIC,                                            -- price_subtotal (sin IVA)
+    total_con_impuesto NUMERIC,                                           -- price_total (con IVA)
+    moneda            VARCHAR(8),                                         -- currency_id (COP/USD)
     debito            NUMERIC,
     credito           NUMERIC,
     saldo             NUMERIC,                                            -- balance

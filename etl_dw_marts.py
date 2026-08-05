@@ -926,8 +926,15 @@ def construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol):
             "centro_costo_id": centro,
             "canal": canal, "linea_producto": lprod, "tipo_producto": tprod, "pais_analitico": pais,
             "cliente_analitico": cliente,
+            # ⚠ precio_unitario / subtotal / total_con_impuesto vienen EN LA MONEDA DE LA FACTURA
+            # (las exportaciones se facturan en USD) y precio_unitario además INCLUYE IVA. Los
+            # importes en COP son debito/credito/saldo/venta_neta. Por eso el valor con IVA se
+            # calcula como RAZÓN (total_con_impuesto/subtotal) en las vistas, nunca sumando
+            # total_con_impuesto. Medición y detalle: sql/marts/32_iva_ventas.sql.
             "cantidad": ln.get("quantity"), "precio_unitario": ln.get("price_unit"),
             "subtotal": ln.get("price_subtotal"), "debito": ln.get("debit"),
+            "total_con_impuesto": ln.get("price_total"),
+            "moneda": m2o_nombre(ln.get("currency_id")),
             "credito": ln.get("credit"), "saldo": ln.get("balance"),
             "venta_neta": (ln.get("credit") or 0) - (ln.get("debit") or 0),
             "saldo_pendiente": ln.get("amount_residual"),
@@ -938,6 +945,7 @@ def construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol):
 
 LINE_FIELDS = ["id", "move_id", "account_id", "account_type", "partner_id", "product_id",
                "journal_id", "company_id", "quantity", "price_unit", "price_subtotal",
+               "price_total", "currency_id",
                "debit", "credit", "balance", "amount_residual", "date", "invoice_date",
                "date_maturity", "ref", "analytic_distribution", "write_date"]
 MOVE_FIELDS = ["id", "name", "move_type", "invoice_user_id", "partner_type_id", "partner_id",
@@ -1306,6 +1314,74 @@ def backfill_cliente_analitico(od, loader):
         n = cur.rowcount
         conn.commit()
     logging.info(f"  cliente_analitico (plan 22): {len(pares)} líneas, {n} actualizadas")
+
+
+def backfill_total_con_impuesto(od, loader, solo_faltantes=True):
+    """
+    Rellena `total_con_impuesto` (price_total) y `moneda` en las líneas YA cargadas del hecho.
+
+    Hace falta porque el watermark del incremental solo vuelve a escribir las líneas cuyo
+    `write_date` cambió: las históricas no se tocan nunca y se quedarían con la columna en NULL.
+    Las líneas NUEVAS ya llegan completas (ver LINE_FIELDS / construir_hecho).
+
+    ⚠ ALCANCE: solo `es_venta` + clase 4 (las que consumen v_ventas_producto / v_ventas_explotada)
+    = 585.541 de las 4.414.170 del hecho. En las demás (impuesto, CxC, asientos) Odoo devuelve
+    price_total = 0: rellenarlas serían 3,8 M de UPDATEs para guardar ceros. Quedan NULL a
+    propósito, y las vistas de ventas nunca las miran.
+
+    ⚠ NO se llama desde main(): es de UNA SOLA VEZ, por `--backfill-iva`. En el cron haría que
+    cada tick de 15 min releyera ~585 k líneas de Odoo para no cambiar nada.
+
+    `solo_faltantes=False` fuerza el re-relleno de todas (por si Odoo corrigió un impuesto).
+    """
+    filtro = "AND f.total_con_impuesto IS NULL" if solo_faltantes else ""
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(f"""
+            SELECT f.linea_id
+            FROM marts.fact_movimiento_contable f
+            JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
+            WHERE f.es_venta IS TRUE AND c.clase_codigo = '4' {filtro}
+            ORDER BY f.linea_id
+        """)
+        ids = [r[0] for r in cur.fetchall()]
+
+    logging.info(f"backfill total_con_impuesto: {len(ids):,} líneas de venta por rellenar")
+    if not ids:
+        return 0
+
+    actualizadas, leidas = 0, 0
+    for i in range(0, len(ids), PAGINA):
+        chunk = ids[i:i + PAGINA]
+        lns = od.search_read("account.move.line", [["id", "in", chunk]],
+                             ["id", "price_total", "currency_id"], limit=len(chunk))
+        leidas += len(lns)
+        pares = [(as_int(l["id"]), l.get("price_total"), m2o_nombre(l.get("currency_id")))
+                 for l in lns if as_int(l.get("id"))]
+        if not pares:
+            continue
+        with loader.get_connection() as conn:
+            cur = conn.cursor()
+            psycopg2.extras.execute_values(
+                cur,
+                "UPDATE marts.fact_movimiento_contable f "
+                "SET total_con_impuesto = v.total::numeric, "
+                "    moneda             = COALESCE(v.mon::varchar, f.moneda) "
+                "FROM (VALUES %s) AS v(id, total, mon) "
+                "WHERE f.linea_id = v.id::bigint",
+                pares, page_size=5000)
+            actualizadas += cur.rowcount
+            conn.commit()
+        logging.info(f"  {min(i + PAGINA, len(ids)):,}/{len(ids):,} pedidas · "
+                     f"{leidas:,} leídas de Odoo · {actualizadas:,} actualizadas")
+
+    if leidas < len(ids):
+        # No es un error: una línea puede haberse borrado en Odoo y seguir en el hecho (el
+        # watermark no ve los hard-delete; por eso el DW se recrea ~2×/mes con --rebuild).
+        logging.warning(f"  {len(ids) - leidas:,} líneas del hecho ya no existen en Odoo "
+                        f"(quedan con total_con_impuesto NULL)")
+    logging.info(f"backfill total_con_impuesto: {actualizadas:,} líneas actualizadas")
+    return actualizadas
 
 
 # ══ Puente NOTA CRÉDITO → FACTURA original (para que la NC reste en el mes de la factura) ══
@@ -1692,6 +1768,13 @@ if __name__ == "__main__":
                    help="recreación por rango: DELETE + recarga (por defecto el año actual)")
     g.add_argument("--dims", action="store_true",
                    help="solo refrescar catálogos y dimensiones (sin hechos)")
+    g.add_argument("--backfill-iva", action="store_true",
+                   help="rellena total_con_impuesto/moneda en las líneas de venta YA cargadas "
+                        "(price_total de Odoo). UNA SOLA VEZ: las líneas nuevas ya llegan con el "
+                        "dato. No lo corre el cron.")
+    ap.add_argument("--rehacer-iva", action="store_true",
+                    help="con --backfill-iva: re-lee TODAS las líneas de venta, no solo las que "
+                         "tienen total_con_impuesto en NULL.")
     ap.add_argument("--desde", default=None,
                     help="fecha mínima YYYY-MM-DD (--rebuild: default año actual; --full: opcional)")
     ap.add_argument("--hasta", default=None,
@@ -1701,6 +1784,12 @@ if __name__ == "__main__":
                          "(reversos, puentes NC/ND, categoría, PUC). Es lo que corre el cron en los "
                          "ticks que no son la hora en punto.")
     args = ap.parse_args()
-    modo = ("rebuild" if args.rebuild else "full" if args.full
-            else "dims" if args.dims else "incremental")
-    main(modo, args.desde, args.hasta, cierre=not args.sin_cierre)
+    if args.backfill_iva:
+        # Operación de una sola vez, aparte del pipeline: no toca dimensiones ni hecho nuevo.
+        db, uid, pw, models = conectar_odoo()
+        backfill_total_con_impuesto(Odoo(db, uid, pw, models), DBLoader(),
+                                    solo_faltantes=not args.rehacer_iva)
+    else:
+        modo = ("rebuild" if args.rebuild else "full" if args.full
+                else "dims" if args.dims else "incremental")
+        main(modo, args.desde, args.hasta, cierre=not args.sin_cierre)

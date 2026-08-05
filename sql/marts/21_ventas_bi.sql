@@ -58,5 +58,10 @@ SELECT
     -- medidas
     e.cantidad_neta,            -- nivel KIT (repetida en filas KIT): solo para [Kits vendidos]
     e.cantidad_componente,      -- unidades de producto (grano componente)
-    e.venta_componente          -- ⭐ valor: SUM(venta_componente) — nunca infla
+    -- ⭐ LAS TRES LECTURAS DEL MISMO DINERO, todas en COP y con el mismo prorrateo por componente.
+    -- ⚠⚠ NO se suman entre sí: es el mismo dinero, leído de tres formas.
+    e.venta_componente,                 -- base, SIN impuestos  ← la medida de VENTAS
+    e.venta_componente_con_iva,         -- base + IVA           (lo que dice la factura)
+    e.venta_componente_total_factura,   -- base + IVA − retención = lo que PAGA el cliente (CxC)
+    e.moneda                    -- COP/USD del documento (exportación factura en USD)
 FROM marts.v_ventas_explotada e;

@@ -181,6 +181,44 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   marcaba también los **fabricados** (139). Lo fija `cargar_kits`, no `refrescar_dimensiones`.
   ⚠ Odoo tiene **2 BOM phantom por kit** (77 para 39): `cargar_kits` toma **una sola** (la más reciente)
   y normaliza por el lote (`bom.product_qty`); sumarlas duplicaba las unidades de la explosión.
+- **TRES LECTURAS DEL MISMO DINERO (2026-08-05)** en `v_ventas_producto` (y prorrateadas por
+  componente en `v_ventas_explotada`/`v_ventas_bi`), **todas en COP**. ⚠⚠ **NO se suman entre sí:**
+  | columna (`v_ventas_producto` / explotada) | qué es | 2025 |
+  |---|---|---|
+  | `venta_subtotal` / `venta_componente` | base, **sin** impuestos ← la medida de VENTAS | 82.418.538.975 |
+  | `venta_subtotal_con_iva` / `venta_componente_con_iva` | base **+ IVA** (lo que dice la factura) | 97.611.567.272 |
+  | `venta_total_factura` / `venta_componente_total_factura` | base + IVA **− retenciones** = lo que **paga** el cliente (la CxC) | 95.820.878.823 |
+  El IVA **no está en la línea de venta**: vive en otra línea del mismo asiento. Los factores salen de
+  **`marts.v_impuestos_asiento`** (`14_ventas.sql`), que agrega por documento la base (clase 4), el
+  IVA (**2408**), la retención (**1355**) y el total a cobrar (líneas `es_cxc`) — **todo en COP**, así
+  que el cálculo nunca toca los campos en moneda de la factura. Medido: factor **1,19** en gravado y
+  **1,00** en exportación/excluido/exento; cero NULLs en 2024-2026; las tres vías (producto /
+  explotada / bi) dan cifras idénticas.
+  ⚠⚠ **`price_total` de Odoo NO es la venta con IVA** — es base + IVA − **retenciones**, o sea el
+  valor **a cobrar**. Medido en el asiento 82410 (NCR69): 466.891 + 88.709 (19%) − 11.672 (2,5%) =
+  543.928 = su `price_total` **y** su línea de Clientes. Usarlo como "con IVA" daba factor **1,1650**
+  en 5.555 líneas por **6.024 M** (1,1550 con retención del 3,5%) y **subestimaba la venta**: la
+  retención es un anticipo de NUESTRA renta que el cliente consigna por nosotros, no un menor ingreso.
+  Se conserva en `fact.total_con_impuesto` porque responde bien a *otra* pregunta.
+  ⚠⚠ **LA MONEDA — nunca sumar `subtotal`, `total_con_impuesto` ni `precio_unitario`.** Vienen **en la
+  moneda de la FACTURA**, no en COP, y las exportaciones son **100% USD** (`price_subtotal` 500,00 USD
+  contra un `balance` de −1.851.640 COP en la misma línea; razón `subtotal/venta_neta` = 1,0000
+  nacional y **0,0003** en exportación). Sumarlos subestimaría la exportación **~3.900×**
+  (1.708.605.877 COP en 2026). Los importes en COP son `debito/credito/saldo/venta_neta`.
+  Verificación permanente: `fact.moneda` (COP/USD) y `sql/marts/32_iva_ventas.sql`.
+  ⚠ **`precio_unitario` INCLUYE IVA** (58.900 con un `subtotal` de 49.496, `discount=0`): por eso
+  `precio_unitario × cantidad` NO da `venta_neta`. No es un descuento.
+  ⚠ El reparto del IVA es por asiento sobre TODA su base clase 4. Medido 2026: afecta a **4 líneas**
+  excluidas de asientos con tarifa mixta (293.378 de IVA sobre 55.845 M = **0,0005%**). Separar por
+  tarifa exigiría deducirla del NOMBRE de la cuenta, el antipatrón que el repo ya evitó.
+  ⚠ `fact.total_con_impuesto`/`moneda` (de `price_total`/`currency_id`) se llenan **solo en las líneas
+  cargadas desde 2026-08-05**; el histórico queda NULL salvo que se corra
+  `python etl_dw_marts.py --backfill-iva` (~585 k líneas, **~100 min** de Odoo, de una sola vez, **no
+  lo corre el cron**). Las tres medidas de arriba **no dependen de eso**: salen del asiento.
+  ⚠ Recrear `v_ventas_producto` obliga a soltar **6 MV y 3 vistas** (`mv_ventas_presupuesto_mes` →
+  `mv_ventas_mes`/`dia`/`kpi_mes`/`cliente_primera`/`recompra`/`kit_mes` → `v_ventas_bi` →
+  `v_ventas_explotada` → `v_precio_componente`) y volver a aplicar 14 → 15b → 21 → 23 → 27 → **24**
+  (los `GRANT` a `intranet_ro` se pierden al recrear las MV) y refrescar. Medido: 85 s en total.
 - **Mapeos de negocio NO-Odoo (única excepción local, a demanda):** `cargar_mapeos.py` lee de Drive
   (`DriveLoader` + `DRIVE_IDS`) → `marts.map_*`: ZONA por depto+categoría (+ Cundinamarca por
   depto+ciudad), CLIENTE PADRE, y CATEGORÍA normalizada. Correr cuando cambie un Excel.
@@ -471,6 +509,32 @@ definidos por el admin). **Contrato de datos completo:
     contra el *sell-in* propio. La hoja es autónoma y **no se cruza** con `mv_ventas_*`.
   - ⚠ **El share por mes del informe mezcla años**: POCION sale con 2,17 % en enero cuando su
     enero-2026 real es 4,56 %. La intranet usa año-mes por defecto.
+  - ⚠ **Nielsen NO usa un nombre estable para nuestra marca** (2026-08-04). Además de `TONGOLE`
+    apareció **`PCN POCION`**: un producto (`PCN POCION DEFENSA TOTAL ANTICASPA BOTELLA 450ML`,
+    desde el 08/03/26) con ese nombre en **marca Y fabricante**. Como `bi_nielsen_marca_propia`
+    solo lista `POCION`, **no contaba como marca nuestra** y el share propio salía subestimado.
+    Se unifica en el loader con **`cargar_bi_datasets.ALIAS_MARCA`**, en las **dos** columnas
+    (el grano de las dos MV incluye `fabricante`); `marca_origen` guarda el original. Otra
+    variante = una línea ahí + recargar. **No** se usa una regla de prefijo «PCN»: fusionaría
+    en silencio cualquier marca ajena que lo usara.
+  - ⚠ **`bi_nielsen.periods` es VARCHAR y `min/max` sobre él MIENTE** (ordena alfabéticamente:
+    `'1 sem 9-26 fin 01/03/26'` > `'1 sem 26-26 fin 28/06/26'`). Hizo creer que la serie de
+    POCION se cortaba en marzo-2026 y que `PCN POCION` era un renombre; falso, POCION llega a
+    junio. Usar `to_date(split_part(periods,'fin ',2),'DD/MM/YY')`, como hacen las dos MV.
+  - ⚠ **La carpeta de Drive de Nielsen se mantiene a mano** (3 archivos por categoría): subir el
+    export nuevo sin borrar el viejo duplica semanas y `mv_nielsen_semana` **dobla los valores en
+    silencio** (agrega con GROUP BY), mientras `mv_nielsen_item_semana` sí falla por su índice
+    único. El loader lo detecta y **aborta**; `python cargar_bi_datasets.py --dataset nielsen
+    --seco` lo valida sin escribir (útil porque la carga tarda ~8,5 min y bloquea la tabla).
+  - ⚠⚠ **El export de Nielsen es una VENTANA MÓVIL de 164 semanas y la recarga borra lo que se cae
+    del borde** (medido 2026-08-04): el export del 30-jul iba de 2023-05-14 a 2026-06-28 y el del
+    4-ago va de **2023-06-11 a 2026-07-26** — mismas 164 semanas, entraron 4 y **se perdieron las
+    4 primeras de 2023**, porque `bi_nielsen` se recarga completa. Se acepta (el panel mira
+    mercado, no serie larga). Si se necesita historia más allá de la ventana hay que pasar la
+    carga a **acumulativa** (UPSERT por la clave natural), y es decisión de negocio.
+    ⚠ Por esto **los importes de Nielsen NO se pueden fijar en un test** (la doc afirmaba lo
+    contrario): farmacias pasó de 474.124.569.959 a **484.179.801.326** sin que nada esté mal.
+    Fijar invariantes, no importes.
 - ⚠ **LA LÍNEA DE PRODUCTO YA NO SALE DE `bi_lineas`** (2026-07-30, decisión de William). Sale
   del **árbol de categorías de Odoo** (`dim_producto.categoria`), normalizado en
   `v_lk_producto.linea`. Medido: Odoo cubre el **100,000 %** del valor en 2024, 2025 y 2026
