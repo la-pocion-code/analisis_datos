@@ -107,11 +107,18 @@ CREATE TABLE IF NOT EXISTS marts.bi_nielsen_marca_propia (
 );
 
 COMMENT ON TABLE marts.bi_nielsen_marca_propia IS
-  'Marcas de la casa dentro del panel Nielsen. El loader ya unifica TONGOLE en '
-  'POCION (ver marca_origen).';
+  'Marcas de la casa dentro del panel Nielsen. Aqui va UNA fila por marca; las '
+  'VARIANTES de nombre de una misma marca no van aqui, se unifican en el loader '
+  '(cargar_bi_datasets.ALIAS_MARCA) y marca_origen guarda la original.';
 
+-- ⚠ Nielsen no usa un nombre estable para nuestra marca: ademas de TONGOLE aparecio
+-- 'PCN POCION' (un producto, el anticaspa, desde la semana que cierra el 08/03/26) con ese
+-- nombre en marca Y fabricante. Cada variante que no se unifique se cae de este listado y
+-- deja de contar como marca propia, subestimando el share. Las variantes se resuelven en
+-- ALIAS_MARCA del loader, no con una fila aqui: una fila mas aqui haria que la variante
+-- contara como propia, pero seguiria apareciendo como una MARCA APARTE en los rankings.
 INSERT INTO marts.bi_nielsen_marca_propia (marca, nota) VALUES
-    ('POCION', 'El loader unifica TONGOLE dentro de POCION; marca_origen guarda el original.')
+    ('POCION', 'El loader unifica TONGOLE y PCN POCION dentro de POCION (ALIAS_MARCA), en marca y fabricante; marca_origen guarda el original.')
 ON CONFLICT (marca) DO NOTHING;
 
 
