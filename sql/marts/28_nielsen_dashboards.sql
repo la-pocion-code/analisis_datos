@@ -82,19 +82,63 @@ CREATE TABLE IF NOT EXISTS marts.bi_nielsen_market (
 
 COMMENT ON TABLE marts.bi_nielsen_market IS
   'Metadatos de los universos de Nielsen. es_universo_total marca el que engloba a '
-  'los demas: los markets NO se suman entre si.';
+  'los demas: los markets NO se suman entre si. ⚠ El NOMBRE que da Nielsen no es fiable '
+  '(NEW TOTAL COLOMBIA no es el total del pais, son supermercados): la jerarquia de esta '
+  'tabla se MIDIO, no se dedujo del nombre. Ver el comentario de arriba.';
 
+-- ⚠⚠ JERARQUÍA MEDIDA (2026-08-06), NO deducida de los nombres ⚠⚠
+-- El export nuevo trae `NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA` y retira
+-- `Total Colombia Supermercados`. Al medirlo salió que los nombres ENGAÑAN:
+--
+--   NEW TOTAL SUPERMERCADOS + FARMACIAS  2.501.713.761.171   ← el universo MAYOR
+--     ├── NEW TOTAL COLOMBIA             2.017.542.626.003   ← ¡son SUPERMERCADOS!
+--     └── TOTAL COLOMBIA FARMACIAS         484.179.801.326
+--   TOTAL CO ECOMMERCE                     131.244.863.164   ← FUERA del combinado
+--
+-- Las dos pruebas que lo demuestran:
+--   1. Aritmética: 2.017.542.626.003 + 484.179.801.326 = 2.501.722.427.329, contra el
+--      combinado de 2.501.713.761.171 ⇒ diferencia de 8,7 M sobre 2,5 BILLONES (0,00035 %).
+--      Y el ecommerce (131.245 M) NO cabe en esa cuenta ⇒ está fuera.
+--   2. Celda a celda al grano de mv_nielsen_semana: `(combinado − farmacias)` coincide con
+--      `NEW TOTAL COLOMBIA` **al peso en 74.804 de 75.381 celdas (99,23 %)**, con 0,00043 %
+--      de diferencia agregada. Y la contención es limpia: de las 56.815 celdas de farmacias,
+--      las 56.815 tienen par en el combinado y hay **0 valores negativos**.
+--
+-- ⇒ POR ESO **NO se crea un market derivado** «supermercados = combinado − farmacias»:
+--   ya existe, es `NEW TOTAL COLOMBIA`. Añadirlo daría dos opciones del selector para el
+--   MISMO universo (0,00043 % de diferencia) y quien las sumara contaría doble.
+--   Lo que se corrige es la ETIQUETA (decía «Total Colombia») y la bandera de universo total.
 INSERT INTO marts.bi_nielsen_market
     (market, etiqueta, es_universo_total, tiene_valor, orden, nota) VALUES
-    ('NEW TOTAL COLOMBIA', 'Total Colombia', TRUE, TRUE, 1,
-     'Universo total: ya incluye a los demas. No sumarlo con ellos.'),
-    ('TOTAL COLOMBIA FARMACIAS', 'Farmacias', FALSE, TRUE, 2,
-     'Subconjunto del total.'),
-    ('TOTAL CO ECOMMERCE', 'E-commerce', FALSE, TRUE, 3,
-     'Subconjunto del total.'),
-    ('Total Colombia Supermercados', 'Supermercados', FALSE, FALSE, 4,
-     'SOLO DISTRIBUCION: Nielsen no entrega valor ni unidades para este universo.')
-ON CONFLICT (market) DO NOTHING;
+    ('NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA', 'Supermercados + Farmacias', TRUE, TRUE, 1,
+     'Universo MAYOR de los cuatro (2.501.713.761.171). CONTIENE a Supermercados y a '
+     'Farmacias: no sumarlo con ninguno de los dos. NO incluye e-commerce.'),
+    ('NEW TOTAL COLOMBIA', 'Supermercados', FALSE, TRUE, 2,
+     '⚠ EL NOMBRE ENGANA: no es el total del pais, es el canal de SUPERMERCADOS. Medido: '
+     '(Supermercados+Farmacias) - Farmacias = este market, al peso en 99,23 % de las celdas. '
+     'Es el «supermercados solo» que se pedia; no hace falta un derivado.'),
+    ('TOTAL COLOMBIA FARMACIAS', 'Farmacias', FALSE, TRUE, 3,
+     'Subconjunto de Supermercados + Farmacias. Su valor no cambio con el export nuevo '
+     '(484.179.801.326 antes y despues), asi que el share propio de farmacias es comparable.'),
+    ('TOTAL CO ECOMMERCE', 'E-commerce', FALSE, TRUE, 4,
+     'FUERA del combinado (no cuadra en su aritmetica). ⚠ El export del 2026-08-06 RE-MIDIO '
+     'este universo: paso de 20.355 a 48.733 filas y de 77.582 M a 131.245 M de valor, asi '
+     'que su share NO es comparable con medidas anteriores a esa fecha.'),
+    ('Total Colombia Supermercados', 'Supermercados (retirado)', FALSE, FALSE, 9,
+     'YA NO VIENE en el export (lo reemplazo NEW TOTAL SUPERMERCADOS + FARMACIAS el '
+     '2026-08-06). Se conserva la fila como historia: solo traia distribucion, sin valor.')
+-- ⚠ DO UPDATE, no DO NOTHING (y es deliberado, al contrario que en bi_nielsen_marca_propia).
+-- Estos metadatos NO son una preferencia editable: son la JERARQUÍA MEDIDA de los universos, y
+-- si la base se queda con la version vieja el tablero marca como «universo total» uno que no lo
+-- es y etiqueta supermercados como «Total Colombia». Con DO NOTHING hubo que sincronizarlo a
+-- mano, que es como se llega a que el archivo y la base digan cosas distintas. Re-ejecutar este
+-- DDL deja la metadata correcta por si sola.
+ON CONFLICT (market) DO UPDATE SET
+    etiqueta          = EXCLUDED.etiqueta,
+    es_universo_total = EXCLUDED.es_universo_total,
+    tiene_valor       = EXCLUDED.tiene_valor,
+    orden             = EXCLUDED.orden,
+    nota              = EXCLUDED.nota;
 
 
 -- ════════════════════════════════════════════════════════════════════════════

@@ -245,6 +245,20 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   se **eliminó**: metía proveedores extranjeros como "United States".)
   ⚠ `fact.categoria` = categoría de **CLIENTE**; `dim_producto.categoria` es la de **PRODUCTO**
   (en `v_ventas_producto` se expone como `producto_categoria`). Son cosas distintas.
+- **IDENTIFICADOR EXTERNO DEL PRODUCTO — `dim_producto.codigo_barras` + `ean_valido`**
+  (`33_producto_identificadores.sql`, 2026-08-06). `codigo` (`default_code`) es el código **interno**
+  (`PCN01`) y no sirve para hablar con nadie de fuera; `codigo_barras` (= `barcode` de Odoo) es el
+  que usan retailers y Nielsen. ⚠ **El código de barras y el EAN son el MISMO campo en Odoo**, no
+  dos: verificado con `fields_get`, el único identificador *almacenado* es `barcode`. Medido en los
+  85 comerciales: **36 con código** (36 de 46 productos **sueltos** = 78 %; **0 de 39 KITS**, que no
+  llevan EAN registrado y **no** se les inventa desde sus componentes), todos con prefijo **770**
+  (GS1 Colombia), 13 dígitos, `valid_ean` true y **únicos** (0 duplicados en los 330 del catálogo) ⇒
+  sirve de llave de negocio. `ean_valido` separa los EAN reales de los placeholder `1000000...` del
+  catálogo no comercial. ⚠ **`hs_code` (arancelario) y `unspsc_code_id` (categoría DIAN) NO se traen:
+  están vacíos al 100 % en Odoo** — serían columnas todas NULL; si el negocio los llena, es una línea
+  en el DDL y otra en `_fila_producto`. Los campos van en `PRODUCTO_FIELDS`/`_fila_producto`, que
+  comparten las **dos** rutas que leen `product.product` (`cargar_productos` y `refrescar_dimensiones`)
+  para que no se desincronicen. Se expone en `v_lk_producto`. Poblar: `python etl_dw_marts.py --dims`.
 - **Exportaciones (PyG por país y cliente) — `18_exportaciones.sql` + `v_exportaciones`:** dos planes
   analíticos nuevos de Odoo. **Plan 20 "País"** (`[PAIS-*]`) ya está en `fact.pais_analitico`. **Plan 22
   "Cliente"** (`[CLI-ZAR-EC]`…) se captura ahora como **`fact.cliente_analitico`** (rol `cliente` en
@@ -500,19 +514,36 @@ definidos por el admin). **Contrato de datos completo:
   `bi_nielsen` crudo **sigue negado**. Contrato y todas las mediciones en
   `docs/dashboards_intranet.md` §11. Cuadra al segundo decimal con el informe (farmacias:
   474.124.569.959 · 18.586.406 und · 207 marcas · 2.589 productos · las 3 categorías exactas).
-  - ⚠ **LOS 4 MARKETS NO SE SUMAN**: `NEW TOTAL COLOMBIA` (1.998.446.266.413) ya contiene a los
-    otros. El «2.549 mil M» de la hoja *Comparar* del informe es exactamente la suma de los
-    cuatro → el mercado **inflado ~27 %**. La intranet obliga a elegir uno.
-  - ⚠ **`Total Colombia Supermercados` no trae valor NI unidades** (96.675 filas, el 100 % de
-    ese market): solo sirve para distribución.
+  - ⚠⚠ **LOS MARKETS NO SE SUMAN, Y SUS NOMBRES ENGAÑAN** (re-medido 2026-08-06, export nuevo con
+    un market más). Jerarquía **medida, no deducida del nombre**: `NEW TOTAL SUPERMERCADOS +
+    FARMACIAS` 2.501.713.761.171 ⊃ {`NEW TOTAL COLOMBIA` 2.017.542.626.003, `TOTAL COLOMBIA
+    FARMACIAS` 484.179.801.326}; `TOTAL CO ECOMMERCE` 131.244.863.164 queda **fuera**.
+    ⭐ **`NEW TOTAL COLOMBIA` NO es el total del país: es SUPERMERCADOS.** Pruebas: la suma
+    supermercados+farmacias da el combinado con **0,00035 %** de diferencia (y el ecommerce no
+    cabe), y celda a celda `(combinado − farmacias)` = `NEW TOTAL COLOMBIA` **al peso en 74.804
+    de 75.381 celdas (99,23 %)**, con 0 negativos en las 56.815 celdas de farmacias.
+    ⇒ **NO crear un market «supermercados derivado»**: ya existe con ese nombre engañoso;
+    duplicarlo daría dos opciones del selector para el mismo universo. Se corrigió la **etiqueta**
+    (`NEW TOTAL COLOMBIA` → «Supermercados») y `es_universo_total` pasó al **combinado**.
+    ⚠ La semilla `bi_nielsen_market` usa **`ON CONFLICT DO UPDATE`** (no DO NOTHING): es jerarquía
+    medida, no preferencia editable, y con DO NOTHING el archivo y la base se desincronizaban.
+  - ⚠ **El viejo `Total Colombia Supermercados` no traía valor ni unidades** y **ya no viene** en
+    el export; el combinado que lo reemplaza **sí** los trae (79.917 de 79.917 filas). ⚠ El export
+    del 2026-08-06 además **re-midió el e-commerce** (20.355→48.733 filas, 77.582→131.245 M), así
+    que su share no es comparable con antes de esa fecha; el de farmacias sí (valor idéntico).
   - ⚠ **La marca propia solo está medida en FARMACIAS (desde 2024-12-15) y ECOMMERCE (desde
     2024-12-22)**. En el total nacional no aparece. Un 0 % ahí es «no nos miden», no «no
     vendemos» — y los 4 universos se exponen igual porque la hoja también sirve para estudiar
     mercados antes de entrar.
   - ⚠ **`dist_num` es un porcentaje POR ÍTEM** (0,016 a 69,47), no un share: la suma por
     categoría/semana da 1.814 %. Solo vive en la MV de ítem.
-  - ⚠ **El UPC de Nielsen no casa con ningún código propio** (0 de 18): es *sell-out* de mercado
-    contra el *sell-in* propio. La hoja es autónoma y **no se cruza** con `mv_ventas_*`.
+  - ⚠⚠ **CORREGIDO 2026-08-06: el UPC de Nielsen SÍ es nuestro EAN (18 de 18).** Aquí decía «no
+    casa con ningún código propio (0 de 18)»; **era falso y el error estaba en la prueba**, que
+    comparó el UPC contra `dim_producto.codigo` (`PCN01`, el interno). Contra
+    `dim_producto.codigo_barras` casan los 18 exactos. El cruce sell-out ↔ sell-in es posible por
+    EAN, pero **aún no está construido**: `mv_nielsen_item_semana` no trae `producto_id`. ⚠ Al
+    hacerlo, decidir qué pasa con los ítems de la competencia (sin `producto_id` nuestro) y recordar
+    que los 39 kits no tienen EAN.
   - ⚠ **El share por mes del informe mezcla años**: POCION sale con 2,17 % en enero cuando su
     enero-2026 real es 4,56 %. La intranet usa año-mes por defecto.
   - ⚠ **Nielsen NO usa un nombre estable para nuestra marca** (2026-08-04). Además de `TONGOLE`

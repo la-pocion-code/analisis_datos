@@ -561,8 +561,10 @@ DDL: `sql/marts/28_nielsen_dashboards.sql`. GRANTs: `sql/marts/24_rol_intranet.s
 
 ### 11.1 El dataset
 
-573.013 filas · 164 semanas (**2023-05-14 → 2026-06-28**) · 4 markets · 3 categorías ·
-248 marcas · 195 fabricantes · 3.601 ítems · 13 presentaciones (una vacía).
+**837.500 filas** · 164 semanas (**2023-06-11 → 2026-07-26**) · **4 markets** · 3 categorías ·
+250 marcas · 194 fabricantes · **3.617 ítems** · 13 presentaciones (una vacía).
+*(Export del 2026-08-06. Antes: 573.013 filas y otros 4 markets — ver la trampa 10, la ventana
+es móvil, y la trampa 1, el conjunto de markets cambió.)*
 
 Los tres casts son **perfectos**: 0 filas mal formadas de 573.013 en `vtas_valor`,
 `vtas_unds` y `dist_num`. Y `periods` parsea al **100 %** con
@@ -607,19 +609,56 @@ categorías ........... SHAMPOO      285.301.200.000 aprox  58,92 %
 ventana .............. 164 semanas, 2023-06-11 → 2026-07-26
 ```
 
+Y en el export del **2026-08-06**, FARMACIAS **no se movió** (es el universo estable de la
+serie, útil justo por eso):
+
+```
+total ventas ......... 484.179.801.326     idéntico al export del 4-ago
+total unidades ....... 18.907.635          idéntico
+precio medio ......... 25.607,63           idéntico
+marcas / productos ... 207 / 2.590         idéntico
+```
+
 Un cambio en estos números **no es una regresión**: es el export nuevo. Lo que sí se puede
-fijar en un test son los **invariantes** (los 4 markets no se suman, Supermercados sin valor,
-las 3 categorías, el orden del ranking), no los importes.
+fijar en un test son los **invariantes**: que los markets **no se suman** (con la jerarquía
+medida de la trampa 1), que hay **3 categorías**, y el orden del ranking. ⚠ **No** fijar «4
+markets» ni «Supermercados sin valor»: el conjunto de markets cambió el 2026-08-06 y puede
+volver a cambiar.
 
 ### 11.3 Las trampas del dataset
 
-1. ⚠ **LOS 4 MARKETS NO SE SUMAN.** `NEW TOTAL COLOMBIA` (1.998.446.266.413) ya
-   contiene a los otros. El KPI «2.549 mil M» de la hoja *Comparar* del informe es
-   **exactamente** 1.998.446.266.413 + 474.124.569.959 + 76.507.844.825, o sea el
-   mercado **inflado ~27 %** por sumar universos solapados. La intranet obliga a elegir
-   UN market; `bi_nielsen_market.es_universo_total` marca cuál es el total.
-2. ⚠ **`Total Colombia Supermercados` no trae valor NI unidades**: 96.675 filas, el
-   **100 %** de ese market. Solo sirve para distribución.
+1. ⚠⚠ **LOS MARKETS NO SE SUMAN, Y SUS NOMBRES ENGAÑAN** (re-medido 2026-08-06, el export
+   trajo un market nuevo). La jerarquía **se midió, no se dedujo de los nombres**:
+
+   ```
+   NEW TOTAL SUPERMERCADOS + FARMACIAS  2.501.713.761.171   ← el universo MAYOR
+     ├── NEW TOTAL COLOMBIA             2.017.542.626.003   ← ¡son SUPERMERCADOS!
+     └── TOTAL COLOMBIA FARMACIAS         484.179.801.326
+   TOTAL CO ECOMMERCE                     131.244.863.164   ← FUERA del combinado
+   ```
+
+   **`NEW TOTAL COLOMBIA` no es el total del país: es el canal de supermercados.** Dos
+   pruebas: (a) 2.017.542.626.003 + 484.179.801.326 = 2.501.722.427.329 contra el combinado
+   de 2.501.713.761.171 ⇒ **0,00035 %** de diferencia, y el e-commerce (131.245 M) no cabe
+   en esa cuenta; (b) celda a celda, `(combinado − farmacias)` coincide con
+   `NEW TOTAL COLOMBIA` **al peso en 74.804 de 75.381 celdas (99,23 %)**, con 0,00043 % de
+   diferencia agregada. La contención es limpia: de las 56.815 celdas de farmacias, las
+   56.815 tienen par en el combinado y hay **0 negativos**.
+   ⇒ Sumar el combinado con farmacias o con supermercados **cuenta doble**. La intranet
+   obliga a elegir UN market y `bi_nielsen_market` lleva la jerarquía medida, con
+   `es_universo_total` ahora en el **combinado** (antes estaba, mal, en `NEW TOTAL COLOMBIA`).
+   ⇒ **No hay market «supermercados derivado» y no debe crearse**: sería el mismo universo
+   que `NEW TOTAL COLOMBIA` con otro nombre.
+2. ⚠ **`Total Colombia Supermercados` (el viejo) no traía valor ni unidades** — 96.675 filas,
+   el 100 % de ese market, solo servía para distribución. **Ya no viene en el export** (lo
+   reemplazó el combinado el 2026-08-06) y su fila se conserva en la semilla solo como
+   historia. ⭐ El combinado que lo sustituye **sí trae valor y unidades**: 79.917 de 79.917
+   filas con dato en el archivo de BALSAMOS.
+   ⚠ Y el export del 2026-08-06 **re-midió el e-commerce**: pasó de 20.355 a 48.733 filas y
+   de 77.582 M a 131.245 M de valor, así que su share **no es comparable** con medidas
+   anteriores a esa fecha (el share propio de mayo-2026 subió de 2,235 % a 2,577 % solo por
+   eso). El de farmacias sí es comparable: su valor no se movió (484.179.801.326 antes y
+   después).
 3. ⚠ **La marca propia solo está medida en 2 de los 4 markets**: FARMACIAS (desde
    **2024-12-15**) y ECOMMERCE (desde **2024-12-22**). En `NEW TOTAL COLOMBIA` no
    aparece. Los 4 se exponen igual porque la hoja también sirve para estudiar mercados
@@ -633,9 +672,20 @@ las 3 categorías, el orden del ranking), no los importes.
 5. ⚠ **`dist_num` es un PORCENTAJE POR ÍTEM** (0,016 a 69,47), no una fracción ni un
    share: la suma por categoría/semana/market da **1.814 %**. No se suma ni se promedia
    entre ítems. Vive solo en `mv_nielsen_item_semana`.
-6. ⚠ **El UPC de Nielsen no casa con ningún código propio** (0 de 18 ítems de la
-   marca). Nielsen es *sell-out* de mercado y las ventas propias son *sell-in*: la hoja
-   es **autónoma** y no se cruza con `mv_ventas_*`.
+6. ⚠⚠ **CORREGIDO (2026-08-06): el UPC de Nielsen SÍ es nuestro EAN — 18 de 18 (100 %).**
+   Aquí decía que «no casa con ningún código propio (0 de 18)» y que la hoja era autónoma.
+   **Era falso, y el error estaba en la prueba**: se comparó el UPC contra
+   `dim_producto.codigo` (`PCN01`, el código INTERNO), que jamás iba a coincidir con un EAN
+   de 13 dígitos. Contra `dim_producto.codigo_barras` (el `barcode` de Odoo, poblado el
+   2026-08-06 — ver `sql/marts/33_producto_identificadores.sql`) casan **los 18**, exactos y
+   sin normalizar nada.
+   ⇒ El cruce **sell-out (Nielsen) ↔ sell-in (nuestras ventas)** es posible producto a
+   producto, uniendo por `codigo_barras`. **Todavía NO está construido** (decisión de
+   William: primero el identificador, el puente después): `mv_nielsen_item_semana` no trae
+   `producto_id`. Quien lo necesite hoy lo une por EAN contra `v_lk_producto`.
+   ⚠ Al construirlo habrá que decidir qué se hace con los ítems de la COMPETENCIA, que no
+   tienen `producto_id` nuestro (son la mayoría de los 3.603 ítems del panel), y recordar
+   que los **39 kits no tienen EAN**, así que por esta vía no aparecen.
 7. ⚠ **NIELSEN NO USA UN NOMBRE ESTABLE PARA NUESTRA MARCA** (medido 2026-08-04). Además
    de `TONGOLE`, apareció **`PCN POCION`**: es **un** producto, `PCN POCION DEFENSA TOTAL
    ANTICASPA BOTELLA 450ML`, desde la semana que cierra el **08/03/26**, en FARMACIAS y
