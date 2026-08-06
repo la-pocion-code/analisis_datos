@@ -122,7 +122,14 @@ SELECT p.producto_id,
                               '^Inventario/Producto Terminado( Importado)?/', ''),
                '^L[ií]nea\s+', '', 'i'),
              '')
-       END                                                      AS linea
+       END                                                      AS linea,
+       -- ── IDENTIFICADOR EXTERNO (ver sql/marts/33_producto_identificadores.sql) ──
+       -- El código con el que el producto se conoce FUERA de la casa. Se expone porque es
+       -- lo que permite cruzar con fuentes externas: medido 2026-08-06, el UPC de Nielsen
+       -- ES este código (18 de 18). ⚠ NULL en los 39 kits (no llevan EAN registrado) y en
+       -- 10 productos sueltos. `ean_valido` separa los EAN reales de los placeholder.
+       p.codigo_barras,
+       p.ean_valido
 FROM marts.dim_producto p;
 
 COMMENT ON VIEW marts.v_lk_producto IS
@@ -130,7 +137,8 @@ COMMENT ON VIEW marts.v_lk_producto IS
   'existe, si no el nombre técnico (es lo que se muestra en los gráficos). '
   '`linea` sale del arbol de categorias de ODOO (100 % de cobertura del valor); '
   'NO de bi_lineas. La categoria de producto (SHAMPOO/MASCARILLA/...) NO existe '
-  'en Odoo y por eso ya no se expone.';
+  'en Odoo y por eso ya no se expone. `codigo_barras` es el EAN: el identificador '
+  'para cruzar con Nielsen y con los retailers.';
 
 CREATE OR REPLACE VIEW marts.v_lk_vendedor AS
 SELECT v.vendedor_id, v.nombre

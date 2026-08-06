@@ -553,16 +553,62 @@ def cargar_terceros(od, loader, part_ids, tipo_tercero):
     upsert(loader, dt, "dim_tercero", "tercero_id", coalesce=["tipo_cliente"])
 
 
+# Campos de product.product que alimentan dim_producto. Se comparten entre la carga por-id
+# (cargar_productos) y el refresco por write_date (refrescar_dimensiones) para que no se
+# desincronicen: añadir un identificador aquí lo lleva a las dos rutas.
+#
+# ⚠ `barcode` es el identificador EXTERNO del producto (el que usan retailers y Nielsen);
+# `default_code` es el interno (PCN01).
+#
+# ⚠ NO se pide `valid_ean` aunque exista: es COMPUTADO (store=False) y en lectura MASIVA devuelve
+# False para la mayoría. Medido 2026-08-06: en un `read` de los 1.102 productos, de los 330 con
+# código solo 47 llegaron con True; leyendo los mismos 10 en un lote pequeño, Odoo devuelve True
+# para todos. Depender de él dejaba `ean_valido` mal poblada SEGÚN EL TAMAÑO DEL LOTE y sin un solo
+# error a la vista. Se calcula localmente con _ean13_valido(), que es una función pura del código.
+#
+# ⚠ NO se piden `hs_code` ni `unspsc_code_id`: verificado contra la API, están VACÍOS al 100 % en
+# los 85 productos comerciales. Ver sql/marts/33_producto_identificadores.sql.
+PRODUCTO_FIELDS = ["id", "default_code", "name", "categ_id", "barcode"]
+
+
+def _ean13_valido(codigo):
+    """¿`codigo` es un EAN-13 con dígito de control correcto? None si no hay código.
+
+    Se calcula aquí en vez de leer `valid_ean` de Odoo (ver el aviso de PRODUCTO_FIELDS).
+    Sirve para separar los EAN reales de los placeholder tipo `1000000000001` del catálogo no
+    comercial. None ≠ False: «sin código» no es «código inválido».
+    """
+    s = str(codigo or "").strip()
+    if not s:
+        return None
+    if len(s) != 13 or not s.isdigit():
+        return False
+    # EAN-13: los dígitos en posición impar (1.ª, 3.ª…) pesan 1 y los de posición par pesan 3.
+    impares = sum(int(s[i]) for i in range(0, 12, 2))
+    pares = sum(int(s[i]) for i in range(1, 12, 2))
+    return (10 - (impares + 3 * pares) % 10) % 10 == int(s[12])
+
+
+def _fila_producto(p):
+    """product.product de Odoo → fila de dim_producto. ⚠ `es_kit` NO se toca: lo fija cargar_kits
+    desde los BOM phantom, y `bom_count > 0` marcaría también los productos FABRICADOS."""
+    # Odoo devuelve False cuando está vacío; _limpiar ya lo pasa a None.
+    barcode = p.get("barcode")
+    return {"producto_id": as_int(p["id"]),
+            "codigo": p.get("default_code"),
+            "nombre": p.get("name"),
+            "categoria": m2o_nombre(p.get("categ_id")),
+            "codigo_barras": barcode,
+            "ean_valido": _ean13_valido(barcode)}
+
+
 def cargar_productos(od, loader, prod_ids):
     # es_kit lo fija cargar_kits (BOM phantom); aquí no, para no pisarlo con bom_count.
     prod_ids = [p for p in prod_ids if p]
     if not prod_ids:
         return
-    productos = od.read("product.product", prod_ids,
-                        ["id", "default_code", "name", "categ_id"], context=CTX_ALL)
-    dp = pd.DataFrame([{"producto_id": as_int(p["id"]), "codigo": p.get("default_code"),
-                        "nombre": p.get("name"), "categoria": m2o_nombre(p.get("categ_id"))}
-                       for p in productos])
+    productos = od.read("product.product", prod_ids, PRODUCTO_FIELDS, context=CTX_ALL)
+    dp = pd.DataFrame([_fila_producto(p) for p in productos])
     upsert(loader, dp, "dim_producto", "producto_id")
 
 
@@ -587,10 +633,8 @@ def refrescar_dimensiones(od, loader, full=False):
         # tipo_cliente no se toca (viene del asiento)
         # es_kit NO se setea aquí: lo fija cargar_kits desde dim_kit_componente (BOM phantom).
         # `bom_count > 0` marcaría también los productos FABRICADOS, que no son kits.
-        ("product.product", ["id", "default_code", "name", "categ_id"],
-         "dim_producto", "producto_id",
-         lambda r: {"producto_id": as_int(r["id"]), "codigo": r.get("default_code"),
-                    "nombre": r.get("name"), "categoria": m2o_nombre(r.get("categ_id"))}),
+        # Campos y builder compartidos con cargar_productos (PRODUCTO_FIELDS/_fila_producto).
+        ("product.product", PRODUCTO_FIELDS, "dim_producto", "producto_id", _fila_producto),
         ("res.users", ["id", "name"], "dim_vendedor", "vendedor_id",
          lambda r: {"vendedor_id": as_int(r["id"]), "nombre": r.get("name")}),
     ]
