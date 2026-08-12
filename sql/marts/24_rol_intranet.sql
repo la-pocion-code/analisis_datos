@@ -261,6 +261,19 @@ GRANT SELECT ON
                                       -- que no lo tiene: la ausencia de fila ES el dato
 TO intranet_ro;
 
+-- Vistas materializadas de dashboards (hoja Compras — valor, proveedores, productos y OC).
+-- DDL en 35_compras_dashboards.sql ⇒ re-ejecutar ESTE archivo después del 35.
+-- ⚠ `v_compras_producto` y `v_compras_bi` siguen NEGADAS: exponen cuenta contable, centro de costo
+-- y el detalle línea a línea de cada factura de proveedor. Un tablero necesita los agregados.
+-- ⚠ `dim_orden_compra` cruda también: su `monto_*` viene en la MONEDA DE LA OC, y sumarlo mezclaría
+-- pesos con dólares. La MV publica `contabilizado_subtotal`, que sale del hecho y está en COP.
+GRANT SELECT ON
+    marts.mv_compras_mes,             -- valor y cantidad por mes x proveedor x producto x categoria
+    marts.mv_compras_kpi_mes,         -- conteos DISTINTOS (no aditivos)
+    marts.mv_compras_oc,              -- Lead Time y estado de las ordenes de compra
+    marts.mv_compras_recompra         -- recompra y frecuencia en 3 ejes (nivel: NO se suman)
+TO intranet_ro;
+
 -- Bitácora de refresco: la intranet la lee para invalidar su caché y mostrar
 -- "datos actualizados hace X". Solo SELECT (la escribe el ETL con su rol).
 GRANT SELECT ON marts.bi_mv_refresh TO intranet_ro;

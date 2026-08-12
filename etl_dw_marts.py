@@ -741,6 +741,123 @@ def cargar_kits(od, loader):
                  f"es_kit corregido en {n_kit} productos")
 
 
+# ══ COMPRAS: órdenes de compra (purchase.order / purchase.order.line) ══
+# Refresco TOTAL en cada corrida (patrón de cargar_kits): son 1.066 OC y 2.215 líneas, o sea nada,
+# y así se reflejan las OC canceladas o borradas en Odoo, que un watermark por write_date no vería.
+# Devuelve {oc_linea_id -> orden_compra_id} para que construir_hecho enlace el hecho.
+# Ver sql/marts/34_compras.sql.
+OC_FIELDS = ["id", "name", "state", "invoice_status", "partner_id", "user_id", "company_id",
+             "date_order", "date_approve", "date_planned", "effective_date",
+             "amount_untaxed", "amount_tax", "amount_total", "currency_id"]
+OC_LINEA_FIELDS = ["id", "order_id", "product_id", "product_qty", "qty_received", "qty_invoiced"]
+
+
+def _fecha(v):
+    """datetime de Odoo → 'YYYY-MM-DD' (o None). Las fechas de la OC son datetime, no date."""
+    return str(v)[:10] if v else None
+
+
+def cargar_ordenes_compra(od, loader):
+    ocs = od.search_read("purchase.order", [], OC_FIELDS, context=CTX_ALL)
+    if not ocs:
+        logging.info("  compras: sin órdenes de compra en Odoo")
+        return {}
+    filas = []
+    for o in ocs:
+        aprob, llegada = _fecha(o.get("date_approve")), _fecha(o.get("effective_date"))
+        # lead_time SOLO si están las dos fechas. NO se rellena con la prevista ni con hoy: eso
+        # inventaría un lead time. Medido: poblado en 859 de 1.066 (81 %), mediana 13 días, 0 negativos.
+        lead = ((date.fromisoformat(llegada) - date.fromisoformat(aprob)).days
+                if aprob and llegada else None)
+        filas.append({
+            "orden_compra_id": as_int(o["id"]), "numero": o.get("name"),
+            "estado": o.get("state"), "estado_factura": o.get("invoice_status"),
+            "proveedor_id": m2o_id(o.get("partner_id")),
+            "proveedor": m2o_nombre(o.get("partner_id")),
+            "comprador": m2o_nombre(o.get("user_id")),
+            "empresa_id": m2o_id(o.get("company_id")),
+            "fecha_orden": _fecha(o.get("date_order")), "fecha_aprobacion": aprob,
+            "fecha_prevista": _fecha(o.get("date_planned")), "fecha_llegada": llegada,
+            "monto_sin_iva": o.get("amount_untaxed"), "monto_iva": o.get("amount_tax"),
+            "monto_total": o.get("amount_total"), "moneda": m2o_nombre(o.get("currency_id")),
+            "lead_time_dias": lead,
+        })
+    upsert(loader, pd.DataFrame(filas), "dim_orden_compra", "orden_compra_id", reemplazar=True)
+
+    lns = od.search_read("purchase.order.line", [], OC_LINEA_FIELDS, context=CTX_ALL)
+    oc_map = {}
+    filas_l = []
+    for l in lns:
+        lid, oid = as_int(l["id"]), m2o_id(l.get("order_id"))
+        oc_map[lid] = oid
+        filas_l.append({"oc_linea_id": lid, "orden_compra_id": oid,
+                        "producto_id": m2o_id(l.get("product_id")),
+                        "cantidad_pedida": l.get("product_qty"),
+                        "cantidad_recibida": l.get("qty_received"),
+                        "cantidad_facturada": l.get("qty_invoiced")})
+    if filas_l:
+        upsert(loader, pd.DataFrame(filas_l), "dim_oc_linea", "oc_linea_id", reemplazar=True)
+    con_lead = sum(1 for f in filas if f["lead_time_dias"] is not None)
+    logging.info(f"  compras: {len(filas)} órdenes de compra ({len(filas_l)} líneas), "
+                 f"lead_time en {con_lead} ({100*con_lead/len(filas):.0f} %)")
+    return oc_map
+
+
+def backfill_orden_compra(od, loader):
+    """Enlaza a su OC las líneas de compra YA cargadas en el hecho.
+
+    Hace falta porque el watermark del incremental solo reescribe las líneas cuyo `write_date`
+    cambió: las históricas nunca se tocan y se quedarían con orden_compra_id en NULL. Las líneas
+    NUEVAS ya llegan enlazadas (ver LINE_FIELDS / construir_hecho).
+
+    ⚠ ALCANCE: solo los documentos de proveedor (in_invoice/in_refund). En el resto del hecho
+    `purchase_line_id` está vacío por definición.
+
+    ⚠ NO se llama desde main(): es de UNA SOLA VEZ, por `--backfill-compras`.
+    """
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT linea_id FROM marts.fact_movimiento_contable
+             WHERE tipo_movimiento IN ('in_invoice','in_refund')
+             ORDER BY linea_id
+        """)
+        ids = [r[0] for r in cur.fetchall()]
+    logging.info(f"backfill orden_compra: {len(ids):,} líneas de compra por revisar")
+    if not ids:
+        return 0
+
+    oc_map = {as_int(l["id"]): m2o_id(l.get("order_id")) for l in
+              od.search_read("purchase.order.line", [], ["id", "order_id"], context=CTX_ALL)}
+    actualizadas, con_oc = 0, 0
+    for i in range(0, len(ids), PAGINA):
+        chunk = ids[i:i + PAGINA]
+        lns = od.search_read("account.move.line", [["id", "in", chunk]],
+                             ["id", "purchase_line_id"], limit=len(chunk))
+        pares = [(as_int(l["id"]), m2o_id(l.get("purchase_line_id")),
+                  oc_map.get(m2o_id(l.get("purchase_line_id"))))
+                 for l in lns if as_int(l.get("id"))]
+        if not pares:
+            continue
+        con_oc += sum(1 for _, ocl, _ in pares if ocl)
+        with loader.get_connection() as conn:
+            cur = conn.cursor()
+            psycopg2.extras.execute_values(
+                cur,
+                "UPDATE marts.fact_movimiento_contable f "
+                "SET oc_linea_id = v.ocl::bigint, orden_compra_id = v.oc::bigint "
+                "FROM (VALUES %s) AS v(id, ocl, oc) "
+                "WHERE f.linea_id = v.id::bigint",
+                pares, page_size=5000)
+            actualizadas += cur.rowcount
+            conn.commit()
+        logging.info(f"  {min(i + PAGINA, len(ids)):,}/{len(ids):,} · {actualizadas:,} actualizadas "
+                     f"· {con_oc:,} con OC")
+    logging.info(f"backfill orden_compra: {actualizadas:,} líneas actualizadas, {con_oc:,} con OC "
+                 f"({100*con_oc/max(actualizadas,1):.1f} %)")
+    return actualizadas
+
+
 # ══ Nombre COMERCIAL del producto (product.template.name en es_CO) → dim_producto.nombre_comercial ══
 def enriquecer_nombre_comercial(od, loader):
     """dim_producto.nombre = product.product.name en el idioma BASE (p. ej. PCN19 = "Kit anticaída y
@@ -917,12 +1034,16 @@ def cargar_dims_lote(od, loader, moves, part_ids, prod_ids, catalogos_completos=
 
 
 # ══ Construir filas del hecho para un lote de líneas ══
-def construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol):
+def construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol, oc_map=None):
+    """`oc_map` = {oc_linea_id -> orden_compra_id} (de purchase.order.line). Si no se pasa, las
+    columnas de OC quedan en NULL: el hecho sigue siendo válido, solo pierde el enlace a compras."""
+    oc_map = oc_map or {}
     filas = []
     for ln in lineas:
         m = mv.get(m2o_id(ln.get("move_id")), {})
         mtype = m.get("move_type")
         dist = ln.get("analytic_distribution") or {}
+        oc_linea = m2o_id(ln.get("purchase_line_id"))
         centro = canal = lprod = tprod = pais = cliente = None
         clave = clave_dominante(dist)
         if clave:
@@ -970,6 +1091,11 @@ def construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol):
             "centro_costo_id": centro,
             "canal": canal, "linea_producto": lprod, "tipo_producto": tprod, "pais_analitico": pais,
             "cliente_analitico": cliente,
+            # COMPRAS: la línea de OC viene en la línea contable; la OC se resuelve con el mapa
+            # oc_linea→orden (2.215 filas, se carga una vez por corrida). NULL en el 85 % de las
+            # compras (se contabilizan sin OC) y en todo lo que no es compra.
+            "oc_linea_id": oc_linea,
+            "orden_compra_id": oc_map.get(oc_linea),
             # ⚠ precio_unitario / subtotal / total_con_impuesto vienen EN LA MONEDA DE LA FACTURA
             # (las exportaciones se facturan en USD) y precio_unitario además INCLUYE IVA. Los
             # importes en COP son debito/credito/saldo/venta_neta. Por eso el valor con IVA se
@@ -990,6 +1116,10 @@ def construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol):
 LINE_FIELDS = ["id", "move_id", "account_id", "account_type", "partner_id", "product_id",
                "journal_id", "company_id", "quantity", "price_unit", "price_subtotal",
                "price_total", "currency_id",
+               # COMPRAS: enlace a la ORDEN DE COMPRA. `purchase_line_id` es el único STORED
+               # (purchase_order_id es computado); la OC se resuelve con el mapa de
+               # purchase.order.line. Ver sql/marts/34_compras.sql.
+               "purchase_line_id",
                "debit", "credit", "balance", "amount_residual", "date", "invoice_date",
                "date_maturity", "ref", "analytic_distribution", "write_date"]
 MOVE_FIELDS = ["id", "name", "move_type", "invoice_user_id", "partner_type_id", "partner_id",
@@ -998,7 +1128,7 @@ MOVE_FIELDS = ["id", "name", "move_type", "invoice_user_id", "partner_type_id", 
 
 # ══ Bucle principal por lotes ══
 def cargar_hecho(od, loader, domain, an_plan, an_nombre, plan_rol, clasificar, nombre_puc,
-                 catalogos_completos=False):
+                 catalogos_completos=False, oc_map=None):
     offset, total, max_write = 0, 0, None
     while True:
         lineas = od.search_read("account.move.line", domain, LINE_FIELDS,
@@ -1014,7 +1144,7 @@ def cargar_hecho(od, loader, domain, an_plan, an_nombre, plan_rol, clasificar, n
                          [m2o_id(l.get("product_id")) for l in lineas],
                          catalogos_completos=catalogos_completos)
 
-        dfh = construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol)
+        dfh = construir_hecho(lineas, mv, an_plan, an_nombre, plan_rol, oc_map)
         # Auto-sanar TODA dim referenciada por el hecho pero aún ausente (evita FK; normalmente 0).
         asegurar_dims_hecho(od, loader, dfh, moves, clasificar, nombre_puc, plan_rol)
         upsert(loader, dfh, "fact_movimiento_contable", "linea_id")
@@ -1742,6 +1872,10 @@ def main(modo, desde, hasta=None, cierre=True):
     # Refresco de dimensiones (clientes/productos/vendedores) por su propio write_date.
     # full/rebuild → refresco total; incremental/dims → solo cambios.
     refrescar_dimensiones(od, loader, full=(modo in ("full", "rebuild")))
+    # COMPRAS: las OC son 1.066 + 2.215 líneas ⇒ refresco total en CADA corrida (barato) y devuelve
+    # el mapa que enlaza el hecho. Va SIEMPRE, no solo en el cierre: sin el mapa las líneas de
+    # compra nuevas entrarían sin OC y solo se arreglarían con un backfill.
+    oc_map = cargar_ordenes_compra(od, loader)
     if cierre:
         cargar_kits(od, loader)   # dim_kit_componente (BOM phantom) para v_ventas_explotada
         enriquecer_nombre_comercial(od, loader)   # dim_producto.nombre_comercial (product.template.name)
@@ -1756,7 +1890,7 @@ def main(modo, desde, hasta=None, cierre=True):
             dom.append(["write_date", ">", marca_l])
         logging.info(f"INCREMENTAL (líneas > {marca_l})")
         total_h, mw_h = cargar_hecho(od, loader, dom, an_plan, an_nombre, plan_rol,
-                                     clasificar, nombre_puc)
+                                     clasificar, nombre_puc, oc_map=oc_map)
     else:
         # full / rebuild: cargar por AÑO, más reciente primero (2026 se completa antes).
         if modo == "rebuild":
@@ -1778,7 +1912,8 @@ def main(modo, desde, hasta=None, cierre=True):
         for anio, ini, fin in _anios_desc(desde, hasta):
             dom = [["parent_state", "=", "posted"], ["date", ">=", ini], ["date", "<=", fin]]
             t, mw = cargar_hecho(od, loader, dom, an_plan, an_nombre, plan_rol,
-                                 clasificar, nombre_puc, catalogos_completos=True)
+                                 clasificar, nombre_puc, catalogos_completos=True,
+                                 oc_map=oc_map)
             total_h += t
             if mw and (mw_h is None or mw > mw_h):
                 mw_h = mw
@@ -1816,6 +1951,10 @@ if __name__ == "__main__":
                    help="rellena total_con_impuesto/moneda en las líneas de venta YA cargadas "
                         "(price_total de Odoo). UNA SOLA VEZ: las líneas nuevas ya llegan con el "
                         "dato. No lo corre el cron.")
+    g.add_argument("--backfill-compras", action="store_true",
+                   help="enlaza a su ORDEN DE COMPRA las líneas de compra YA cargadas en el hecho "
+                        "(purchase_line_id de Odoo). UNA SOLA VEZ: las líneas nuevas ya llegan "
+                        "enlazadas. No lo corre el cron.")
     ap.add_argument("--rehacer-iva", action="store_true",
                     help="con --backfill-iva: re-lee TODAS las líneas de venta, no solo las que "
                          "tienen total_con_impuesto en NULL.")
@@ -1833,6 +1972,9 @@ if __name__ == "__main__":
         db, uid, pw, models = conectar_odoo()
         backfill_total_con_impuesto(Odoo(db, uid, pw, models), DBLoader(),
                                     solo_faltantes=not args.rehacer_iva)
+    elif args.backfill_compras:
+        db, uid, pw, models = conectar_odoo()
+        backfill_orden_compra(Odoo(db, uid, pw, models), DBLoader())
     else:
         modo = ("rebuild" if args.rebuild else "full" if args.full
                 else "dims" if args.dims else "incremental")

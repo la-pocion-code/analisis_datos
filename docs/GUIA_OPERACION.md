@@ -190,6 +190,9 @@ se edita el grupo en la intranet; no hay nada que correr aquí.
 |---|---|
 | "¿Cómo va el DW / cuadra con Odoo?" | `python estado_dw.py --odoo` |
 | Cliente/producto/centro de costo nuevo no aparece | `python etl_dw_marts.py --dims` |
+| Una **orden de compra** nueva no aparece | `python etl_dw_marts.py --dims` (las OC se refrescan completas en cada corrida: son 1.066) |
+| Las líneas de compra viejas no tienen su **OC enlazada** | `python etl_dw_marts.py --backfill-compras` (74k líneas, ~45 s, una sola vez) |
+| Se añadió un campo nuevo a **dim_producto** | ⚠ `--dims` NO sirve: va por `write_date` y solo relee lo que cambió en Odoo. Hay que releer el catálogo con `cargar_productos()` |
 | Cambié la clasificación de cuentas (estados financieros) | aplicar el DDL si tocó columnas + `python etl_dw_marts.py --dims` |
 | Poblar enriquecimiento de ventas / kits (tel/email/etiqueta/es_kit) | aplicar DDL 15/15b + `python etl_dw_marts.py --dims` |
 | Cambió un Excel de zonas / clientes padres / categorías | `python cargar_mapeos.py` |

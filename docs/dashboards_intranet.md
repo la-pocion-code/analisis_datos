@@ -1137,3 +1137,81 @@ Resumen vuelve `null` **con su razón** — nunca un 0, que sería mentira.
 Lo que hace falta para encenderlos, paso a paso, está en el repo de la intranet:
 `docs/dashboards/marketing-contrato.md` §0 Fase A. El bloqueante duro es confirmar que hay
 **plan de API de Supermetrics**: el conector de Cowork es interactivo y no sirve para un cron.
+
+---
+
+## 12. Hoja de COMPRAS
+
+Referencia del negocio: el informe de Odoo *Contabilidad > reportes > asientos compras con OC*
+(filtrado por año completo). DDL: `sql/marts/34_compras.sql` (vistas y dimensión de OC) y
+`sql/marts/35_compras_dashboards.sql` (las 4 MV). Aplicada 2026-08-12.
+
+### 12.1 El dataset
+
+`in_invoice` 71.850 líneas / **17.875 documentos** + `in_refund` 2.526 / 642, desde **2024-06-01**.
+De ahí **31.823 líneas de BASE** (las que no son CxP, IVA ni retención) por **114.916.771.540**.
+
+### 12.2 Las tres lecturas del valor (todas en COP)
+
+⚠⚠ **NO se suman entre sí: es el mismo dinero leído de tres formas.**
+
+| columna | qué es | histórico |
+|---|---|---|
+| `compra_subtotal` | base, **sin** impuestos ← la medida de COMPRAS | 114.916.771.540 |
+| `compra_subtotal_con_iva` | base + IVA (**2408**) | 132.791.942.459 |
+| `compra_total_pagado` | base + IVA − retenciones = lo que se le **paga** al proveedor | 126.975.470.248 |
+
+Retenciones: **2365** retefuente · **2367** reteIVA · **2368** reteICA. CxP: **2205** nacionales ·
+**2210** exterior. La retención se le retiene al proveedor y se consigna a la DIAN por él: reduce lo
+que se paga, **no** lo que se compra.
+
+### 12.3 Las trampas del dataset
+
+1. ⚠⚠ **SOLO EL 14,9 % DE LAS LÍNEAS TIENE ORDEN DE COMPRA** (4.748 de 31.820). Por eso el informe
+   de Odoo se llama «con OC»: el 85 % del gasto se contabiliza sin orden. El hecho cubre TODAS las
+   compras y `tiene_oc` marca el subconjunto ⇒ **Lead Time y total de OC hablan del 15 %**, y el
+   tablero tiene que decirlo o alguien leerá «lead time 13 días» como si aplicara a todo.
+2. ⚠ **La base de una compra NO está en una sola clase** (ventas es todo clase 4): inventario **14**
+   69.422 M · gastos **52/53/51** 39.337 M · costo **61** 1.262 M · activos fijos **15/16/17**
+   3.813 M. La base se define como «todo lo que no sea 22/23/24», así que una cuenta de gasto nueva
+   entra sola. `clase_codigo`/`grupo_codigo` están en el grano para poder separar (p. ej. dejar fuera
+   la inversión en activos fijos).
+3. ⚠ **Lead Time = confirmación → llegada real** (`date_approve` → `effective_date`), poblado en
+   **859 de 1.066 OC (81 %)**: mediana **13 días**, media 21,9, máx 208, **0 negativos**. Las 859 son
+   **todas** de estado `purchase`. **NO se rellena** con la fecha prevista ni con hoy. `dias_vs_prevista`
+   mide **puntualidad**, que es otra pregunta.
+4. ⚠ **Para «total OC realizadas» filtrar `es_confirmada`**: de las 1.066 hay **135 canceladas**, 5
+   borrador y 1 enviada.
+5. ⚠ **12 % de las líneas de base no tienen producto** (servicios, arriendos, honorarios) → caen en
+   `'(sin producto)'`. Un arriendo no es un producto: no es un hueco de datos.
+6. ⚠ **La variación vs año anterior solo es limpia en 2026 vs 2025.** Las compras arrancan
+   2024-06-01, así que **2025 vs 2024 compara 12 meses contra 7**.
+7. ⚠ **`mv_compras_recompra` lleva columna `nivel` y sus niveles NO se suman** (proveedor / producto /
+   proveedor_producto): un `COUNT(DISTINCT documento)` no se rueda hacia arriba. «Una compra» = un
+   **documento**. `dias_recompra_prom` es **NULL** con una sola compra — no hay intervalo, y eso no
+   es cero.
+8. ⚠ **Los conteos de `mv_compras_kpi_mes` son `COUNT(DISTINCT)` y no son aditivos**: no sumar
+   `proveedores` ni `productos` entre meses ni entre empresas.
+9. ⚠ **La relación hecho ↔ línea de OC es MUCHOS A UNO**: 4.748 líneas del hecho apuntan a 2.215
+   líneas de OC (facturación parcial) ⇒ agregar el hecho antes de comparar pedido vs facturado.
+10. ⚠ **8 de 18.517 documentos no cuadran** (99,957 % sí, al peso), y concentran 96.574.028
+    (0,084 %): son facturas de compra que además llevan movimientos de inventario dentro del mismo
+    documento (`143510` transformación, `146535` tránsito, `613538` costo Kids). Se aíslan en
+    **`v_compras_descuadre`** para contabilidad, no se reportan. Y 4 líneas de valor **0** dan
+    `con_iva` NULL (factor indefinido sobre base 0): no afectan ninguna suma.
+11. ⚠ **`dim_orden_compra.monto_*` viene en la MONEDA DE LA OC** (hay compras al exterior: cuenta
+    2210, 1.612 líneas por 8.945 M COP). Para valor en pesos usar `contabilizado_subtotal` de
+    `mv_compras_oc`, que sale del hecho. Por eso la dimensión cruda **no** se concede a la intranet.
+
+### 12.4 Objetos
+
+| Objeto | Filas | Para qué |
+|---|---|---|
+| `mv_compras_mes` | 11.594 | valor y cantidad por mes × empresa × proveedor × producto × categoría × clase; top-N, participación y variación |
+| `mv_compras_kpi_mes` | 34 | conteos DISTINTOS (documentos, proveedores, productos, OC) |
+| `mv_compras_oc` | 1.066 | Lead Time, estado, pedido vs facturado |
+| `mv_compras_recompra` | 6.841 | recompra y frecuencia en 3 ejes |
+
+`v_compras_producto`, `v_compras_bi` y `dim_orden_compra` **siguen negadas** a `intranet_ro`.
+**Refresco: en CADA tick** (7,8 s medidos, +8 % sobre el tick ligero) — el origen es el hecho, que
+cambia cada 15 minutos.

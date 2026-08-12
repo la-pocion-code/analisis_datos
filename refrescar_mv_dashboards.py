@@ -136,7 +136,27 @@ MVS_MARKETING = (
     "mv_marketing_atribucion_dia",
 )
 
-MVS = (MVS_VENTAS + MVS_CONTAB + MVS_NIELSEN + MVS_CCLAVE + MVS_CARTERA
+# ── COMPRAS (sql/marts/35_compras_dashboards.sql) — se refrescan en CADA tick ───
+# Salen del HECHO, que el ETL actualiza cada 15 minutos, así que aquí sí hay dato nuevo entre tick
+# y tick (al contrario que Nielsen, cuentas clave o contabilidad, que son semanales/mensuales).
+#
+# Coste MEDIDO (2026-08-12): mes 2,2 s · kpi 1,9 s · oc 0,8 s · recompra 2,9 s = **7,8 s** en total,
+# sobre un tick ligero de ~96 s ⇒ +8 %. Por eso van en cada tick y no en el `:00`.
+#
+# ⚠ Ninguna DERIVA de otra, así que no hay orden que respetar: las cuatro leen de
+# `v_compras_producto` / `dim_orden_compra` directamente. Se dice explícitamente porque en
+# contabilidad y en ventas sí hay derivadas y el orden ahí no es negociable.
+MVS_COMPRAS = (
+    "mv_compras_mes",
+    "mv_compras_kpi_mes",
+    "mv_compras_oc",
+    "mv_compras_recompra",
+)
+
+# Las que corren en TODOS los ticks (ligeros y completo): su origen cambia cada 15 minutos.
+MVS_LIGERAS = MVS_VENTAS + MVS_COMPRAS
+
+MVS = (MVS_LIGERAS + MVS_CONTAB + MVS_NIELSEN + MVS_CCLAVE + MVS_CARTERA
        + MVS_MARKETING)
 
 
@@ -224,14 +244,15 @@ def refrescar(mvs=None, concurrente: bool = True, completa: bool = True) -> dict
     Refresca las MV indicadas. Un fallo en una NO detiene las demás: el cron del
     ETL nunca debe caerse porque un tablero no se pudo refrescar.
 
-    `completa=False` (los ticks ligeros del cron, :15/:30/:45) refresca solo las de
-    VENTAS y salta contabilidad, Nielsen y cuentas clave: ninguna de esas tres puede
-    tener un dato nuevo entre tick y tick — ver el comentario de cada tupla.
+    `completa=False` (los ticks ligeros del cron, :15/:30/:45) refresca solo las que
+    salen del HECHO —VENTAS y COMPRAS— y salta contabilidad, Nielsen, cuentas clave y
+    marketing: ninguna de esas puede tener un dato nuevo entre tick y tick, porque su
+    origen es mensual, semanal o se carga a demanda — ver el comentario de cada tupla.
 
     Devuelve {'ok': [...], 'fallidas': [(mv, error), ...]}.
     """
     if mvs is None:
-        mvs = MVS if completa else MVS_VENTAS
+        mvs = MVS if completa else MVS_LIGERAS
     resultado = {"ok": [], "fallidas": []}
 
     with DBLoader().get_connection() as conn:
