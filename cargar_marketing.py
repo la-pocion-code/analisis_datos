@@ -1,29 +1,35 @@
 """
 Carga los datos de la hoja de MARKETING de la intranet.
 
-    python cargar_marketing.py                      # ventana movil de 7 dias
-    python cargar_marketing.py --desde 2026-01-01   # backfill
-    python cargar_marketing.py --solo-trm           # solo la tasa de cambio
-    python cargar_marketing.py --seco               # no escribe, solo informa
+    python cargar_marketing.py                       # ventana movil de 7 dias
+    python cargar_marketing.py --desde 2026-01-01    # backfill
+    python cargar_marketing.py --solo-trm            # solo la tasa de cambio
+    python cargar_marketing.py --solo-gasto          # depurar Supermetrics
+    python cargar_marketing.py --solo-shopify --seco # depurar Shopify sin escribir
+    python cargar_marketing.py --seco                # no escribe, solo informa
 
 Escribe en las tablas de aterrizaje de `sql/marts/31_marketing_dashboards.sql`
 (`bi_trm_dia`, `bi_marketing_gasto_dia`, `bi_marketing_web_dia`,
 `bi_marketing_atribucion_dia`). Las MV que lee la intranet se refrescan aparte,
 con `refrescar_mv_dashboards.py`.
 
-⚠⚠ ESTADO (2026-08-05): FUNCIONAN LA TRM Y EL GASTO PUBLICITARIO
-`gasto_publicidad` esta **implementado y probado contra la API real**: carga Meta,
-Google Ads y TikTok por la Query API de Supermetrics. Medido ese dia, 1.296 filas
-desde 2026-01-01.
+⚠⚠ ESTADO (2026-08-12): FUNCIONAN LA TRM, EL GASTO PUBLICITARIO Y SHOPIFY
+`gasto_publicidad` esta **implementado y probado contra la API real** (2026-08-05):
+Meta, Google Ads y TikTok por la Query API de Supermetrics. Medido ese dia, 1.296
+filas desde 2026-01-01.
 
-Las otras TRES fuentes —Shopify, GA4 y Search Console— **siguen siendo esqueletos
-sin implementar**: tienen su firma, comprueban su credencial y devuelven vacio,
-pero **no hay codigo que llame a esas APIs**. No confundir «escrito» con
-«implementado»: esa frase en el contrato es la que hizo creer que bastaba con
-poner la credencial. Lo que falta esta en `marketing-contrato.md` §0 Fase A.
+`web_shopify` y la mitad de Shopify de `atribucion` estan **implementados contra la
+Admin API GraphQL, y SIN PROBAR contra la API real**: no habia tokens el dia que se
+escribieron. ⚠⚠ No confundir «implementado» con «probado»: la distincion es
+exactamente la que costo una sesion cuando «escrito» se leyo como «implementado».
+Lo que falta para probarlo es un token por tienda — el runbook esta en
+`marketing-contrato.md` §0 Fase A, paso A5.
 
-Consecuencia directa mientras sigan asi: la hoja muestra INVERSION pero no venta,
-y el ROAS del Resumen sale `null` **con su razon** (nunca 0, que seria mentira).
+GA4 y Search Console **siguen siendo esqueletos**: tienen su firma, comprueban su
+credencial y devuelven vacio, pero **no hay codigo que llame a esas APIs**.
+
+Consecuencia mientras GA4 siga asi: la hoja tendra inversion y venta, pero no
+sesiones ni usuarios, y el embudo de trafico saldra `null` **con su razon**.
 
 ⚠ Dos huecos que NO son de codigo y hay que resolver fuera (medidos el 2026-08-05):
   · **RD/Meta responde HTTP 500**: esa cuenta no esta como «prioritised account»
@@ -453,22 +459,409 @@ def gasto_publicidad(cuentas: pd.DataFrame, desde: date, hasta: date) -> pd.Data
     return df
 
 
+# ── Venta web, via la Admin API de Shopify ────────────────────────────────────
+
+#: Version de la Admin API. ⚠ Va PINEADA a proposito: `latest` cambia solo cada
+#: trimestre y un campo retirado rompe la carga sin que nadie haya tocado nada.
+#: Shopify sostiene cada version 12 meses, asi que hay que subirla una vez al ano
+#: — y la fecha limite de esta esta en el contrato, no aqui.
+SHOPIFY_API_VERSION = "2026-07"
+
+#: Tope de la conexion `orders`. 250 es el maximo que admite Shopify.
+SHOPIFY_PAGINA = 250
+
+#: Un pedido son pocos campos, pero un backfill de un ano son muchas paginas.
+SHOPIFY_TIMEOUT = 120
+
+#: Shopify limita por coste con un cubo que se rellena solo, asi que un
+#: `THROTTLED` es lo NORMAL en un backfill y no un fallo: se espera y se repite.
+SHOPIFY_MAX_ESPERAS = 8
+SHOPIFY_ESPERA_S = 4
+
+
+class ErrorShopify(RuntimeError):
+    """
+    Fallo de la Admin API, distinto de «esa tienda no vendio nada esos dias».
+
+    La distincion es el motivo de que exista esta clase: devolver un DataFrame
+    vacio ante un token invalido es como nacio el problema de esta hoja — un cron
+    en verde, `ok=true` y cero filas.
+    """
+
+
+def _shopify_url(dominio: str) -> str:
+    """El endpoint GraphQL de una tienda. Acepta el dominio con o sin esquema."""
+    d = dominio.strip().replace("https://", "").replace("http://", "").strip("/")
+    return f"https://{d}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
+
+
+def _shopify_pedir(sesion, dominio: str, token: str, consulta: str,
+                   variables: dict, etiqueta: str) -> dict:
+    """
+    Una llamada GraphQL, con espera y reintento SOLO ante `THROTTLED`.
+
+    ⚠⚠ GraphQL devuelve **200 con `errors` dentro**: un token sin el scope que
+    hace falta no es un HTTP 403, es un 200 con el campo en null. Sin mirar
+    `errors` la carga seguiria como si todo hubiera ido bien y escribiria ceros.
+    """
+    import time as _time
+
+    for intento in range(SHOPIFY_MAX_ESPERAS):
+        r = sesion.post(_shopify_url(dominio),
+                        json={"query": consulta, "variables": variables},
+                        headers={"X-Shopify-Access-Token": token,
+                                 "Content-Type": "application/json"},
+                        timeout=SHOPIFY_TIMEOUT)
+        if r.status_code == 401:
+            raise ErrorShopify(f"{etiqueta}: 401. El token no vale para {dominio}.")
+        if r.status_code >= 400:
+            raise ErrorShopify(
+                f"{etiqueta}: HTTP {r.status_code} - {r.text[:400]}")
+
+        payload = r.json()
+        errores = payload.get("errors") or []
+        if errores:
+            codigos = {(e.get("extensions") or {}).get("code") for e in errores}
+            if "THROTTLED" in codigos and intento < SHOPIFY_MAX_ESPERAS - 1:
+                _time.sleep(SHOPIFY_ESPERA_S * (intento + 1))
+                continue
+            raise ErrorShopify(
+                f"{etiqueta}: {'; '.join(str(e.get('message')) for e in errores)[:400]}")
+
+        datos = payload.get("data")
+        if datos is None:
+            raise ErrorShopify(f"{etiqueta}: respuesta sin `data`: {r.text[:300]}")
+        return datos
+
+    raise ErrorShopify(f"{etiqueta}: sigue limitado tras {SHOPIFY_MAX_ESPERAS} esperas.")
+
+
+#: Identidad de la tienda. Se pide ANTES de los pedidos para poder cotejar que el
+#: token es de la tienda que dice el catalogo (ver `_shopify_cotejar`).
+Q_SHOPIFY_TIENDA = """
+query { shop { id myshopifyDomain currencyCode ianaTimezone } }
+"""
+
+#: Los pedidos de la ventana. `sortKey: CREATED_AT` para que el cursor sea estable.
+#: ⚠ `customerJourneySummary` va en la MISMA consulta porque recorrer los pedidos
+#: dos veces cuesta el doble de cuota; si el token no lo permite se repite sin el.
+Q_SHOPIFY_PEDIDOS = """
+query($cursor: String, $filtro: String!) {
+  orders(first: %d, after: $cursor, query: $filtro, sortKey: CREATED_AT) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      createdAt
+      test
+      cancelledAt
+      currentSubtotalPriceSet { shopMoney { amount currencyCode } }
+      currentTotalTaxSet      { shopMoney { amount } }
+      %s
+    }
+  }
+}
+""".strip()
+
+_BLOQUE_JOURNEY = """
+      customerJourneySummary {
+        lastVisit {
+          sourceType
+          source
+          referrerUrl
+          landingPage
+          utmParameters { source medium campaign }
+        }
+      }
+"""
+
+
+def _shopify_cotejar(datos_tienda: dict, pais: dict, etiqueta: str) -> None:
+    """
+    Que el token sea de la tienda que el catalogo dice, no de otra.
+
+    ⚠⚠ Es el guardian que hace imposible el fallo mas caro de esta integracion:
+    seis tiendas y seis tokens copiados a mano, y un par cruzado atribuye la venta
+    de un pais a otro **sin ningun error y con una cifra creible**. El catalogo ya
+    guarda el GID verificado de cada tienda (`bi_marketing_pais.shopify_shop`), asi
+    que la comprobacion es gratis: se compara con el `shop.id` que responde la API.
+    """
+    esperado = (pais.get("shopify_shop") or "").strip()
+    real = ((datos_tienda.get("shop") or {}).get("id") or "").strip()
+    if esperado and real and esperado != real:
+        raise ErrorShopify(
+            f"{etiqueta}: el token responde por {real} y el catalogo dice "
+            f"{esperado}. Es un token pegado en el pais equivocado: se aborta "
+            f"antes de atribuir su venta a {pais['pais']}.")
+    if esperado and not real:
+        raise ErrorShopify(
+            f"{etiqueta}: la API no devolvio `shop.id`; sin eso no se puede "
+            f"cotejar que el token sea de la tienda del catalogo.")
+
+
+def _shopify_credenciales(paises: pd.DataFrame) -> tuple[list, list]:
+    """
+    Reparte los paises del catalogo en (los que tienen credencial, los que no).
+
+    ⚠ No devuelve solo los configurados: quien llama TIENE que ver los que faltan,
+    porque cargar 5 de 6 tiendas y presentarlo como el total es el fallo silencioso
+    que esta integracion tiene que hacer imposible.
+    """
+    con, sin = [], []
+    for _, p in paises.iterrows():
+        dominio = os.getenv(f"SHOPIFY_SHOP_{p['pais']}")
+        token = os.getenv(f"SHOPIFY_TOKEN_{p['pais']}")
+        if dominio and token:
+            con.append((p, dominio, token))
+        else:
+            sin.append(p["pais"])
+    return con, sin
+
+
+def _shopify_filtro(pais, desde: date, hasta: date) -> str:
+    """
+    El filtro de busqueda, en INSTANTES con el desplazamiento de la tienda.
+
+    ⚠⚠ La ventana la da `_ventana()` en FECHAS, y la Admin API filtra por
+    instantes. Sin convertir con la zona de la tienda, «ayer» en Railway (que corre
+    en UTC) se come 5 horas de la madrugada de Bogota y las mete en el dia
+    anterior: el total del mes cuadra y **los dias sueltos no**, que es el error
+    mas dificil de ver de los tres.
+    """
+    from datetime import datetime, time as _time
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(pais["timezone"])
+    ini = datetime.combine(desde, _time.min, tzinfo=tz).isoformat()
+    fin = datetime.combine(hasta, _time.max, tzinfo=tz).isoformat()
+    # `test:false` en el propio filtro: los pedidos de prueba no son venta y
+    # descartarlos aqui ahorra cuota en vez de traerlos para tirarlos.
+    return f"created_at:>='{ini}' AND created_at:<='{fin}' AND test:false"
+
+
+def _shopify_pedidos(sesion, dominio, token, filtro, etiqueta) -> tuple[list, bool]:
+    """
+    Todos los pedidos de la ventana, paginando por cursor.
+
+    Devuelve `(nodos, con_journey)`: si el token no puede leer el recorrido del
+    cliente, se repite la consulta SIN ese bloque y se avisa — perder la
+    atribucion es aceptable, perder la venta no.
+    """
+    consulta = Q_SHOPIFY_PEDIDOS % (SHOPIFY_PAGINA, _BLOQUE_JOURNEY)
+    con_journey = True
+    nodos, cursor = [], None
+
+    while True:
+        try:
+            datos = _shopify_pedir(sesion, dominio, token, consulta,
+                                   {"cursor": cursor, "filtro": filtro}, etiqueta)
+        except ErrorShopify as exc:
+            texto = str(exc).lower()
+            reintentable = con_journey and not nodos and (
+                "customerjourney" in texto or "access denied" in texto
+                or "scope" in texto)
+            if not reintentable:
+                raise
+            logging.warning("  [aviso] %s: el token no puede leer "
+                            "`customerJourneySummary` (%s). Se carga la venta sin "
+                            "atribucion por referrer.", etiqueta, exc)
+            consulta = Q_SHOPIFY_PEDIDOS % (SHOPIFY_PAGINA, "")
+            con_journey = False
+            continue
+
+        conexion = datos.get("orders") or {}
+        nodos.extend(conexion.get("nodes") or [])
+        info = conexion.get("pageInfo") or {}
+        if not info.get("hasNextPage"):
+            return nodos, con_journey
+        cursor = info.get("endCursor")
+        if not cursor:
+            raise ErrorShopify(f"{etiqueta}: `hasNextPage` es true y no hay cursor.")
+
+
+def _shopify_a_dias(nodos: list, pais, etiqueta: str) -> tuple[list, int]:
+    """
+    Agrega los pedidos a un registro por dia LOCAL de la tienda.
+
+    ⚠ El dia es el local, no el UTC: es el unico que cuadra con lo que el
+    comerciante ve en Shopify Analytics, que es contra lo que se valida esto.
+
+    ⚠⚠ Los cancelados se cuentan y se RESTAN de los pedidos, pero su importe ya
+    viene descontado en los campos `current*`. Se devuelve su numero para poder
+    decirlo en el log: una tienda con muchas cancelaciones explica una caida que
+    de otro modo parece un fallo de carga.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(pais["timezone"])
+    por_dia, cancelados = {}, 0
+
+    for n in nodos:
+        creado = n.get("createdAt")
+        if not creado:
+            continue
+        dia = pd.Timestamp(creado).tz_convert(tz).date()
+        if n.get("cancelledAt"):
+            cancelados += 1
+            continue
+
+        neta = _num((((n.get("currentSubtotalPriceSet") or {})
+                      .get("shopMoney") or {}).get("amount")))
+        impuesto = _num((((n.get("currentTotalTaxSet") or {})
+                          .get("shopMoney") or {}).get("amount")))
+
+        acc = por_dia.setdefault(dia, {"venta_neta": 0.0, "impuestos": 0.0,
+                                       "pedidos": 0})
+        acc["venta_neta"] += neta or 0.0
+        acc["impuestos"] += impuesto or 0.0
+        acc["pedidos"] += 1
+
+    filas = [{"fecha": d, "pais": pais["pais"], **v} for d, v in sorted(por_dia.items())]
+    return filas, cancelados
+
+
+#: Los pedidos ya traidos en esta corrida, por ventana. `web_shopify` y
+#: `atribucion` consumen LOS MISMOS pedidos: sin esto, una carga de 6 tiendas
+#: recorreria la API dos veces y gastaria el doble de cuota para nada.
+#: ⚠ Se limpia solo porque el proceso muere en cada corrida del cron; no es una
+#: cache con vencimiento y no debe usarse como tal.
+_SHOPIFY_MEMO: dict = {}
+
+
+def _shopify_traer(paises: pd.DataFrame, desde: date, hasta: date) -> list:
+    """
+    Los pedidos de la ventana de TODAS las tiendas, con la politica de errores.
+
+    Devuelve `[(pais, nodos, con_journey), ...]`, o `[]` si no hay nada
+    configurado todavia (que es el estado de hoy y no es un fallo).
+
+    ⚠⚠ **Que sobren tokens no pasa nada; que falte UNO, si.** Si el catalogo tiene
+    seis paises activos y solo cinco tienen credencial, esto LEVANTA en vez de
+    cargar cinco: la suma de cinco tiendas presentada como el total es un numero
+    creible y falso. Para dar de alta un pais antes de tener su token, se siembra
+    con `activo = FALSE` y se enciende despues.
+
+    ⚠⚠ Y lo mismo si una tienda **falla** habiendo cargado las demas: se aborta la
+    fuente entera. Aqui no vale el «un fallo de una cuenta no tumba las demas» del
+    gasto publicitario, porque el gasto se escribe por `(fecha, pais, plataforma)`
+    —una cuenta que falta deja su fila vacia y se ve— mientras la venta web se
+    escribe por `(fecha, pais)` y **un pais que falta es indistinguible de un pais
+    que no vendio**.
+    """
+    if paises.empty:
+        logging.warning("  [aviso] Shopify: no hay paises activos en "
+                        "marts.bi_marketing_pais.")
+        return []
+
+    clave = (desde, hasta, tuple(paises["pais"]))
+    if clave in _SHOPIFY_MEMO:
+        return _SHOPIFY_MEMO[clave]
+
+    con, sin = _shopify_credenciales(paises)
+    if not con:
+        # Nada configurado todavia. La hoja ya sabe decir «sin dato», y
+        # `check_marts §7m` lo delata aparte.
+        logging.warning("  [aviso] Shopify: ninguna tienda tiene credenciales "
+                        "(faltan SHOPIFY_SHOP_/SHOPIFY_TOKEN_ de %s). Sin venta ni "
+                        "pedidos.", ", ".join(sin))
+        _SHOPIFY_MEMO[clave] = []
+        return []
+    if sin:
+        raise ErrorShopify(
+            f"{len(con)} de {len(con) + len(sin)} tiendas tienen credencial y "
+            f"faltan las de {', '.join(sin)}. Se aborta a proposito: cargar solo "
+            f"las que hay dejaria un total incompleto con pinta de completo. Pon "
+            f"sus SHOPIFY_SHOP_/SHOPIFY_TOKEN_, o marca esos paises "
+            f"`activo = FALSE` en marts.bi_marketing_pais.")
+
+    import requests
+
+    sesion = requests.Session()
+    traidas, errores = [], []
+
+    for pais, dominio, token in con:
+        etiqueta = f"{pais['pais']}/Shopify"
+        try:
+            _shopify_cotejar(
+                _shopify_pedir(sesion, dominio, token, Q_SHOPIFY_TIENDA, {},
+                               etiqueta),
+                pais, etiqueta)
+            nodos, con_journey = _shopify_pedidos(
+                sesion, dominio, token, _shopify_filtro(pais, desde, hasta),
+                etiqueta)
+        except ErrorShopify as exc:
+            logging.error("  [ERROR] %s: %s", etiqueta, exc)
+            errores.append(f"{etiqueta}: {exc}")
+            continue
+        traidas.append((pais, nodos, con_journey))
+
+    if errores:
+        raise ErrorShopify(
+            f"{len(errores)} de {len(con)} tiendas fallaron. Se aborta la fuente "
+            f"entera para no escribir un total incompleto con pinta de completo: "
+            f"{'; '.join(errores[:3])}")
+
+    sin_journey = [p["pais"] for p, _, cj in traidas if not cj]
+    if sin_journey:
+        logging.warning("  [aviso] sin atribucion por referrer en: %s",
+                        ", ".join(sin_journey))
+
+    _SHOPIFY_MEMO[clave] = traidas
+    return traidas
+
+
 def web_shopify(paises: pd.DataFrame, desde: date, hasta: date) -> pd.DataFrame:
     """
-    Venta neta, impuestos y pedidos por dia y tienda, via la Admin API de Shopify.
+    Venta neta, impuestos y pedidos por dia y pais, via la Admin API de Shopify.
 
-    ⚠ SIN PROBAR: requiere `SHOPIFY_TOKEN_{CO,EC,RD}`.
+    Una tienda por pais, con su propio par `SHOPIFY_SHOP_{PAIS}` /
+    `SHOPIFY_TOKEN_{PAIS}`: Shopify no emite un token que sirva para varias
+    tiendas, ni siquiera dentro de la misma organizacion. La traida y su politica
+    de errores viven en `_shopify_traer`, que comparte con `atribucion`.
 
-    ⚠ Leer pedidos de mas de 60 dias atras exige que Shopify apruebe el scope
-    `read_all_orders`; sin el, un backfill largo devuelve vacio SIN error.
+    ⚠⚠ **`venta_neta` es una APROXIMACION a la «venta neta» de Shopify Analytics
+    y hay que validarla tienda por tienda contra un dia CERRADO.** Se usa
+    `currentSubtotalPriceSet` (lineas de pedido, ya con descuentos y devoluciones
+    aplicadas, sin envio ni impuestos) y `currentTotalTaxSet`. Si un dia no cuadra,
+    el orden en que se prueban las alternativas es: `subtotalPriceSet` (antes de
+    devoluciones), y luego `currentTotalPriceSet` menos envio. **No se ajusta a
+    ojo:** la definicion elegida se escribe en el contrato.
+
+    ⚠ Mas de 60 dias de historico exige que Shopify apruebe `read_all_orders`. Sin
+    ese scope un backfill largo devuelve MENOS pedidos **sin ningun error**, asi que
+    el log dice siempre el rango real que trajo cada tienda: si el primer dia con
+    pedidos es sospechosamente reciente, es esto y no una tienda sin ventas.
     """
-    faltan = _falta("SHOPIFY_TOKEN_CO", "SHOPIFY_TOKEN_EC", "SHOPIFY_TOKEN_RD")
-    if faltan:
-        logging.warning("  [aviso] Shopify: faltan %d credenciales (%s). "
-                        "Sin venta ni pedidos.", len(faltan), ", ".join(faltan))
+    traidas = _shopify_traer(paises, desde, hasta)
+    if not traidas:
         return pd.DataFrame()
-    logging.warning("  [aviso] Shopify: conector sin implementar.")
-    return pd.DataFrame()
+
+    filas = []
+    for pais, nodos, _ in traidas:
+        etiqueta = f"{pais['pais']}/Shopify"
+        nuevas, cancelados = _shopify_a_dias(nodos, pais, etiqueta)
+        filas.extend(nuevas)
+
+        total = sum(f["venta_neta"] for f in nuevas)
+        pedidos = sum(f["pedidos"] for f in nuevas)
+        rango = f"{nuevas[0]['fecha']}..{nuevas[-1]['fecha']}" if nuevas else "-"
+        logging.info("  %-12s %4d dias  %6d pedidos  %15.2f %s  [%s]",
+                     etiqueta, len(nuevas), pedidos, total,
+                     pais["moneda_reporte"], rango)
+        if cancelados:
+            logging.info("      %d pedidos cancelados, no contados", cancelados)
+        if nuevas and nuevas[0]["fecha"] > desde:
+            logging.warning("      [aviso] %s: se pidio desde %s y el primer dia con "
+                            "pedidos es %s. Si el hueco es de ~60 dias, es que falta "
+                            "el scope `read_all_orders`.",
+                            etiqueta, desde, nuevas[0]["fecha"])
+
+    if not filas:
+        logging.warning("  [aviso] Shopify: las tiendas respondieron bien y no hay "
+                        "ni un pedido en la ventana. Es un vacio legitimo.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(filas)
+    df["pedidos"] = df["pedidos"].astype(int)
+    return df[["fecha", "pais", "venta_neta", "impuestos", "pedidos"]]
 
 
 def web_ga4(paises: pd.DataFrame, desde: date, hasta: date) -> pd.DataFrame:
@@ -518,22 +911,139 @@ def web_search_console(paises: pd.DataFrame, desde: date, hasta: date) -> pd.Dat
     return pd.DataFrame()
 
 
+#: De la fuente que reporta Shopify al `plataforma` de `bi_marketing_cuenta`.
+#: ⚠⚠ Los nombres de la derecha son un CONTRATO con la intranet, que cruza por
+#: igualdad de cadena: un `facebook` aqui contra un `Meta` alli deja el ROAS
+#: last-click en null sin que nada lo delate.
+SHOPIFY_CANAL = {
+    "facebook": "Meta", "facebook_ads": "Meta", "fb": "Meta", "meta": "Meta",
+    "meta_ads": "Meta", "instagram": "Meta", "ig": "Meta",
+    "google": "Google", "google_ads": "Google", "googleads": "Google",
+    "adwords": "Google",
+    "tiktok": "TikTok", "tiktok_ads": "TikTok", "tiktokads": "TikTok",
+}
+
+#: Un `utm_medium` que significa «esto lo trajo un anuncio».
+UTM_PAGO = ("cpc", "ppc", "paid", "paidsocial", "paid_social", "paid-social",
+            "cpm", "display", "ads", "retargeting", "remarketing")
+
+#: Parametros de clic que SOLO pone la plataforma al servir un anuncio, asi que
+#: valen como prueba de pago aunque falte el UTM.
+#: ⚠⚠ `fbclid` NO esta aqui a proposito: Facebook lo anade a **todos** los enlaces
+#: salientes, tambien a los organicos, asi que tratarlo como prueba de pago
+#: inflaria el ROAS de Meta con visitas que ningun anuncio pago.
+CLICK_IDS_PAGO = {"gclid": "Google", "wbraid": "Google", "gbraid": "Google",
+                  "ttclid": "TikTok"}
+
+
+def _shopify_canal_pagado(visita: dict) -> str | None:
+    """
+    El canal de pago que trajo la visita, o `None` si no se puede afirmar que lo
+    trajera un anuncio.
+
+    ⚠⚠ **Devolver `None` en la duda no es pereza, es lo que evita inflar el ROAS.**
+    La tentacion es mapear `source = 'google'` a `Google` y ya, pero ese `source`
+    incluye la busqueda ORGANICA: atribuirla a Google Ads le regala venta que no
+    pago, y el ROAS resultante es creible y falso. Solo cuenta lo que lleva un
+    `utm_medium` de pago o un identificador de clic de la propia plataforma.
+    """
+    if not visita:
+        return None
+
+    urls = " ".join(str(visita.get(c) or "") for c in ("landingPage", "referrerUrl"))
+    for parametro, canal in CLICK_IDS_PAGO.items():
+        if f"{parametro}=" in urls:
+            return canal
+
+    utm = visita.get("utmParameters") or {}
+    medio = (utm.get("medium") or "").strip().lower()
+    if medio in UTM_PAGO:
+        fuente = (utm.get("source") or visita.get("source") or "").strip().lower()
+        return SHOPIFY_CANAL.get(fuente)
+    return None
+
+
+def _shopify_a_canales(nodos: list, pais, con_journey: bool) -> list[dict]:
+    """Agrega los pedidos a `(fecha, pais, canal)` con `fuente='shopify_referrer'`."""
+    if not con_journey:
+        return []
+
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(pais["timezone"])
+    acumulado = {}
+
+    for n in nodos:
+        if n.get("cancelledAt") or not n.get("createdAt"):
+            continue
+        visita = ((n.get("customerJourneySummary") or {}).get("lastVisit")) or {}
+        canal = _shopify_canal_pagado(visita)
+        if not canal:
+            continue
+
+        dia = pd.Timestamp(n["createdAt"]).tz_convert(tz).date()
+        neta = _num((((n.get("currentSubtotalPriceSet") or {})
+                      .get("shopMoney") or {}).get("amount"))) or 0.0
+        impuesto = _num((((n.get("currentTotalTaxSet") or {})
+                          .get("shopMoney") or {}).get("amount"))) or 0.0
+
+        acc = acumulado.setdefault((dia, canal),
+                                   {"venta_atribuida": 0.0, "pedidos_atribuidos": 0})
+        # Misma definicion que `venta` en mv_marketing_web_dia (neta + impuestos),
+        # o el ROAS last-click y el ROAS del Resumen no serian comparables.
+        acc["venta_atribuida"] += neta + impuesto
+        acc["pedidos_atribuidos"] += 1
+
+    return [{"fecha": d, "pais": pais["pais"], "canal": c,
+             "fuente": "shopify_referrer", **v}
+            for (d, c), v in sorted(acumulado.items())]
+
+
 def atribucion(paises: pd.DataFrame, desde: date, hasta: date) -> pd.DataFrame:
     """
-    Venta atribuida por canal (GA4, y Shopify `order_referrer_name` de respaldo).
+    Venta atribuida por canal (Shopify `lastVisit`; GA4 cuando se implemente).
 
-    ⚠ SIN PROBAR.
-    ⚠ Para los canales de pago, `canal` tiene que salir EXACTAMENTE como
-    `bi_marketing_cuenta.plataforma` (`Meta`, `Google`, `TikTok`): la intranet
-    cruza por igualdad de cadena, y un `facebook` aqui contra un `Meta` alli deja
-    el ROAS last-click en null sin que nada lo delate.
+    Reutiliza los pedidos que ya trajo `web_shopify` en esta misma corrida
+    (`_shopify_traer` memoiza), asi que no cuesta ni una llamada extra.
+
+    ⚠ Solo cuenta la venta que se puede afirmar que trajo un ANUNCIO — ver
+    `_shopify_canal_pagado`. Lo demas no aparece, que es lo correcto: no es venta
+    atribuible a inversion.
+
+    ⚠ GA4 sigue sin implementar, asi que hoy la unica `fuente` que se escribe es
+    `shopify_referrer`. La columna existe justo para poder tener las dos y
+    compararlas sin que una pise a la otra.
     """
-    if _falta("GA4_CREDENTIALS_JSON") and _falta("SHOPIFY_TOKEN_CO"):
-        logging.warning("  [aviso] atribucion por canal: sin credenciales de GA4 "
-                        "ni de Shopify. El ROAS last-click no se podra calcular.")
+    traidas = _shopify_traer(paises, desde, hasta)
+    if not traidas:
+        if _falta("GA4_CREDENTIALS_JSON"):
+            logging.warning("  [aviso] atribucion por canal: sin credenciales de "
+                            "GA4 ni de Shopify. El ROAS last-click no se podra "
+                            "calcular.")
         return pd.DataFrame()
-    logging.warning("  [aviso] atribucion: conector sin implementar.")
-    return pd.DataFrame()
+
+    filas = []
+    for pais, nodos, con_journey in traidas:
+        nuevas = _shopify_a_canales(nodos, pais, con_journey)
+        filas.extend(nuevas)
+        if nuevas:
+            por_canal = {}
+            for f in nuevas:
+                por_canal[f["canal"]] = por_canal.get(f["canal"], 0) + f["pedidos_atribuidos"]
+            logging.info("  %-12s %s", f"{pais['pais']}/referrer",
+                         "  ".join(f"{c}:{n}" for c, n in sorted(por_canal.items())))
+
+    if not filas:
+        logging.warning("  [aviso] atribucion: ningun pedido de la ventana llega con "
+                        "un `utm_medium` de pago ni un identificador de clic. Si hay "
+                        "inversion en el mismo periodo, revisa que los anuncios "
+                        "lleven UTM.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(filas)
+    df["pedidos_atribuidos"] = df["pedidos_atribuidos"].astype(int)
+    return df[["fecha", "pais", "canal", "fuente", "venta_atribuida",
+               "pedidos_atribuidos"]]
 
 
 # ── Orquestacion ──────────────────────────────────────────────────────────────
@@ -555,7 +1065,8 @@ def _escribir(loader, df, tabla, pk, resumen, seco):
 
 
 def cargar(desde: str | None = None, solo_trm: bool = False,
-           seco: bool = False, solo_gasto: bool = False) -> list:
+           seco: bool = False, solo_gasto: bool = False,
+           solo_shopify: bool = False) -> list:
     """Carga todo lo que se pueda. Devuelve el resumen para imprimir."""
     d0, d1 = _ventana(desde)
     logging.info("Ventana: %s -> %s (el dia en curso NO se carga)", d0, d1)
@@ -567,7 +1078,7 @@ def cargar(desde: str | None = None, solo_trm: bool = False,
     #    tasa del dia, el gasto convertido saldria NULL.
     #    ⚠ Con `--solo-gasto` se salta, y por eso ese modo es para DEPURAR el
     #    conector, no para dejar el almacen al dia.
-    if not solo_gasto:
+    if not (solo_gasto or solo_shopify):
         try:
             _escribir(loader, trm(d0, d1), "bi_trm_dia",
                       pk=["fecha", "moneda_origen", "moneda_destino"], resumen=resumen,
@@ -588,13 +1099,14 @@ def cargar(desde: str | None = None, solo_trm: bool = False,
                  len(paises), len(cuentas))
 
     # 2) Gasto publicitario.
-    try:
-        _escribir(loader, gasto_publicidad(cuentas, d0, d1),
-                  "bi_marketing_gasto_dia",
-                  pk=["fecha", "pais", "plataforma"], resumen=resumen, seco=seco)
-    except Exception as exc:                                # noqa: BLE001
-        logging.error("gasto: %s", exc)
-        resumen.append(("bi_marketing_gasto_dia", 0, f"ERROR {exc}"))
+    if not solo_shopify:
+        try:
+            _escribir(loader, gasto_publicidad(cuentas, d0, d1),
+                      "bi_marketing_gasto_dia",
+                      pk=["fecha", "pais", "plataforma"], resumen=resumen, seco=seco)
+        except Exception as exc:                            # noqa: BLE001
+            logging.error("gasto: %s", exc)
+            resumen.append(("bi_marketing_gasto_dia", 0, f"ERROR {exc}"))
 
     if solo_gasto:
         return resumen
@@ -635,11 +1147,15 @@ def main():
     ap.add_argument("--solo-gasto", action="store_true",
                     help="Solo el gasto publicitario, para depurar el conector de "
                          "Supermetrics. NO carga la TRM: no deja el almacen al dia.")
+    ap.add_argument("--solo-shopify", action="store_true",
+                    help="Solo la venta web y la atribucion, para depurar el "
+                         "conector de Shopify. NO carga la TRM ni el gasto: no deja "
+                         "el almacen al dia.")
     ap.add_argument("--seco", action="store_true", help="No escribe, solo informa.")
     args = ap.parse_args()
 
     resumen = cargar(desde=args.desde, solo_trm=args.solo_trm, seco=args.seco,
-                     solo_gasto=args.solo_gasto)
+                     solo_gasto=args.solo_gasto, solo_shopify=args.solo_shopify)
 
     print("\n" + "=" * 70)
     print(f"RESUMEN - marketing{'  (SECO)' if args.seco else ''}")
