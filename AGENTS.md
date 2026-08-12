@@ -1,300 +1,33 @@
 # AGENTS.md — Proyecto BI La Poción (analisis_datos)
 
-Guía para Codex. Repo de scripts ETL/BI del analista de datos de La Poción.
-Documentación extendida y roadmap del DW: `docs/ARQUITECTURA_DW.md`.
+⚠ **Este archivo ya NO contiene el contexto del repo. Es solo un puntero, y es deliberado.**
 
-## Qué es este repo
-- Cron en **Railway** que carga el **Data Warehouse** (`Odoo → PostgreSQL marts`) **cada 15 min**.
-- Más scripts de BI manual (Excel, Google Drive, correo) en `classes/` y notebooks.
-- ⭐ **DIRECCIÓN DEL PROYECTO: los tableros pasan de Power BI a la INTRANET** (app interna de la
-  compañía) presentados como **HTML dinámico** (ECharts, consultando la BD en vivo). Power BI es
-  fuente **transitoria**, no destino: lo nuevo se hace para la intranet y **la lógica de negocio baja
-  al SQL** (lo que era medida DAX o paso de Power Query pasa a vistas/MV/columnas del hecho, porque la
-  intranet solo hace `SELECT`). Ver `docs/dashboards_intranet.md`.
-- Idioma del proyecto y de la comunicación: **español**.
+Hasta el 2026-08-12 aquí vivía una copia del contenido de `CLAUDE.md`. **Divergió**: se quedó en el
+2026-08-05 y perdió, entre otras cosas, la **hoja de compras entera**, los identificadores de
+producto (EAN), las tres lecturas del IVA en ventas y la corrección de la jerarquía de markets de
+Nielsen. Un agente que leyera este archivo trabajaría con un mapa desactualizado del repo y no
+sabría que existen esas cosas.
 
-## Componente principal: el cron del DW
-- Entrypoint: **`run_dw.py`**. Disparado por Railway Cron (`railway.toml` → **`*/15 * * * *`**).
-  Mismo comando en `Procfile` (worker: `python run_dw.py`).
-- **Reparto LIGERO/COMPLETO** (el coste de una corrida es casi todo FIJO, no proporcional al delta):
-  tick **:00** = corrida COMPLETA (catálogos + dims + kits + hecho + **todos los pasos de cierre**);
-  ticks **:15/:30/:45** = **ligera** (dimensiones por `write_date` + `cargar_hecho`).
-  Medido en Railway: la corrida completa tarda **~26 s** (las cifras de minutos del log local están
-  infladas por la latencia de red). Lo que ahorra el reparto es 4× Odoo y 4× full scans, no reloj.
-  ⚠ En los ticks ligeros las líneas nuevas quedan **sin `categoria`, sin `es_reverso` y sin puente
-  NC/ND** hasta el cierre de la hora.
-- **rebuild** del año actual los días 3 y 24 a las 03h, **solo en el tick :00** (`MINUTO_CIERRE`);
-  la hora es **UTC**. **Advisory lock** (clave `8152026`): si la corrida anterior sigue viva, el tick
-  se omite. Detalles del ETL en la sección "Data Warehouse" abajo.
-- El sync antiguo a `raw.odoo_apuntes` (`etl_odoo_incremental.py`) quedó **archivado**
-  (`archivado/`, ya no corre); el DW lee de Odoo directo, no de `raw`. `raw.odoo_apuntes` sigue
-  existiendo para el BI legacy pero ya no se actualiza por cron.
+**Por eso hay UNA sola fuente de verdad. No volver a copiar el contexto aquí:** si se duplica,
+vuelve a divergir en una semana.
 
-## Archivos clave
-- `run_dw.py` — **entrypoint del cron** (dispatcher DW: ligera cada 15 min, completa en :00, rebuild 3/24).
-- `etl_dw_marts.py` — ETL del DW (ver sección Data Warehouse).
-- `cargar_mapeos.py` — carga los mapeos NO-Odoo de ventas (zona/cliente_padre/categoría) de Drive a
-  `marts.map_*`. A demanda (ver sección Data Warehouse).
-- `cargar_marketing.py` — carga la hoja de MARKETING de la intranet (TRM + Supermetrics/GA4/
-  Search Console/Shopify). ✅ Desde el 2026-08-05 funcionan **la TRM y el gasto publicitario**
-  (Supermetrics, probado contra la API real). ⚠ **Shopify, GA4 y Search Console siguen siendo
-  esqueletos sin implementar**: no confundir «escrito» con «implementado».
-  Enganchado a `run_dw.py` (paso 2b, tick :00).
-- ⚠⚠ `cargar_cartera_responsables.py` **SE ELIMINO el 2026-08-04 (f)**, con la tabla
-  `marts.bi_cartera_responsable` y la hoja `Responsables` de `base_cartera.xlsx`. El
-  responsable de cobro **lo calcula la intranet** desde sus grupos de ventas: quien vende a un
-  cliente responde de su deuda, asi que esto era una segunda fuente de verdad para las mismas
-  personas — y se desincronizo dos veces en dos dias. Lo unico que queda aqui es el puente de
-  vocabulario: la columna `categoria` de `bi_cartera_tipo_credito`.
-- `classes/db_loader.py` — `DBLoader`: conexión PG, auto-DDL, UPSERT, carga incremental.
-- `classes/drive_loader.py` — `DriveLoader`: lee Excel/CSV de Google Drive.
-- `classes/send_mail.py` — `MailSender`: correos SMTP con adjuntos.
-- `classes/clase_reportes_new.py` — `ReportClassNew` (~2500 líneas): motor BI manual.
-- `archivado/` — código legacy (incl. `etl_odoo_incremental.py`, el antiguo sync raw ya retirado
-  del cron, y `etl_odoo_historico.py`, que solo dropea tablas).
+## Empezar por aquí
 
-## Data Warehouse — modelo estrella (esquema `marts`)  ⭐ trabajo activo
-Nuevo pipeline separado del cron `raw`. **Un solo hecho** a grano de línea contable que sirve
-ventas, cartera y estados financieros; en Power BI se importa ese hecho + dimensiones y se filtra
-con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUIA_OPERACION.md`.
-**Referencia de comandos que se pueden correr y en qué casos: `docs/GUIA_OPERACION.md` §2.**
-- `etl_dw_marts.py` — ETL del DW. Modos: `--full` (histórico), `--incremental` (write_date),
-  `--rebuild [--desde --hasta]` (recrea por rango), `--dims` (solo dimensiones). Carga **por año,
-  más reciente primero**; reintentos ante 502 de Odoo + reconexión de BD; refresco de dimensiones
-  por su `write_date`; `marcar_reversos` y `aplicar_correcciones` al cierre.
-- `run_dw.py` — **entrypoint del cron de Railway** (`railway.toml` → `*/15 * * * *`): ligera cada
-  15 min, completa en el tick :00, rebuild del año actual días 3 y 24 a las 03h (solo :00), con
-  advisory lock anti-solapamiento. Reemplazó al antiguo sync raw (archivado).
-- `sql/marts/01..12_*.sql` — DDL: dims (`dim_fecha/cuenta/tercero/producto/diario/vendedor/
-  empresa/centro_costo`), hecho `fact_movimiento_contable`, vistas (`v_ventas`, `v_cartera`,
-  `v_balance_comprobacion`, `v_dq_analitica`), control (`etl_control`), calidad, `correcciones`,
-  `10_centro_costo_odoo.sql` (dim CC 100% Odoo), `11_puc_canonico.sql` (canonicalización PUC, no
-  destructivo), `12_estados_financieros.sql` (`seccion/concepto/nivel_movimiento` para estados
-  financieros, desde `account.report`) y `13_puc_nombres.sql` (`clase/grupo/cuenta/subcuenta_nombre`
-  desde `account.group`). `09_nivel_movimiento.sql` quedó **superseded** por 12. Todos idempotentes.
-  **Ventas (14–16):** `14_ventas.sql` (`v_ventas_producto`, ventas netas a grano de producto),
-  `15_dims_ventas.sql` (enriquece `dim_tercero`: telefono/email/etiqueta/cliente_padre;
-  `dim_producto.es_kit`; y `fact.equipo`), `15b_kits.sql` (`dim_kit_componente` + `v_ventas_explotada`) y
-  `16_mapeos_ventas.sql` (mapeos NO-Odoo `map_zona/map_zona_cundinamarca/map_zona_bogota/
-  map_cliente_padre/map_categoria`, poblados por `cargar_mapeos.py`).
-- **Ventas desde el DW (reemplaza el pipeline de Excel `ReportClassNew.pipeline_bi`):**
-  `v_ventas_producto` = líneas clase 4 con `es_venta` y `es_reverso IS NOT TRUE`, producto comercial
-  (`codigo` LIKE `PCN%/KD%/TNG%/B8%`); netas por `venta_neta`/`cantidad_neta` (NC restan, la contabilidad
-  ya enlaza la NC → no se casa por `ref`). Enriquecimiento antes local, ahora desde Odoo: `dim_tercero`
-  += `telefono/email/etiqueta` (`res.partner.category`) `/cliente_padre` (`commercial_partner_id`);
-  `dim_producto.es_kit`. **`equipo` (Equipo de ventas) va en el HECHO**, no en el
-  tercero: `res.partner.team_id` está VACÍO en este Odoo (0 de ~206k) y el equipo vive en el asiento
-  (`account.move.team_id`, 99,97% de las líneas de venta) — igual que el Excel, que lo mapea por
-  factura. Se guarda como columna degenerada del hecho (patrón de `vendedor_id`). Kits: `dim_kit_componente` desde
-  `mrp.bom` phantom (`cargar_kits`) + `v_ventas_explotada`. Poblado: `python etl_dw_marts.py --dims`.
-  **Ventas en BI: ver `docs/guia_bi_ventas.md`** (las 2 formas de ver los kits + medidas DAX).
-- **La NOTA CRÉDITO resta en el mes de SU FACTURA (`fecha_venta`)** — `19_nc_factura.sql` +
-  `enlazar_notas_credito`. Antes una NC restaba en su propio mes: `NCR1858` (mar-2026) corrige
-  `FEVY80693` (nov-2025) y deprimía marzo e inflaba noviembre. Medido 2025-2026: **777 NC** en un mes
-  distinto al de su factura, ~**6.584M** mal atribuidos. El enlace **solo existe en la CONCILIACIÓN**
-  (`account.partial.reconcile`): la mayoría de NC no traen `ref` ni `reversed_entry_id`. El puente
-  `marts.map_nc_factura` guarda `proporcion` (una NC puede corregir varias facturas → se **prorratea**;
-  por eso `linea_id` no es único en la vista, ~76 de ~2.200 NC) y `fecha_venta`.
-  ⚠ Se **excluyen las notas débito**: también son `out_invoice` y solo se distinguen por el **diario**
-  (`Nota Debito Nacional Yumbo`/`Exportacion`). **3 fechas en `v_ventas_producto`:** `fecha_venta`
-  (⭐ para VENTAS) · `fecha_factura` (propia del doc, para informe de NC por mes) · `fecha` (contable).
-- **KITS — dos presentaciones y reparto de valor:** `v_ventas_producto` = **kits vendidos** (el kit es
-  la unidad, tal como se factura); `v_ventas_explotada` = **unidades de producto** (kit repartido en
-  componentes). ⚠ **No sumar ambas**: es el mismo dinero (los totales coinciden exacto).
-  El valor del kit se prorratea por el **precio individual de cada componente**, con el promedio
-  **dentro de su categoría de cliente** (`marts.v_precio_componente`; cascada: precio en su categoría →
-  promedio global → partes iguales). A partes iguales desviaba 20-25% por producto.
-  ⚠ **`es_kit` = kit REAL** (BOM phantom con componentes, 39 productos), **NO** `bom_count>0` — eso
-  marcaba también los **fabricados** (139). Lo fija `cargar_kits`, no `refrescar_dimensiones`.
-  ⚠ Odoo tiene **2 BOM phantom por kit** (77 para 39): `cargar_kits` toma **una sola** (la más reciente)
-  y normaliza por el lote (`bom.product_qty`); sumarlas duplicaba las unidades de la explosión.
-- **Mapeos de negocio NO-Odoo (única excepción local, a demanda):** `cargar_mapeos.py` lee de Drive
-  (`DriveLoader` + `DRIVE_IDS`) → `marts.map_*`: ZONA por depto+categoría (+ Cundinamarca por
-  depto+ciudad), CLIENTE PADRE, y CATEGORÍA normalizada. Correr cuando cambie un Excel.
-  `map_zona_bogota` quedó **DEPRECADA** (`Base_bogota.xlsx` ya no se usa; tabla creada pero vacía).
-- **CATEGORÍA (tipo de cliente) consolidada — `fact.categoria`** (`17_categoria.sql` +
-  `consolidar_categoria`, paso de cierre post-carga). Sirve igual a **ventas y contabilidad**. Se arma
-  de **2 fuentes de Odoo, ninguna basta sola**:
-  1. `partner_type_id` (cabecera del asiento) → `dim_tercero.tipo_cliente`. **Manda** cuando existe.
-  2. Analítico **plan 21 "Canal"** (`analytic_line_ids/x_plan21_id`) → **ya está como `fact.canal`**
-     (el rol se deriva del nombre del plan). **Rellena** cuando falta (1). Existe porque la utilidad
-     por cliente se mira por nombre del cliente pero **hay gastos de esos clientes cargados a
-     TERCEROS** que desaparecerían del análisis; es lo que rescata las clases 5/6.
-  Luego se replican las reglas de respaldo del Excel (`transformar_base`) **en su orden**:
-  **EXPORTACION** (`es_venta` a cliente `EXTERIOR` **o** centro de costo `[EXPO]`; el `es_venta` evita
-  meter gastos de proveedores extranjeros como AWS/Odoo Inc) → `equipo='Shopify'`→SHOPIFY →
-  `equipo='Punto de venta'`→CALL CENTER → `CLIENTE`→CALL CENTER → base → default **CALL CENTER**.
-  Cierra normalizando con `marts.map_categoria`. (La antigua regla "país extranjero→nombre del país"
-  se **eliminó**: metía proveedores extranjeros como "United States".)
-  ⚠ `fact.categoria` = categoría de **CLIENTE**; `dim_producto.categoria` es la de **PRODUCTO**
-  (en `v_ventas_producto` se expone como `producto_categoria`). Son cosas distintas.
-- **Exportaciones (PyG por país y cliente) — `18_exportaciones.sql` + `v_exportaciones`:** dos planes
-  analíticos nuevos de Odoo. **Plan 20 "País"** (`[PAIS-*]`) ya está en `fact.pais_analitico`. **Plan 22
-  "Cliente"** (`[CLI-ZAR-EC]`…) se captura ahora como **`fact.cliente_analitico`** (rol `cliente` en
-  `derivar_plan_rol`/`construir_hecho`) — atribuye **ventas y gastos** al cliente correcto (los gastos
-  de logística van a proveedores como TRANSTAINER, no al cliente; el analítico es lo que los enlaza).
-  Backfill de lo ya cargado: `backfill_cliente_analitico` (vía `account.analytic.line.x_plan22_id`,
-  ~4k líneas). **`fact.pais`** = `dim_tercero.pais` de la línea (país estricto; se puebla en
-  `consolidar_categoria`). El código del cliente trae el país en el sufijo (`-EC/-PE/-US/-DO/-CO`);
-  el "error de Colombia" venía de que `x_plan20` quedaba en `[PAIS-CO]` por defecto. `v_exportaciones`
-  = todo lo `EXPORTACION` (o con `cliente_analitico`) para auditar y proyectar el PyG por país×cliente.
-  **PyG por país: agrupar por `v_exportaciones.pais_destino`**, NO por `pais`: los gastos de
-  exportación se cargan a proveedores logísticos colombianos, así que `pais` los deja en Colombia.
-  El país sale del **plan 22 (cliente)**, no del tercero: `pais_destino` = **nombre del cliente**
-  (`marts.map_cliente_pais`) → sufijo del cliente analítico (`[CLI-ZAR-EC]`→Ecuador) → país en el nombre
-  del centro `[EXPO]` → `pais` si no es Colombia. El **nombre manda** porque al inicio el país se
-  clasificaba mal y quedaba en Colombia: si un código quedara en `-CO` por error, el nombre lo corrige.
-  `map_cliente_pais` es editable (patrón `ILIKE` → país; se siembra con `cargar_mapeos.py`); al sumar un
-  cliente del exterior basta agregar la fila. ⚠ Se consulta con **subconsulta escalar `LIMIT 1`, no
-  con JOIN**: un nombre puede matchear 2 patrones (el analítico de Leopharma contiene "Lepharma" y
-  "LEOPHARMA") y un JOIN duplicaría la línea, doblando los importes.
-  **Toda línea con plan 22 de un cliente NO-CO es `EXPORTACION`** (regla en `consolidar_categoria`):
-  así entran los **costos** (clase 6) y los gastos de terceros que el analítico asocia a la exportación
-  aunque el tercero sea colombiano — sin esa regla quedaban como `EXTERIOR` y el PyG perdía ~395M.
-  Validado 2026 (ingresos/costo/gastos): Ecuador 947M/324M/26M · USA 273M/30M/8M · Dominicana
-  261M/41M/18M · Perú 175M/**0**/9M. Pendientes de fuente: Perú sin costo tagueado y
-  `[EXPO] EPO-08-2026 FEX 7` (14,4M) sin país en el nombre.
-- ⚠ **`EXPORTACION` ≠ `EXTERIOR`** (Odoo usa la MISMA etiqueta `EXTERIOR` para clientes de exportación
-  y para proveedores extranjeros): `EXPORTACION` = lo que **vendemos** afuera (+ logística `[EXPO]`);
-  `EXTERIOR` = lo que **compramos** afuera (AWS, Odoo Inc, Apple…, clases 5/6 ≈ 3.465M). La regla manda
-  a EXPORTACION solo las **ventas** (`es_venta`). Las categorías miden **ventas**; `EXTERIOR` queda
-  como bucket de gastos de proveedores del exterior (hoy no se usa para reportar).
-- **Fuente:** todo de Odoo (`account.move.line`+`account.move`, catálogos), salvo `dim_fecha`
-  (calendario generado) y `correcciones` (overrides manuales).
-- **Reglas del hecho:** `es_venta`/`es_reverso` (ventas = clase 4 sin **anulaciones reales**:
-  factura + NC de reversión que la cubre ≥99%; **NO** por `payment_state='reversed'`, que en este Odoo
-  lo pone también el **factoring** y las NC **parciales** — esas son ventas reales que sí cuentan),
-  `es_cxc`+`saldo_pendiente` (cartera = residual por línea de CxC),
-  `empresa_id` (multiempresa: 1=Aristizabal Hector Fabio, 8=PCN Poción), PUC por prefijo del código
-  (`clase_codigo`/`grupo_codigo`). Fechas como DATE (`fecha`, `fecha_factura`,
-  `fecha_vencimiento`) además de las `*_key`.
-- **Clasificación para estados financieros (100% de los reportes de Odoo):** `dim_cuenta` trae 3
-  niveles del árbol del reporte (`account.report`, es_CO): **`seccion`** (raíz:
-  ACTIVOS/PASIVO/PATRIMONIO · Ingresos/Gastos/Costos…), **`concepto`** (intermedio, padre del leaf:
-  Gastos, Activos corrientes, PATRIMONIO…) y **`nivel_movimiento`** (DETALLE/hoja, el nivel del PyG:
-  Operacionales de administración, Costo de ventas, Deudores…), vía `cargar_clasificacion_reportes`
-  (Balance id 24 + Estado de Resultados id 38). Cubre **todas las clases** (1–7). Match por
-  **prefijo de código** de las líneas hoja (`engine='account_codes'`, prefijo más largo, con
-  exclusiones `\(...)`): NO siempre a 2 díg (17/28 corriente/no corriente; 51 excluye 5160/5165). Sin
-  dict manual `NIVEL_N2`. Flujo de efectivo (report 5) no tiene líneas por cuenta → follow-up. Ver
-  `docs/MODELO_ESTRELLA.md` §11.
-- **Jerarquía PUC por cuenta (nombres):** `dim_cuenta` también trae `clase_nombre/grupo_nombre/
-  cuenta_nombre/subcuenta_nombre` desde `account.group` (es_CO, nombre más frecuente por prefijo;
-  `cargar_puc_nombres`, `13_puc_nombres.sql`). Complementa (no reemplaza) los `*_codigo` y la
-  clasificación de reportes. Ej.: 510506 → 5 GASTOS / 51 OPERACIONALES DE ADMINISTRACION / 5105
-  GASTOS DE PERSONAL / 510506 GASTOS DE PERSONAL SALARIOS.
-- **Roles de planes analíticos** (`canal`/`cliente_analitico`/`linea_producto`/`tipo_producto`/
-  `pais_analitico`/`centro`) se **derivan del nombre** de `account.analytic.plan` en Odoo
-  (`derivar_plan_rol`), no de IDs fijos; plan `La Poción` (id 3) = excepción legacy de centro de costo.
-  Plan 22 "Cliente" → `cliente_analitico` (ver Exportaciones).
-- **Canonicalización PUC (no destructivo):** en Odoo coexisten 2 códigos para la misma cuenta
-  (8 vs 9 díg). `dim_cuenta` tiene `cuenta_canonica_id`/`codigo_canonico`/`nombre_canonico`
-  (`11_puc_canonico.sql` + `canonicalizar_puc`): canónico = variante **más usada** de misma
-  subcuenta (6 díg) + mismo nombre normalizado. El **hecho conserva el `cuenta_id` real de Odoo**;
-  en Power BI se agrupa por `codigo_canonico`. Docs: `docs/MODELO_ESTRELLA.md` §10.
+| Archivo | Para qué |
+|---|---|
+| ⭐ [`checkpoint.md`](checkpoint.md) | **estado del repo**: qué corre solo, en qué estado está cada hoja, qué falta. ≤200 líneas |
+| ⭐ [`CLAUDE.md`](CLAUDE.md) | **el contexto completo** y las trampas medidas de cada dominio |
+| [`docs/GUIA_OPERACION.md`](docs/GUIA_OPERACION.md) | qué comando correr y cuándo |
+| [`docs/ARQUITECTURA_DW.md`](docs/ARQUITECTURA_DW.md) | árbol del repo, cron y plan por fases |
+| [`docs/dashboards_intranet.md`](docs/dashboards_intranet.md) | contrato de datos de los tableros de la intranet |
 
-## Variables de entorno (en `.env`, NO versionado — usar solo nombres, nunca valores)
-- Odoo: `url`, `db`, `username_odoo`, `password`.
-- PostgreSQL (Railway): `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
-- Correo: `SENDER_EMAIL`, `SENDER_PASSWORD`.
-- Google Drive: `GOOGLE_CREDENTIALS_PATH` (ruta al JSON de service account).
-- Marketing (⚠ NINGUNA existe todavía): `SUPERMETRICS_API_KEY`, `GA4_CREDENTIALS_JSON`,
-  `GSC_CREDENTIALS_JSON`, `SHOPIFY_SHOP_{CO,EC,RD}`, `SHOPIFY_TOKEN_{CO,EC,RD}`. Sin ellas
-  `cargar_marketing.py` solo carga la TRM (que no necesita credencial).
+## Reglas que no dependen de qué agente seas
 
-## Convenciones
-- Esquema crudo actual: `raw`. Objetivo del DW: `staging` (crudo) + `marts` (estrella).
-- Clave primaria de las tablas sincronizadas = `id` natural de Odoo (BIGINT).
-- Idempotencia vía UPSERT por `id`; el watermark vive en la columna `write_date` destino.
-- `_pg_type` mapea tipos pandas→PG; default `VARCHAR(512)`, `TEXT` para columnas largas.
-
-## Avisos / gotchas
-- `date` / `invoice_date` aterrizan como `VARCHAR(512)` (Odoo los devuelve string y
-  `_pg_type` solo convierte a TIMESTAMP los dtypes datetime64 reales).
-- `preparar_y_cargar` NO añade columnas de auditoría `_loaded_at` / `_source_file`
-  (sí lo hace `cargar()`, ruta no usada por el ETL del DW).
-- El ETL del DW (`etl_dw_marts.py`) tiene reintentos (502 Odoo + reconexión BD); el sync raw
-  archivado no los tenía.
-- El watermark `write_date` no detecta hard-deletes; por eso el DW se **recrea** (`--rebuild`) ~2×/mes.
-- `virtual-env/` está commiteado por error (está en `.gitignore`); no editarlo.
-- DW: cargar **por año** (el `id` de Odoo NO sigue el orden de fecha; `id asc` deja años parciales).
-- DW: las empresas 1 y 8 pueden tener **PUC distinto** (al crear PCN cambiaron cuentas) → validar y
-  agregar el estado de resultados **por empresa**, nunca mezclando ambas.
-- `marts.fact_movimiento_contable._loaded_at` ya usa hora **Colombia** (`America/Bogota`).
-- **Refresco de dimensiones: SIEMPRE por páginas.** Un `search_read` sin `limit` de `res.partner`
-  (~206k con contacto/etiqueta/padre) hace que Odoo **corte la respuesta a medias** →
-  `http.client.IncompleteRead`. `refrescar_dimensiones` pagina con `PAGINA`. No quitar el paginado
-  "porque cabe": el payload creció al añadir campos y quedó al filo.
-- **`IncompleteRead`/`BadStatusLine` heredan de `http.client.HTTPException`, NO de `OSError`** → hay
-  que nombrarlas explícitamente en el `except` de `Odoo._exec` o el ETL muere sin reintentar.
-
-## PENDIENTES del DW (retomar aquí)
-- Carga inicial `--full` (TRUNCATE + todos los años) — al terminar, **validar**:
-  estado de resultados PCN (empresa 8) 2026 vs reporte Odoo (grupos 41/42/51/52/53/61, exacto),
-  conteos por año = Odoo, `tipo_cliente` poblado, `fecha` DATE, partida doble.
-- ✅ HECHO: `nivel_movimiento` etiqueta canónica completa (41/42/47/51/52/53/54/57/59/61/62/7x;
-  `09_nivel_movimiento.sql` aplicado, 0 cuentas P&L en NULL) + roles de planes derivados de Odoo.
-- ✅ HECHO: `dim_centro_costo` **100% Odoo** (`account.analytic.account`: `codigo`/`nombre`/`plan`/
-  `activo`/`empresa_id`); se eliminaron `adm_vtas`/`origen`/`tipo` (venían del Excel `CC`, no existen
-  en Odoo). `10_centro_costo_odoo.sql` aplicado. **Regla: nada en el DW se alimenta de fuentes locales.**
-- ✅ HECHO: canonicalización PUC (`11_puc_canonico.sql` + `canonicalizar_puc`): `dim_cuenta` con
-  `cuenta_canonica_id`/`codigo_canonico`/`nombre_canonico` (no destructivo, hecho intacto); 401 grupos,
-  423 cuentas colapsadas. Docs en `docs/MODELO_ESTRELLA.md` §10.
-- ⚠ **PENDIENTE CRÍTICO — DESPLEGAR EN RAILWAY.** El cron corre `run_dw.py` pero con el código
-  **anterior**: cada tick hace `TRUNCATE` del puente NC y lo repuebla solo por conciliación, y
-  `marcar_reversos` desmarca lo que puso `marcar_reversos_puente`. Comprobado 2026-07-28/29: los
-  arreglos aplicados a mano se **revierten en la siguiente hora**. Hasta el deploy no se sostienen ni
-  la cascada NC, ni las anulaciones sin `reversed_entry_id`, ni el puente ND, ni el cron `*/15`.
-  (`railway.toml`/`Procfile` ya están ajustados; el sync raw `etl_odoo_incremental.py` quedó archivado.)
-- ✅ HECHO (2026-07-29): **hoja de CONTABILIDAD de los tableros** — `26_contabilidad_dashboards.sql`
-  aplicado (`v_dim_cuenta_bi` + 7 MV + `bi_pyg_renglon`/`bi_tasa_renta` + `v_lk_cuenta`), `GRANT` en
-  `24_rol_intranet.sql`, y `MVS_CONTAB` en `refrescar_mv_dashboards.py` (solo el tick `:00`).
-  Verificado al peso contra el informe y con el balance cuadrando (`ACTIVO = PASIVO + PATRIMONIO +
-  resultado`, diferencia 0,00 en la empresa 8). ⚠ Portadas a SQL las **14** columnas calculadas DAX de
-  `dim_cuenta` —no las 5 que decía el plan— como **VISTA** (`v_dim_cuenta_bi`), no como columnas
-  materializadas: el `upsert` del ETL no las mantendría y cada cuenta nueva entraría en NULL.
-  Detalle en la sección de dashboards y en `docs/dashboards_intranet.md` §9.
-- ✅ HECHO (2026-07-30): **hoja de VENTAS completa** — `27_ventas_dashboards_fase2.sql` aplicado
-  (`mv_ventas_kit_mes`, `mv_ventas_cliente_primera`, `mv_ventas_recompra` + las semillas
-  `bi_producto_lanzamiento` y `bi_ciclo_vida`), `v_lk_producto` con `linea`/`linea_categoria` y
-  `v_lk_tercero` con `zona` en `24_rol_intranet.sql`, y las 3 MV en `MVS_VENTAS`.
-  ⚠ Tres trampas medidas, todas en `docs/dashboards_intranet.md` §10: `bi_lineas` se une por el
-  **código** de los corchetes (94,43 % del valor) y no por el nombre (39,90 %); las unidades de kit
-  salen de `v_ventas_producto` y no de la vista explotada (que las infla ×4,2); y
-  `mv_ventas_recompra` lleva columna `nivel` porque sus niveles **no se suman**.
-  ⏳ Falta dato del negocio: fechas de lanzamiento restantes, confirmar los cortes 18/36 meses, y
-  **añadir PCN32-36 al Excel de líneas**.
-- ✅ HECHO (2026-07-30 b): **hoja de NIELSEN** — `28_nielsen_dashboards.sql` aplicado
-  (`mv_nielsen_semana` 158.979 filas + `mv_nielsen_item_semana` 573.013 + las semillas
-  `bi_nielsen_market` y `bi_nielsen_marca_propia`), `GRANT` en `24_rol_intranet.sql`, y
-  `MVS_NIELSEN` solo en el tick `:00` (el dato es semanal). Cuadra al segundo decimal con el
-  informe. ⚠ Seis trampas medidas, todas en `docs/dashboards_intranet.md` §11: los 4 markets
-  **no se suman** (el total del informe está inflado ~27 %), Supermercados no trae valor,
-  la marca propia solo está medida en 2 universos y desde dic-2024, `dist_num` es un %
-  por ítem, el UPC no casa con ningún código propio, y el share por mes del informe
-  mezcla años (2,17 % contra el 4,56 % real).
-- ✅ HECHO (2026-07-30 c): **la línea de producto pasa de `bi_lineas` a ODOO**. Cobertura del
-  94,43 % al **100,000 %** en los tres años, y aparece la «Línea Control Caspa» que al Excel le
-  faltaba (PCN32/33/36). ⚠ Se retira el pendiente de «añadir PCN32-36 al Excel»: ya no aplica.
-  ⚠ Desapareció el eje «categoría de producto»: solo existía en el Excel y el árbol de Odoo no
-  llega a ese detalle. Si el negocio quiere recuperarlo, hay que añadir un nivel al árbol de
-  Odoo (o etiquetas de producto) y que el ETL las traiga.
-- DQ: cuentas usadas con `clase_codigo`/`grupo_codigo` nulo o inesperado.
-- **Ventas desde el DW (proyecto por fases):**
-  - ✅ Fase 1: `v_ventas_producto` (netas, grano producto, comercial). Aplicada y validada (empresa 8 2026).
-  - 🟡 Fases 2–4 (código escrito, **falta aplicar DDL + poblar**): `15_dims_ventas.sql`/`15b_kits.sql`/
-    `16_mapeos_ventas.sql` + `etl_dw_marts.py` (dims enriquecidas + `cargar_kits`) + `cargar_mapeos.py`.
-    Correr: aplicar DDL 15/15b/16 → `python etl_dw_marts.py --dims` (⚠ refresca ~206k terceros, minutos)
-    → `python cargar_mapeos.py`.
-  - ✅ Fase 5 (validada): `python validar_ventas.py` concilia `v_ventas_producto` vs `base_ventas`
-    (CLEAN DATA). Alinear 3 cosas: combinar empresas + fecha de factura + producto comercial.
-    **Destapó un bug de `es_reverso`** (se excluían facturas de factoring/NC-parcial marcadas
-    `payment_state='reversed'` como si fueran anuladas): corregido (ver `marcar_reversos`). Tras el
-    fix, **TOTAL 2026 Excel vs DW = -0,0%** (antes -5,1%). Residuos mensuales ≤4% (timing/parciales);
-    Jul + por timing (DW con más facturas que el CSV).
-
-## Reglas de trabajo
-- NO ejecutar el cron, ni conectarse a Odoo/Postgres en vivo, sin que el usuario lo pida.
-- NUNCA exponer valores de `.env`; referenciar variables por nombre.
-- Antes de tocar el ETL, leer `docs/ARQUITECTURA_DW.md` (estado actual + plan por fases).
-- Roadmap del DW: empezar por ventas + contable; ver fases en `docs/ARQUITECTURA_DW.md`.
+- **Idioma del proyecto: español.**
+- **NO ejecutar el cron ni conectarse a Odoo/PostgreSQL en vivo sin que el usuario lo pida.**
+- **NUNCA exponer valores de `.env`**: referenciar las variables por su nombre.
+- Antes de tocar el ETL, leer [`docs/ARQUITECTURA_DW.md`](docs/ARQUITECTURA_DW.md).
+- ⚠ **Los repos no se mezclan**: aquí vive todo lo de base de datos (DDL, MV, roles, refresco); la
+  intranet (`proyecto pocion/intranet`) es frontend y backend y solo hace `SELECT`.
+- ⚠ **La lógica de negocio baja al SQL**: lo que era medida DAX o paso de Power Query pasa a
+  vistas/MV/columnas del hecho.

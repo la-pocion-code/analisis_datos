@@ -582,6 +582,55 @@ definidos por el admin). **Contrato de datos completo:
   en el Excel, el árbol de Odoo tiene 3 niveles y el ETL solo lee `id, default_code, name,
   categ_id` de `product.product`. **No deducirla del nombre**: un renombre le cambiaría la
   categoría sola. Vuelve si se añade un nivel al árbol de Odoo o etiquetas de producto.
+- **`sql/marts/34_compras.sql` + `35_compras_dashboards.sql`** (hoja **COMPRAS**, aplicada
+  2026-08-12). Referencia del negocio: el informe de Odoo *Contabilidad > reportes > asientos
+  compras con OC*. ⚠ **Re-ejecutar `24_rol_intranet.sql` DESPUÉS** del 35.
+  - **Compras en el hecho:** `in_invoice` 71.850 líneas / 17.875 docs + `in_refund` 2.526 / 642,
+    desde **2024-06-01** (igual que ventas ⇒ la variación vs año anterior es limpia solo en 2026 vs
+    2025; **2025 vs 2024 compara 12 meses contra 7**).
+  - ⚠ **La base de una compra NO está en una sola clase**, al contrario que ventas (todo clase 4):
+    inventario **14** (69.422 M) + gastos **52/53/51** (39.337 M) + costo **61** (1.262 M) + activos
+    fijos **15/16/17** (3.813 M). Decisión: cuenta **todo lo que llega en un documento de proveedor**
+    = **114.917 M**, y la base se define como «todo lo que no sea CxP/IVA/retención» (no una lista
+    blanca: una cuenta de gasto nueva entra sola). `clase_codigo`/`grupo_codigo` se exponen para
+    poder separar en el tablero.
+  - **TRES LECTURAS, todas en COP y que NO se suman entre sí** (espejo de ventas), desde
+    `v_impuestos_compra`: `compra_subtotal` (base) · `compra_subtotal_con_iva` (base + IVA **2408**)
+    · `compra_total_pagado` (base + IVA − retenciones **2365** retefuente / **2367** reteIVA /
+    **2368** reteICA = la CxP **2205** nacionales / **2210** exterior). La retención se le retiene al
+    proveedor y se consigna a la DIAN por él: reduce lo que se paga, **no** lo que se compra.
+  - ⚠ **18.509 de 18.517 documentos cuadran AL PESO (99,957 %)**. Los 8 que no concentran
+    96.574.028 (0,084 %) y **no es un fallo del modelo**: son facturas de compra que además llevan
+    movimientos de inventario dentro del mismo documento (`143510` transformación, `146535`
+    tránsito, `613538` costo Kids). Se aíslan en **`v_compras_descuadre`**, como `v_nc_sin_asignar`
+    en ventas. ⚠ 4 líneas de valor **0** dan `con_iva` NULL (factor indefinido sobre base 0); no
+    afectan ninguna suma y **no se tapan con COALESCE** para no esconder la condición.
+  - **ORDEN DE COMPRA:** `dim_orden_compra` (1.066: **925 confirmadas**, 135 canceladas, 5 borrador)
+    + `dim_oc_linea` (2.215), de `purchase.order`. El enlace es
+    `account.move.line.purchase_line_id` (**el único STORED**; `purchase_order_id` es computado) →
+    `fact.oc_linea_id`/`fact.orden_compra_id`. ⚠ **MUCHOS A UNO**: 4.748 líneas del hecho apuntan a
+    2.215 líneas de OC (facturación parcial) ⇒ agregar antes de comparar pedido vs facturado.
+  - ⚠⚠ **SOLO EL 14,9 % DE LAS LÍNEAS DE COMPRA TIENE OC** (4.748 de 31.820). Por eso el informe de
+    Odoo se llama «con OC»: el 85 % del gasto se contabiliza sin orden. El hecho cubre TODAS las
+    compras y `tiene_oc` marca el subconjunto; **Lead Time y total de OC hablan de ese 15 %** y el
+    tablero debe decirlo.
+  - **Lead Time = `date_approve` → `effective_date`** (decisión de William: confirmación → llegada
+    real). Poblado en **859 de 1.066 (81 %)**: mediana **13 días**, media 21,9, máx 208, **0
+    negativos**. ⚠ Las 859 son **todas** de estado `purchase` (las canceladas nunca llegaron), así
+    que el KPI se acota solo. **NO se rellena** con la fecha prevista ni con hoy: eso inventaría un
+    lead time. `dias_vs_prevista` responde otra pregunta (puntualidad, no duración).
+  - ⚠ **12 % de las líneas de base no tienen producto** (servicios, arriendos, honorarios) → caen en
+    `'(sin producto)'`. Un arriendo no es un producto: no es un hueco de datos.
+  - **4 MV** (`mv_compras_mes` 11.594 · `mv_compras_kpi_mes` 34 · `mv_compras_oc` 1.066 ·
+    `mv_compras_recompra` 6.841). ⚠ `mv_compras_recompra` lleva columna **`nivel`** (proveedor /
+    producto / proveedor_producto) y **sus niveles NO se suman**, igual que `mv_ventas_recompra`.
+    ⚠ Los conteos de `mv_compras_kpi_mes` son `COUNT(DISTINCT)` y **no son aditivos**.
+  - **Refresco en CADA tick** (no en el `:00`): salen del hecho, que sí cambia cada 15 min. Coste
+    **medido 7,8 s** las cuatro sobre un tick ligero de ~96 s (+8 %) ⇒ `MVS_COMPRAS` va en
+    `MVS_LIGERAS`. Ninguna deriva de otra: no hay orden que respetar.
+  - **Poblar:** `python etl_dw_marts.py --dims` (trae las OC en cada corrida, son 1.066) y
+    `python etl_dw_marts.py --backfill-compras` para enlazar las líneas ya cargadas (74.275 líneas,
+    **45 s**, una sola vez; no lo corre el cron).
 - **Fases siguientes** (cada hoja añade sus MV aquí + su `GRANT`): cuentas clave/KAM → cartera
   (portar los buckets de mora que hoy calcula Power Query). Contabilidad, Ventas y Nielsen ya están.
   ⚠ **El margen bruto NO se puede hacer por la vía de ventas**: `dim_producto` no tiene
@@ -593,13 +642,21 @@ definidos por el admin). **Contrato de datos completo:
   0,00, o sea que allí también están vacíos.
 
 ## Variables de entorno (en `.env`, NO versionado — usar solo nombres, nunca valores)
+⚠ **La lista canonica es [`.env.example`](.env.example)** (creado el 2026-08-12 leyendo los
+`os.getenv()` reales del codigo). Lo de aqui es el resumen; si divergen, manda el fichero.
 - Odoo: `url`, `db`, `username_odoo`, `password`.
-- PostgreSQL (Railway): `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
-- Correo: `SENDER_EMAIL`, `SENDER_PASSWORD`.
+- PostgreSQL (Railway): `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, y los
+  `RO_DB_*` del rol de solo lectura.
+- Correo: `SENDER_EMAIL`, `SENDER_PASSWORD`. · API de reportes: `REPORTES_API_KEY`.
 - Google Drive: `GOOGLE_CREDENTIALS_PATH` (ruta al JSON de service account).
-- Marketing (⚠ NINGUNA existe todavía): `SUPERMETRICS_API_KEY`, `GA4_CREDENTIALS_JSON`,
-  `GSC_CREDENTIALS_JSON`, `SHOPIFY_SHOP_{CO,EC,RD}`, `SHOPIFY_TOKEN_{CO,EC,RD}`. Sin ellas
-  `cargar_marketing.py` solo carga la TRM (que no necesita credencial).
+- Marketing: `SUPERMETRICS_API_KEY` y `SUPERMETRICS_TEAM_ID` **ya estan puestas**;
+  `SHOPIFY_SHOP_{PAIS}` / `SHOPIFY_TOKEN_{PAIS}` (**un par por tienda, 6**) y
+  `GA4_CREDENTIALS_JSON` / `GSC_CREDENTIALS_JSON` **no**. Sin ellas `cargar_marketing.py`
+  carga la TRM y el gasto, y deja la venta web vacia.
+  ⚠⚠ El sufijo de las de Shopify es el codigo de `marts.bi_marketing_pais`, que **no es
+  ISO** (`RD`, no `DO`), y **faltar UNA aborta la fuente entera** a proposito: cargar 5 de 6
+  tiendas y publicarlo como el total es un numero creible y falso.
+  ⚠ `META_ACCESS_TOKEN` aparece en algunos `.env` y **el codigo no lo lee**.
 
 ## Convenciones
 - Esquema crudo actual: `raw`. Objetivo del DW: `staging` (crudo) + `marts` (estrella).

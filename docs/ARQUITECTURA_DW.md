@@ -38,9 +38,12 @@ analisis_datos/
 │   ├── drive_loader.py         DriveLoader: lee Excel/CSV de Google Drive → DW
 │   ├── send_mail.py            MailSender: correos SMTP con adjuntos
 │   └── clase_reportes_new.py   ReportClassNew (~2500 líneas): motor BI manual (Excel)
-├── conexion_odoo.ipynb         notebook de pruebas/ejecución Odoo
-├── odoo_api_test.ipynb         notebook de pruebas API Odoo
-├── ejecuciones_anilista.ipynb  notebook de ejecuciones ad-hoc
+├── ejecuciones_anilista.ipynb  ★ OPERACIONAL: procesos que se ejecutan a mano desde el área
+│                               (ventas diarias, informes de mayoristas, envío de correos)
+├── notebooks/pruebas/          exploración; NADA de esto es automatización (ver su README)
+│   ├── conexion_odoo.ipynb     conexión XML-RPC suelta (ya no corre: variable `username` mal)
+│   ├── odoo_api_test.ipynb     exploración de la API (ya no corre: imports archivados/viejos)
+│   └── pruebas_cami.ipynb      conciliación Shopify desde G:\ local
 ├── archivado/                  código legacy (etl_odoo_historico.py = reset de tablas, etc.)
 ├── build/ · dist/              artefactos PyInstaller (legacy)
 └── virtual-env/                entorno virtual (versionado por error; debería ignorarse)
@@ -54,8 +57,23 @@ Limpieza recomendada (fuera de alcance de esta documentación).
 ## 2. Cómo funciona el cron
 
 - **Disparador:** Railway Cron (no APScheduler ni while-loop). `railway.toml` →
-  `cronSchedule = "*/15 * * * *"` → ejecuta `python etl_odoo_incremental.py` cada 15 min
-  de inicio a fin. `Procfile` define el mismo comando como `worker`.
+  `cronSchedule = "*/15 * * * *"` → ejecuta **`python run_dw.py`** cada 15 min.
+  `Procfile` define el mismo comando como `worker`.
+  ⚠ **CORREGIDO 2026-08-12: aquí decía `etl_odoo_incremental.py`, y era falso.** Ese script es el
+  sync antiguo al esquema `raw` y está **archivado** (`archivado/etl_odoo_incremental.py`): no lo
+  corre nadie. El cron ejecuta `run_dw.py`, que lee de Odoo directo al esquema `marts`.
+- **`run_dw.py` reparte el trabajo, no hace lo mismo en cada tick** (el coste de una corrida es casi
+  todo FIJO, no proporcional al delta):
+  - tick **:00** → corrida **COMPLETA**: catálogos + dims + kits + órdenes de compra + hecho +
+    **todos los pasos de cierre** (reversos, puentes NC/ND, categoría, PUC) + marketing + las 29 MV.
+    ~4,6 min medidos en Railway.
+  - ticks **:15/:30/:45** → **ligera**: dimensiones por `write_date` + hecho + las 12 MV de ventas y
+    compras. ~1,6 min.
+  - días **3 y 24 a las 03h UTC** → además `--rebuild` del año actual, **solo en el tick :00**.
+  - ⚠ En los ticks ligeros las líneas nuevas quedan **sin `categoria`, sin `es_reverso` y sin puente
+    NC/ND** hasta el cierre de la hora.
+  - **Advisory lock** (`pg_try_advisory_lock`, clave `8152026`): si la corrida anterior sigue viva, el
+    tick se omite y sale con código 0. Es lo que hace seguro el `*/15`.
 - **Arranque defensivo:** `verificar_db()` (`etl_odoo_incremental.py:13-34`) abre conexión PG
   con `connect_timeout=10`; si falla → `sys.exit(1)` (aborta antes de tocar Odoo).
 - **Detección de cambios = watermark incremental por `write_date`:**
@@ -129,7 +147,10 @@ string y `_pg_type` solo mapea a `TIMESTAMP` los dtypes `datetime64` reales.
 - **Correo:** `MailSender` usa **`SENDER_EMAIL`, `SENDER_PASSWORD`** (`send_mail.py:27-28`).
 - **Google Drive:** `DriveLoader` usa service account vía
   **`GOOGLE_CREDENTIALS_PATH`** (ruta al JSON de credenciales) (`drive_loader.py:86`).
-- `load_dotenv()` carga `.env` en cada módulo. **No existe `.env.example`.**
+- `load_dotenv()` carga `.env` en cada módulo. **`.env.example` existe desde el 2026-08-12**
+  (solo nombres, generado leyendo los `os.getenv()` reales del código).
+  ⚠ `cargar_marketing.py` **no llama a `load_dotenv()`**: lo hereda de importar `DBLoader`.
+  Si algún día se le quita ese import, sus credenciales dejan de resolverse en local.
 
 ---
 
