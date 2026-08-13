@@ -202,6 +202,13 @@ SELECT f.fecha_key,
        COALESCE(f.almacen_id, -1)                                   AS almacen_id,
        COALESCE(f.empresa_id, -1)                                   AS empresa_id,
        u.nombre                                                     AS ubicacion,
+       -- ⚠ El `usage` se EXPONE aunque la vista ya filtre solo `internal`, y no es
+       -- redundante: es lo que permite a la intranet **verificar** la garantía en vez de
+       -- confiar en ella. `check_marts §7z` comprueba que todas las filas sean `internal`,
+       -- y sin esta columna tendría que mirar `dim_ubicacion`, que está NEGADA al rol de la
+       -- app — o sea que el control no podría existir. Un guardarraíl que no puede leer lo
+       -- que vigila no es un guardarraíl.
+       COALESCE(u.usage, '(sin usage)')                             AS usage,
        COALESCE(NULLIF(btrim(a.codigo), ''), '(sin almacen)')       AS almacen_codigo,
        COALESCE(NULLIF(btrim(a.nombre), ''), '(sin almacen)')       AS almacen,
        p.codigo                                                     AS producto_codigo,
