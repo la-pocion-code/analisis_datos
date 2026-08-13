@@ -18,11 +18,26 @@
 --
 -- ── LO MEDIDO (2026-08-13) ───────────────────────────────────────────────────────────
 --   stock.quant ............ 4.113 filas, se descargan en 0,9 s (~4.400 filas/s)
---   stock.location ......... 119, de las cuales 63 INTERNAS
---   stock.warehouse ........  26
 --   stock.move.line ........ 1.047.415  ⚠ NUNCA se lee entero: se acota por fecha
---   existencia propia ...... 10.687.568 uds en 1.366 filas, 327 productos
+--   existencia propia ...... 10.687.559 uds en 1.366 filas, 327 productos, 19 almacenes
 --   quants con lote ........ 716 de 1.366 (52,4 %)
+--
+-- ⚠ Las dimensiones tienen DOS conteos y hay que no confundirlos, porque el ETL carga con
+-- `CTX_ALL` (`active_test: False`), o sea **incluyendo archivados**:
+--   stock.warehouse ........  26 activos ·  28 cargados
+--   stock.location ......... 119 activas · 293 cargadas   (63 internas activas · 233 cargadas)
+-- Cargar los archivados es deliberado y necesario: un quant puede seguir en una ubicación
+-- archivada, y si la dimensión no la trae el join no resuelve y la fila sale «(sin almacén)»
+-- sin serlo. El tablero solo muestra lo que tiene existencia — medido, **35 ubicaciones**.
+--
+-- Reparto medido de la primera foto (por qué importa: no es una bodega, son 19):
+--   OFC   Oficina .............. 7.971.795 uds (75 %)  ← la bodega de verdad
+--   GIO   MAQ Giorgio ...........  753.731
+--   EURO  MAQ Eurobelleza .......  702.653
+--   BIO   MAQ Biologic ..........  629.923
+--   NAPRO MAQ Naprolab ..........  285.150
+--   PUM   PROV Uribemold ........  216.481
+--   …y el resto entre maquiladores, proveedores y operadores logísticos.
 --
 -- ── ⚠⚠ SOLO `usage = 'internal'` ES EXISTENCIA, Y SUMAR TODO NO INFLA: VACÍA ─────────
 -- Las ubicaciones de Odoo son de DOBLE PARTIDA. Medido:
@@ -79,10 +94,10 @@ CREATE TABLE IF NOT EXISTS marts.dim_almacen (
 
 -- ── dim_ubicacion ────────────────────────────────────────────────────────────
 -- Hace falta aparte de `dim_almacen` por dos motivos MEDIDOS:
---   1. ⚠ 4 de las 63 internas NO tienen `warehouse_id`: «Physical Locations/Ubicación de
---      subcontratación» (dos), «Temporal» y «gior». Son existencia real, así que se
---      agrupan bajo el centinela -1 = «(sin almacén)» y NO se descartan: descartarlas
---      descuadraría el total.
+--   1. ⚠ **4 ubicaciones internas NO tienen `warehouse_id`**: «Physical Locations/Ubicación
+--      de subcontratación» (dos), «Temporal» y «gior». Las cuatro están ACTIVAS. Son
+--      existencia real, así que se agrupan bajo el centinela -1 = «(sin almacén)» y NO se
+--      descartan: descartarlas descuadraría el total.
 --   2. ⚠ El nombre NO es único: `EVE/Existencias` existe en los almacenes 5 y 18, y
 --      `GBL/Existencias` dos veces en el 31. Se agrupa por ID, jamás por nombre — es el
 --      mismo error que costó cinco caídas con los nombres de cliente en este repo.
