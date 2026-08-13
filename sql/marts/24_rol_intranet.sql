@@ -274,6 +274,23 @@ GRANT SELECT ON
     marts.mv_compras_recompra         -- recompra y frecuencia en 3 ejes (nivel: NO se suman)
 TO intranet_ro;
 
+-- Hoja de INVENTARIO (36_inventario.sql) ⇒ re-ejecutar ESTE archivo después del 36.
+-- ⚠⚠ Aquí se conceden VISTAS, no vistas materializadas, y es deliberado: la foto de un día
+-- son 1.366 filas sobre un índice, así que materializar solo añadiría una ventana en la que el
+-- dato mostrado no es el cargado — justo lo que un tablero de frescura no puede permitirse. El
+-- razonamiento completo está al final del 36.
+-- ⚠ Consecuencia para la intranet: al no haber MV, estas vistas NO aparecen en `bi_mv_refresh`,
+-- así que la hoja usa su propia versión de datos (`MAX(_loaded_at)`), como `pagos_db.py`.
+-- ⚠ `fact_inventario_dia` crudo queda NEGADO: la vista ya resuelve nombres y acota al último día,
+-- y conceder el hecho invitaría a sumar entre fechas — sus medidas son SEMI-ADITIVAS y sumar dos
+-- días da el doble del inventario, no la existencia de dos días.
+-- ⚠ `dim_ubicacion` cruda también: expone las ubicaciones de proveedor y de maquilador, que son
+-- terceros. La vista publica solo las internas, ya agregadas con su almacén.
+GRANT SELECT ON
+    marts.v_inventario_actual,        -- la foto vigente: existencias por producto x ubicacion
+    marts.v_inventario_movimiento_hoy -- que entro y que salio, con el usage de las dos puntas
+TO intranet_ro;
+
 -- Bitácora de refresco: la intranet la lee para invalidar su caché y mostrar
 -- "datos actualizados hace X". Solo SELECT (la escribe el ETL con su rol).
 GRANT SELECT ON marts.bi_mv_refresh TO intranet_ro;

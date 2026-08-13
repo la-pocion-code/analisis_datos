@@ -757,6 +757,142 @@ def _fecha(v):
     return str(v)[:10] if v else None
 
 
+# ══ INVENTARIO: existencias y movimientos (stock.quant / stock.move.line) ══
+# Ver sql/marts/36_inventario.sql, que trae la medición completa. Lo que hay que saber aquí:
+#
+# ⚠⚠ SOLO CAMPOS ALMACENADOS. `qty_available`, `virtual_available`, `free_qty` y
+# `available_quantity` son computados `store=False`, y este repo YA se quemó con `valid_ean`
+# (2026-08-06), que devolvía True en 47 de 330 productos en un lote de 1.102 y en 10 de 10 en
+# un lote pequeño, SIN dar ningún error. `quantity` y `reserved_quantity` sí están
+# almacenadas, y «libre» se calcula en la vista como la resta de las dos.
+#
+# ⚠⚠ SOLO `usage = 'internal'`. Las ubicaciones de Odoo son de DOBLE PARTIDA: medido, la suma
+# de todos los usages netea a −44 uds. Contar todo no infla el inventario, lo VACÍA.
+#
+# ⚠ Refresco TOTAL de las dimensiones en cada corrida (patrón de cargar_kits): son 26 almacenes
+# y 119 ubicaciones, o sea nada, y así se reflejan los archivados o borrados en Odoo, que un
+# watermark por write_date no vería.
+#
+# ⚠ `stock.move.line` tiene 1.047.415 filas: se acota SIEMPRE por fecha y por `state='done'`.
+# Medido el 2026-08-13 a las 14:00: 157 líneas hechas hoy. Sin acotar, esto no es viable.
+ALMACEN_FIELDS = ["id", "name", "code", "company_id", "active"]
+UBICACION_FIELDS = ["id", "complete_name", "usage", "warehouse_id", "company_id"]
+QUANT_FIELDS = ["id", "product_id", "location_id", "lot_id", "quantity",
+                "reserved_quantity", "company_id", "write_date"]
+MOVLIN_FIELDS = ["id", "product_id", "location_id", "location_dest_id", "quantity", "date"]
+
+#: Centinela de «sin almacén» / «sin lote». ⚠ Medido: 4 de las 63 ubicaciones internas no
+#: tienen `warehouse_id` (dos «Ubicación de subcontratación», «Temporal» y «gior») y solo el
+#: 52,4 % de los quants tiene lote. Un NULL en una PK compuesta rompería el ON CONFLICT, y
+#: descartar esas filas descuadraría el total: se marcan y se muestran.
+SIN_DATO = -1
+
+
+def cargar_inventario(od, loader, hoy=None):
+    """
+    La foto de existencias del día y el movimiento del día, en `fact_inventario_*`.
+
+    Idempotente por diseño: la PK lleva `fecha_key`, así que correrlo cuatro veces en el
+    mismo día sobrescribe la fila del día (el último refresco gana, que es la convención de
+    un snapshot periódico). Correrlo mañana añade el día nuevo sin tocar el de hoy.
+
+    ⚠⚠ Y ahí está lo irreversible: `stock.quant` solo conoce el AHORA. Ningún `--rebuild`
+    devolverá el stock de la semana pasada, así que cada día que esto no corra es un día de
+    historia que se pierde para siempre.
+    """
+    hoy = hoy or date.today()
+    fecha_key = int(hoy.strftime("%Y%m%d"))
+
+    # ── dimensiones (refresco total, son minúsculas) ──
+    alms = od.search_read("stock.warehouse", [], ALMACEN_FIELDS, context=CTX_ALL)
+    if alms:
+        upsert(loader, pd.DataFrame([{
+            "almacen_id": as_int(a["id"]), "codigo": a.get("code"),
+            "nombre": a.get("name"), "empresa_id": m2o_id(a.get("company_id")),
+            "activo": bool(a.get("active")),
+        } for a in alms]), "dim_almacen", "almacen_id", reemplazar=True)
+
+    ubis = od.search_read("stock.location", [], UBICACION_FIELDS, context=CTX_ALL)
+    if ubis:
+        upsert(loader, pd.DataFrame([{
+            "ubicacion_id": as_int(u["id"]), "nombre": u.get("complete_name"),
+            "usage": u.get("usage"),
+            # ⚠ El centinela, no NULL: ver el comentario de SIN_DATO.
+            "almacen_id": m2o_id(u.get("warehouse_id")) or SIN_DATO,
+            "empresa_id": m2o_id(u.get("company_id")),
+        } for u in ubis]), "dim_ubicacion", "ubicacion_id", reemplazar=True)
+    almacen_de = {as_int(u["id"]): (m2o_id(u.get("warehouse_id")) or SIN_DATO)
+                  for u in ubis}
+    internas = {as_int(u["id"]) for u in ubis if u.get("usage") == "internal"}
+    logging.info(f"  inventario: {len(alms)} almacenes, {len(ubis)} ubicaciones "
+                 f"({len(internas)} internas)")
+
+    # ── la foto de existencias ──
+    # El dominio acota EN ODOO por ubicación interna: bajar los 4.113 quants para descartar
+    # dos tercios en Python sería tirar red y tiempo.
+    quants = od.search_read("stock.quant", [["location_id.usage", "=", "internal"]],
+                            QUANT_FIELDS, context=CTX_ALL)
+    filas = {}
+    for q in quants:
+        pid, uid = m2o_id(q.get("product_id")), m2o_id(q.get("location_id"))
+        if pid is None or uid is None:
+            continue
+        lote = m2o_id(q.get("lot_id")) or SIN_DATO
+        # ⚠ Se agrega por la PK: Odoo puede tener varios quants del mismo
+        # (producto, ubicación, lote) si llevan paquete o dueño distintos, y un
+        # ON CONFLICT con dos filas de la misma clave en el MISMO INSERT falla con
+        # «cannot affect row a second time». Sumar aquí es lo correcto y además es la
+        # cifra que el tablero quiere.
+        clave = (pid, uid, lote)
+        acc = filas.setdefault(clave, {
+            "fecha_key": fecha_key, "producto_id": pid, "ubicacion_id": uid,
+            "lote_id": lote, "almacen_id": almacen_de.get(uid, SIN_DATO),
+            "empresa_id": m2o_id(q.get("company_id")), "cantidad": 0.0, "reservada": 0.0,
+        })
+        acc["cantidad"] += float(q.get("quantity") or 0)
+        acc["reservada"] += float(q.get("reserved_quantity") or 0)
+
+    if filas:
+        upsert(loader, pd.DataFrame(list(filas.values())), "fact_inventario_dia",
+               ["fecha_key", "producto_id", "ubicacion_id", "lote_id"])
+    total = sum(f["cantidad"] for f in filas.values())
+    con_lote = sum(1 for f in filas.values() if f["lote_id"] != SIN_DATO)
+    logging.info(f"  inventario: {len(filas)} filas de existencia ({total:,.0f} uds, "
+                 f"{con_lote} con lote) para {fecha_key}")
+
+    # ── el movimiento del día ──
+    # ⚠ Acotado por fecha Y por estado: `state='done'` es lo hecho. Sin el acotado son
+    # 1.047.415 filas.
+    movs = od.search_read(
+        "stock.move.line",
+        [["date", ">=", f"{hoy.isoformat()} 00:00:00"],
+         ["date", "<=", f"{hoy.isoformat()} 23:59:59"],
+         ["state", "=", "done"]],
+        MOVLIN_FIELDS, context=CTX_ALL,
+    )
+    agg = {}
+    for m in movs:
+        pid = m2o_id(m.get("product_id"))
+        org, dst = m2o_id(m.get("location_id")), m2o_id(m.get("location_dest_id"))
+        if pid is None or org is None or dst is None:
+            continue
+        clave = (pid, org, dst)
+        acc = agg.setdefault(clave, {
+            "fecha_key": fecha_key, "producto_id": pid, "origen_id": org,
+            "destino_id": dst, "cantidad": 0.0, "lineas": 0,
+        })
+        acc["cantidad"] += float(m.get("quantity") or 0)
+        acc["lineas"] += 1
+
+    if agg:
+        upsert(loader, pd.DataFrame(list(agg.values())),
+               "fact_inventario_movimiento_dia",
+               ["fecha_key", "producto_id", "origen_id", "destino_id"])
+    logging.info(f"  inventario: {len(movs)} lineas de movimiento del dia "
+                 f"({len(agg)} combinaciones producto/origen/destino)")
+    return len(filas)
+
+
 def cargar_ordenes_compra(od, loader):
     ocs = od.search_read("purchase.order", [], OC_FIELDS, context=CTX_ALL)
     if not ocs:
@@ -1876,6 +2012,12 @@ def main(modo, desde, hasta=None, cierre=True):
     # el mapa que enlaza el hecho. Va SIEMPRE, no solo en el cierre: sin el mapa las líneas de
     # compra nuevas entrarían sin OC y solo se arreglarían con un backfill.
     oc_map = cargar_ordenes_compra(od, loader)
+    # INVENTARIO: la foto de existencias del día y el movimiento del día. Va SIEMPRE, en
+    # todos los ticks, y por un motivo que no es la frescura del tablero: `stock.quant` solo
+    # conoce el AHORA, así que un día en el que esto no corra es un día de historia que **se
+    # pierde para siempre** — ningún `--rebuild` lo recupera. Cuesta ~1 s (4.113 quants
+    # medidos) contra un tick ligero de ~96 s.
+    cargar_inventario(od, loader)
     if cierre:
         cargar_kits(od, loader)   # dim_kit_componente (BOM phantom) para v_ventas_explotada
         enriquecer_nombre_comercial(od, loader)   # dim_producto.nombre_comercial (product.template.name)
