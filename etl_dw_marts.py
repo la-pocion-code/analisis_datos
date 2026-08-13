@@ -22,7 +22,7 @@ import logging
 import argparse
 import http.client
 import xmlrpc.client
-from datetime import date
+from datetime import date, timedelta
 import numpy as np
 import pandas as pd
 import psycopg2.extras
@@ -324,7 +324,16 @@ def upsert(loader, df, tabla, pk, schema="marts", coalesce=None, reemplazar=Fals
     """`reemplazar=True` hace TRUNCATE + INSERT en la MISMA transacción: la tabla nunca se ve vacía
     desde fuera. Se usa en las tablas puente (map_nc_factura/map_nd_factura), que se reconstruyen
     enteras en cada corrida y que leen en vivo la intranet y Power BI: con el TRUNCATE en su propia
-    transacción había una ventana en la que las NC no restaban en el mes de su factura."""
+    transacción había una ventana en la que las NC no restaban en el mes de su factura.
+
+    ⚠⚠ **El `DO UPDATE SET` se arma SOLO con las columnas del DataFrame**, así que una columna
+    con `DEFAULT` que no venga en el `df` se escribe en el INSERT y **nunca más**. Con
+    `_loaded_at` eso significa que la fila se sella la primera vez y en los refrescos siguientes
+    cambian las cifras pero **la marca de carga se queda congelada** — y entonces cualquiera que
+    la use como reloj de frescura (`fact_inventario_dia` alimenta el aviso rojo del tablero de
+    inventario) dice que el ETL está parado cuando está sano. Mordió el 2026-08-13. **Si una
+    tabla se refresca en el mismo día por su PK y lleva marca de carga, la marca va en el
+    DataFrame.** Con `reemplazar=True` no aplica: ahí cada fila se inserta de nuevo."""
     if df is None or df.empty:
         return 0
     coalesce = set(coalesce or [])
@@ -403,6 +412,26 @@ def set_watermark(loader, modelo, ultimo_write, filas):
                 filas = EXCLUDED.filas, actualizado = now();
         """, (modelo, ultimo_write, filas))
         conn.commit()
+
+
+def reloj_bogota(loader):
+    """
+    La hora de pared de Bogotá, preguntada A LA BASE. Devuelve un `datetime` naíf.
+
+    ⚠⚠ **`date.today()` no sirve para fechar nada aquí: el contenedor de Railway corre en
+    UTC** (comprobado el 2026-08-13: `bi_mv_refresh` sellaba 15:47 con las 10:47 de Bogotá).
+    Entre las 19:00 y la medianoche de Bogotá `date.today()` ya devuelve el día siguiente, así
+    que cualquier `fecha_key` derivado de él **etiqueta el dato con el día de mañana** y
+    cualquier ventana «del día» corre de 19:00 a 19:00. En una máquina de Bogotá no se ve: es
+    el mismo error que el repo de la intranet documenta para `new Date().toISOString()`.
+
+    Se pregunta a la BD en vez de usar `zoneinfo` a propósito: es **la misma fuente** que el
+    `DEFAULT` de las columnas `_loaded_at`, así que el sello que escribimos y el que pone la
+    base no pueden divergir — y no añade la dependencia de `tzdata`, que en Windows no viene
+    garantizada.
+    """
+    df = loader.consultar("SELECT (now() AT TIME ZONE 'America/Bogota') AS ahora")
+    return pd.Timestamp(df["ahora"][0]).to_pydatetime()
 
 
 def get_watermark(loader, modelo):
@@ -800,7 +829,10 @@ def cargar_inventario(od, loader, hoy=None):
     devolverá el stock de la semana pasada, así que cada día que esto no corra es un día de
     historia que se pierde para siempre.
     """
-    hoy = hoy or date.today()
+    # ⚠⚠ Un solo reloj, y es el de la base: ver `reloj_bogota`. `date.today()` aquí daba el
+    # día de MAÑANA entre las 19:00 y la medianoche de Bogotá, porque el contenedor es UTC.
+    ahora = reloj_bogota(loader)
+    hoy = hoy or ahora.date()
     fecha_key = int(hoy.strftime("%Y%m%d"))
 
     # ── dimensiones (refresco total, son minúsculas) ──
@@ -848,6 +880,9 @@ def cargar_inventario(od, loader, hoy=None):
             "fecha_key": fecha_key, "producto_id": pid, "ubicacion_id": uid,
             "lote_id": lote, "almacen_id": almacen_de.get(uid, SIN_DATO),
             "empresa_id": m2o_id(q.get("company_id")), "cantidad": 0.0, "reservada": 0.0,
+            # ⚠⚠ Va EXPLÍCITO, no lo pone el DEFAULT de la columna: ver el comentario de
+            # `upsert`. Sin esto el reloj de frescura del tablero se congela y miente.
+            "_loaded_at": ahora,
         })
         acc["cantidad"] += float(q.get("quantity") or 0)
         acc["reservada"] += float(q.get("reserved_quantity") or 0)
@@ -863,10 +898,17 @@ def cargar_inventario(od, loader, hoy=None):
     # ── el movimiento del día ──
     # ⚠ Acotado por fecha Y por estado: `state='done'` es lo hecho. Sin el acotado son
     # 1.047.415 filas.
+    #
+    # ⚠⚠ **La ventana se traduce a UTC porque Odoo guarda los `datetime` en UTC**, y «el día»
+    # que le interesa a bodega es el de Bogotá. Colombia es **UTC−5 fijo, sin horario de
+    # verano**, así que el desplazamiento es determinista y son las 05:00 de un día a las
+    # 05:00 del siguiente. Sin traducir, «el movimiento de hoy» iba de las 19:00 de ayer a las
+    # 19:00 de hoy y se reiniciaba a media tarde. El `<` del extremo es a propósito: con `<=`
+    # una línea sellada exactamente a las 00:00:00 de Bogotá contaría en los dos días.
     movs = od.search_read(
         "stock.move.line",
-        [["date", ">=", f"{hoy.isoformat()} 00:00:00"],
-         ["date", "<=", f"{hoy.isoformat()} 23:59:59"],
+        [["date", ">=", f"{hoy.isoformat()} 05:00:00"],
+         ["date", "<", f"{(hoy + timedelta(days=1)).isoformat()} 05:00:00"],
          ["state", "=", "done"]],
         MOVLIN_FIELDS, context=CTX_ALL,
     )
@@ -880,6 +922,9 @@ def cargar_inventario(od, loader, hoy=None):
         acc = agg.setdefault(clave, {
             "fecha_key": fecha_key, "producto_id": pid, "origen_id": org,
             "destino_id": dst, "cantidad": 0.0, "lineas": 0,
+            # ⚠ Igual que en existencias: sin esto `_loaded_at` solo se escribe la primera vez
+            # que aparece la combinación, y en un día tranquilo la tabla parece congelada.
+            "_loaded_at": ahora,
         })
         acc["cantidad"] += float(m.get("quantity") or 0)
         acc["lineas"] += 1
