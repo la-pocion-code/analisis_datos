@@ -347,12 +347,21 @@ definidos por el admin). **Contrato de datos completo:
   2026-07-28: *ventas por mes* **6.892 ms** y *top 10 clientes* **8.277 ms** → con las MV, 318 ms y
   712 ms (**22× / 12×**). Con 5-6 paneles eran ~40 s de CPU de BD por usuario que abría el tablero.
 - **`sql/marts/23_mv_dashboards.sql`** (fase 1 = hoja **Ventas**): `mv_ventas_dia` (176.979 filas,
-  series temporales), `mv_ventas_mes` (851.515, desgloses y top-N — incluye producto),
+  series temporales), `mv_ventas_mes` (851.515, desgloses y top-N — incluye producto y, desde el
+  2026-08-21, **`venta_con_iva`**),
   `mv_ventas_kpi_mes` (296, conteos DISTINTOS: facturas/clientes/líneas), `mv_presupuesto_mes` (347,
   tipa `bi_presupuesto` que es todo `VARCHAR`) y **`mv_ventas_presupuesto_mes`** (360, ventas vs
   presupuesto por **mes × categoría**). Cada una con **índice ÚNICO** (lo exige
   `REFRESH … CONCURRENTLY`) + índices por fecha/periodo y por cada FK de filtro. Cuadre verificado:
   155.384.962.862 idéntico al origen, diferencia 0 mes a mes.
+  ⚠️⚠️ **`venta_con_iva` (2026-08-21) existe porque la intranet NO puede leer `v_ventas_bi`.** El rol
+  `intranet_ro` solo tiene permiso sobre las MV y los `v_lk_*` —whitelist de `24_rol_intranet.sql`, y
+  así tiene que seguir—, así que la descarga por responsable de la intranet («ventas sin IVA / con
+  IVA / IVA») no podía existir sin subir la medida a la MV. Es `SUM(v.venta_componente_con_iva)`, o
+  sea la columna que `21_ventas_bi.sql` ya publicaba: **mismo grano, ningún consumidor cambia**. El
+  IVA **no se guarda**: es `venta_con_iva - venta`. ⚠️ Y el factor **no es 1,19 en todo**: en
+  EXPORTACION es 1,00000 porque no lleva IVA (ver `32_iva_ventas.sql`), así que un IVA de 0 en ese
+  canal es el dato correcto y no un hueco.
   Idempotente vía DROP+CREATE ⇒ re-ejecutarlo **reconstruye** (~43 s); el refresco rutinario NO usa
   este archivo.
 - **PRESUPUESTO ↔ categorías de Odoo (filtro dinámico)** ⭐: la categoría del presupuesto es

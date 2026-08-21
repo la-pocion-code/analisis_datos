@@ -179,6 +179,22 @@ SELECT
     COALESCE(NULLIF(btrim(v.equipo),    ''), '(sin equipo)')          AS equipo,
     -- ── medidas ──
     SUM(v.venta_componente)                                           AS venta,
+    -- ⚠ La MISMA venta con el impuesto encima (2026-08-21). Entra porque la intranet
+    -- necesita publicar «ventas sin IVA / con IVA / IVA» en la descarga por
+    -- responsable, y **no puede leer `v_ventas_bi`**: el rol `intranet_ro` solo tiene
+    -- permiso sobre las MV y los `v_lk_*` (whitelist de 24_rol_intranet.sql, y así
+    -- tiene que seguir). Sumar la columna aquí es lo que se lo da sin abrirle nada.
+    --
+    -- ⚠⚠ NO se guarda el IVA como columna: es `venta_con_iva - venta`. Publicar la
+    -- resta al lado de sus dos términos es pedir que un día no cuadren.
+    --
+    -- ⚠ El factor NO es 1,19 en todo: en EXPORTACION es 1,00000 porque no lleva IVA
+    -- (validado contra Odoo, ver 32_iva_ventas.sql). Un IVA de 0 en ese canal es el
+    -- dato correcto, no un hueco.
+    --
+    -- ⚠ No entra en `mv_ventas_dia` a propósito: ahí nadie lo necesita todavía y cada
+    -- columna en una MV de 176k filas se paga en cada refresco.
+    SUM(v.venta_componente_con_iva)                                   AS venta_con_iva,
     SUM(v.cantidad_componente)                                        AS unidades,
     COUNT(DISTINCT v.factura_id)                                      AS facturas  -- ⚠ NO aditivo
 FROM marts.v_ventas_bi v
@@ -203,7 +219,9 @@ CREATE INDEX ix_mv_ventas_mes_categoria  ON marts.mv_ventas_mes (categoria);
 
 COMMENT ON MATERIALIZED VIEW marts.mv_ventas_mes IS
   'Ventas al grano mes × empresa × cliente × vendedor × producto(componente) × '
-  'categoría × país × equipo. Base de los desgloses y top-N de la hoja Ventas.';
+  'categoría × país × equipo. Base de los desgloses y top-N de la hoja Ventas. '
+  '`venta` es SIN impuestos y `venta_con_iva` es base + IVA (el IVA es su resta); '
+  'en EXPORTACION las dos son iguales porque no lleva IVA.';
 
 
 -- ════════════════════════════════════════════════════════════════════════════
