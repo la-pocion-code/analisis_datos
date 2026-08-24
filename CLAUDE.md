@@ -348,7 +348,8 @@ definidos por el admin). **Contrato de datos completo:
   712 ms (**22× / 12×**). Con 5-6 paneles eran ~40 s de CPU de BD por usuario que abría el tablero.
 - **`sql/marts/23_mv_dashboards.sql`** (fase 1 = hoja **Ventas**): `mv_ventas_dia` (176.979 filas,
   series temporales), `mv_ventas_mes` (851.515, desgloses y top-N — incluye producto y, desde el
-  2026-08-21, **`venta_con_iva`**),
+  2026-08-21/24, **las tres lecturas del dinero: `venta`, `venta_con_iva` y
+  `venta_total_factura`**),
   `mv_ventas_kpi_mes` (296, conteos DISTINTOS: facturas/clientes/líneas), `mv_presupuesto_mes` (347,
   tipa `bi_presupuesto` que es todo `VARCHAR`) y **`mv_ventas_presupuesto_mes`** (360, ventas vs
   presupuesto por **mes × categoría**). Cada una con **índice ÚNICO** (lo exige
@@ -362,6 +363,13 @@ definidos por el admin). **Contrato de datos completo:
   IVA **no se guarda**: es `venta_con_iva - venta`. ⚠️ Y el factor **no es 1,19 en todo**: en
   EXPORTACION es 1,00000 porque no lleva IVA (ver `32_iva_ventas.sql`), así que un IVA de 0 en ese
   canal es el dato correcto y no un hueco.
+  ⚠️⚠️ **`venta_total_factura` (2026-08-24) NO es «venta con IVA»**: es base + IVA − **retenciones**,
+  o sea lo que el cliente PAGA. Medido en la MV para 202608: factor **1,15444** contra **1,18868** de
+  `venta_con_iva`. Sumarla como venta se come la retención. Y en SHOPIFY las dos coinciden al peso
+  (693.902.305), porque a consumidor final no hay retención — buena señal de que la columna sigue el
+  comportamiento real y no un factor cableado. ⚠️ Puede venir **NULL** (el backfill solo puebla las
+  líneas de venta), y un `SUM` de solo-NULL da NULL, no 0: el consumidor pinta un guion. Medido en
+  202608: **0 filas en NULL**.
   Idempotente vía DROP+CREATE ⇒ re-ejecutarlo **reconstruye** (~43 s); el refresco rutinario NO usa
   este archivo.
 - **PRESUPUESTO ↔ categorías de Odoo (filtro dinámico)** ⭐: la categoría del presupuesto es

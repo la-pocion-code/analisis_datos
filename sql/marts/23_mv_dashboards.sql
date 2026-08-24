@@ -195,6 +195,25 @@ SELECT
     -- ⚠ No entra en `mv_ventas_dia` a propósito: ahí nadie lo necesita todavía y cada
     -- columna en una MV de 176k filas se paga en cada refresco.
     SUM(v.venta_componente_con_iva)                                   AS venta_con_iva,
+    -- ⚠⚠ LA TERCERA LECTURA DEL MISMO DINERO, y **NO es «la factura con IVA»**
+    -- (2026-08-24). Es **base + IVA − RETENCIONES**, o sea lo que el cliente acaba
+    -- pagando: la cuenta por cobrar. Con las tres, la intranet puede publicar lo que
+    -- `14_ventas.sql` ya nombra:
+    --     venta               = base                        (la cifra de venta)
+    --     venta_con_iva       = base + IVA                  (lo que dice la factura)
+    --     venta_total_factura = base + IVA − retenciones    (lo que el cliente paga)
+    --
+    -- ⚠⚠ **Confundirla con la venta con IVA subestima la venta.** Medido en
+    -- `32_iva_ventas.sql`: el factor sale **1,1650** con retefuente del 2,5 % y 1,1550
+    -- con el 3,5 %, contra 1,19 de la venta con IVA — porque la retención es un
+    -- anticipo de NUESTRO impuesto de renta que el cliente consigna por nosotros, y no
+    -- reduce la venta. Quien la sume como venta se come esa diferencia.
+    --
+    -- ⚠ Puede venir en **NULL**, y eso es deliberado: el backfill de
+    -- `total_con_impuesto` solo puebla las lineas que consumen las vistas de ventas
+    -- (585.541 de 4.414.170) y en el resto Odoo devuelve 0. Un `SUM` de solo-NULL
+    -- devuelve **NULL y no 0**, asi que el consumidor tiene que pintar un guion.
+    SUM(v.venta_componente_total_factura)                             AS venta_total_factura,
     SUM(v.cantidad_componente)                                        AS unidades,
     COUNT(DISTINCT v.factura_id)                                      AS facturas  -- ⚠ NO aditivo
 FROM marts.v_ventas_bi v
@@ -220,8 +239,11 @@ CREATE INDEX ix_mv_ventas_mes_categoria  ON marts.mv_ventas_mes (categoria);
 COMMENT ON MATERIALIZED VIEW marts.mv_ventas_mes IS
   'Ventas al grano mes × empresa × cliente × vendedor × producto(componente) × '
   'categoría × país × equipo. Base de los desgloses y top-N de la hoja Ventas. '
-  '`venta` es SIN impuestos y `venta_con_iva` es base + IVA (el IVA es su resta); '
-  'en EXPORTACION las dos son iguales porque no lleva IVA.';
+  'Las TRES lecturas del mismo dinero: `venta` = base (sin impuestos), '
+  '`venta_con_iva` = base + IVA (lo que dice la factura, y el IVA es su resta) y '
+  '`venta_total_factura` = base + IVA - retenciones (lo que el cliente PAGA; NO es '
+  'venta con IVA, su factor es ~1,165 y no 1,19). En EXPORTACION `venta` y '
+  '`venta_con_iva` son iguales porque no lleva IVA.';
 
 
 -- ════════════════════════════════════════════════════════════════════════════
