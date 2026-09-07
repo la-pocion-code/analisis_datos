@@ -10,6 +10,9 @@ python-dotenv>=1.0.0
 # `cargar_marketing` al cron (paso 2b de run_dw.py) esto pasa a ser un requisito
 # de arranque de verdad.
 openpyxl>=3.1                   # pd.read_excel — los tres loaders de Drive
+python-calamine>=0.6            # motor de respaldo: el export de NielsenIQ del 2026-09-07 hace
+                                # fallar a openpyxl ("could not read stylesheet from None") sin que
+                                # el xlsx este corrupto. Ver _excel_tolerante en cargar_bi_datasets.py
 google-auth>=2.28               # classes/drive_loader.py
 google-api-python-client>=2.120 # classes/drive_loader.py (Drive v3)
 

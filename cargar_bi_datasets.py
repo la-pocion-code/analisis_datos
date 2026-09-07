@@ -216,13 +216,36 @@ def _cargar_directas(dl, lo, resumen, seleccion=None, seco=False):
             resumen.append((tabla, 0, 0, f"ERROR {e}"))
 
 
+def _excel_tolerante(buf, nombre=""):
+    """Lee un .xlsx probando openpyxl y, si falla, calamine.
+
+    ⚠ POR QUE EXISTE (medido 2026-09-07): el export de NielsenIQ del 2026-09-07 hace que openpyxl
+    falle en los 9 archivos con `could not read stylesheet from None`. **Los archivos NO estan
+    corruptos**: son xlsx estructuralmente completos (14 entradas, `_rels/.rels` incluido, magic PK)
+    y `calamine` los lee sin problema. Es openpyxl el que se atraganta con su `styles.xml`.
+
+    El sintoma engaña: parece un archivo roto o una descarga a medias, y no lo es. Antes de sospechar
+    de Drive o del archivo, probar el otro motor.
+
+    Se intenta PRIMERO el motor por defecto: si un export futuro vuelve a ser legible por openpyxl se
+    sigue usando el camino normal, y calamine queda solo como red.
+    """
+    try:
+        return pd.read_excel(buf, header=None)
+    except Exception as e:                                        # noqa: BLE001
+        buf.seek(0)
+        df = pd.read_excel(buf, header=None, engine="calamine")
+        logging.info(f"  {nombre}: openpyxl fallo ({str(e)[:60]}); leido con calamine")
+        return df
+
+
 def _leer_nielsen(dl, file_id):
     """Un Excel de Nielsen trae varias filas de TÍTULO antes del encabezado real (número variable
     por archivo). Se detecta la fila de encabezado buscando 'Markets' en la primera columna y se
     reconstruye el DataFrame desde ahí (así las columnas quedan con nombre: CATEGORIA, ITEM,
     Vtas Valor, Vtas Unds, ... en vez de unnamed_*)."""
-    buf, _, _ = dl._descargar_bytes(file_id)
-    raw = pd.read_excel(buf, header=None)
+    buf, nombre, _ = dl._descargar_bytes(file_id)
+    raw = _excel_tolerante(buf, nombre)
     col0 = raw[0].astype(str).str.strip().str.lower()
     hit = col0[col0 == "markets"].index
     hrow = int(hit[0]) if len(hit) else 7   # fallback: fila 7 (observado)

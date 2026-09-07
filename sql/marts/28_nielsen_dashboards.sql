@@ -104,19 +104,32 @@ COMMENT ON TABLE marts.bi_nielsen_market IS
 --      de diferencia agregada. Y la contención es limpia: de las 56.815 celdas de farmacias,
 --      las 56.815 tienen par en el combinado y hay **0 valores negativos**.
 --
--- ⇒ POR ESO **NO se crea un market derivado** «supermercados = combinado − farmacias»:
---   ya existe, es `NEW TOTAL COLOMBIA`. Añadirlo daría dos opciones del selector para el
---   MISMO universo (0,00043 % de diferencia) y quien las sumara contaría doble.
---   Lo que se corrige es la ETIQUETA (decía «Total Colombia») y la bandera de universo total.
+-- ⚠⚠ ACTUALIZADO 2026-09-07 — ESTO SE INVIRTIO, Y CONVIENE SABER POR QUE ⚠⚠
+-- Con el export del 2026-08-06 la conclusion fue «NO hace falta un market derivado: supermercados
+-- YA existe, es NEW TOTAL COLOMBIA». Era correcto ENTONCES.
+-- El export del **2026-09-07 dejo de traer `NEW TOTAL COLOMBIA`**: la matriz paso de 3 categorias x
+-- 4 markets (12 archivos) a 3 x 3 (9 archivos), quedando el combinado, farmacias y ecommerce.
+-- ⇒ Sin ese market, la resta pasa a ser **la UNICA forma de tener supermercados**, asi que ahora SI
+--   se materializa: `SUPERMERCADOS (derivado)` en mv_nielsen_semana (ver su comentario).
+-- ⚠ Leccion del origen: **el conjunto de markets NO es estable** — cambio dos veces en un mes
+--   (primero se retiro `Total Colombia Supermercados`, ahora `NEW TOTAL COLOMBIA`). Por eso esta
+--   semilla conserva las filas de los markets retirados con su motivo, en vez de borrarlas, y por
+--   eso NO se debe fijar «4 markets» como invariante en ningun test.
 INSERT INTO marts.bi_nielsen_market
     (market, etiqueta, es_universo_total, tiene_valor, orden, nota) VALUES
     ('NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA', 'Supermercados + Farmacias', TRUE, TRUE, 1,
      'Universo MAYOR de los cuatro (2.501.713.761.171). CONTIENE a Supermercados y a '
      'Farmacias: no sumarlo con ninguno de los dos. NO incluye e-commerce.'),
-    ('NEW TOTAL COLOMBIA', 'Supermercados', FALSE, TRUE, 2,
-     '⚠ EL NOMBRE ENGANA: no es el total del pais, es el canal de SUPERMERCADOS. Medido: '
-     '(Supermercados+Farmacias) - Farmacias = este market, al peso en 99,23 % de las celdas. '
-     'Es el «supermercados solo» que se pedia; no hace falta un derivado.'),
+    ('SUPERMERCADOS (derivado)', 'Supermercados', FALSE, TRUE, 2,
+     '⚠ CALCULADO AQUI, NO MEDIDO POR NIELSEN: combinado - farmacias, al grano de la MV. Existe '
+     'porque el export del 2026-09-07 dejo de traer NEW TOTAL COLOMBIA, que era este canal. La '
+     'resta se validO contra el market real mientras los dos coexistian: coincidia al peso en '
+     '99,23 % de las celdas, con 0,00043 % de diferencia agregada y 0 negativos. ⚠ `items` va NULL: '
+     'un COUNT(DISTINCT) no se puede restar.'),
+    ('NEW TOTAL COLOMBIA', 'Supermercados (retirado)', FALSE, FALSE, 8,
+     '⚠ EL NOMBRE ENGANABA: no era el total del pais, era el canal de SUPERMERCADOS. **Ya no viene '
+     'en el export desde el 2026-09-07**; lo reemplaza SUPERMERCADOS (derivado). Se conserva la '
+     'fila como historia y para que nadie lo vuelva a leer como «total nacional».'),
     ('TOTAL COLOMBIA FARMACIAS', 'Farmacias', FALSE, TRUE, 3,
      'Subconjunto de Supermercados + Farmacias. Su valor no cambio con el export nuevo '
      '(484.179.801.326 antes y despues), asi que el share propio de farmacias es comparable.'),
@@ -200,7 +213,8 @@ WITH base AS (
         NULLIF(btrim(n.vtas_unds),  '')::NUMERIC                      AS unidades
     FROM marts.bi_nielsen n
     WHERE n.periods IS NOT NULL
-)
+),
+agg AS (
 SELECT
     market,
     semana,
@@ -214,7 +228,45 @@ SELECT
     COUNT(DISTINCT item)                                              AS items  -- ⚠ NO aditivo
 FROM base
 WHERE semana IS NOT NULL
-GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11;
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+),
+-- ════════════════════════════════════════════════════════════════════════════
+-- MARKET DERIVADO: `SUPERMERCADOS (derivado)` = combinado − farmacias.
+--
+-- ⚠⚠ ES UN DATO CALCULADO AQUI, NO MEDIDO POR NIELSEN. Existe porque el export del 2026-09-07
+-- **dejo de traer** `NEW TOTAL COLOMBIA` (que era el canal de supermercados): la matriz paso de
+-- 3 categorias x 4 markets a 3 x 3, y sin esta resta el tablero se queda sin la vista de
+-- supermercados solo.
+--
+-- Validado antes de publicarlo, sobre el export del 2026-08-06 que SI traia los dos: la resta daba
+-- `NEW TOTAL COLOMBIA` **al peso en 74.804 de 75.381 celdas (99,23 %)**, con 0,00043 % de diferencia
+-- agregada, y de las 56.815 celdas de farmacias las 56.815 tenian par en el combinado con **0
+-- negativos**.
+--
+-- ⚠ `items` va en NULL: es un COUNT(DISTINCT item) y **no se puede restar** (no se sabe que items
+-- del combinado estan en supermercados sin bajar al grano de item). Poner el del combinado seria
+-- mentir. La columna ya esta documentada como NO aditiva.
+-- ⚠ `dist_num` no aparece aqui: es un porcentaje por item y vive solo en mv_nielsen_item_semana.
+-- ⚠ Si un export futuro rompe la contencion, la resta daria NEGATIVOS. No se tapan con GREATEST:
+-- se publican y se aislan en `v_nielsen_derivado_negativo`, que hay que revisar tras cada carga.
+-- ════════════════════════════════════════════════════════════════════════════
+derivado AS (
+    SELECT
+        'SUPERMERCADOS (derivado)'::text AS market,
+        semana, anio, mes, periodo_aaaamm,
+        categoria, fabricante, marca, presentacion, tipo, promocion,
+        SUM(CASE WHEN market = 'NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA'
+                 THEN valor ELSE -valor END)                          AS valor,
+        SUM(CASE WHEN market = 'NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA'
+                 THEN unidades ELSE -unidades END)                    AS unidades,
+        NULL::bigint                                                  AS items
+    FROM agg
+    WHERE market IN ('NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA', 'TOTAL COLOMBIA FARMACIAS')
+    GROUP BY 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+)
+SELECT * FROM agg
+UNION ALL
+SELECT * FROM derivado;
 
 CREATE UNIQUE INDEX ux_mv_nielsen_semana
     ON marts.mv_nielsen_semana (market, semana, categoria, fabricante, marca,
@@ -293,3 +345,30 @@ COMMENT ON MATERIALIZED VIEW marts.mv_nielsen_item_semana IS
 --   · concede SELECT sobre las 2 MV y las 2 semillas de este archivo,
 --   · y recrea v_lk_producto con la linea sacada del arbol de Odoo.
 -- ============================================================================
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- v_nielsen_derivado_negativo — la red de seguridad del market derivado.
+--
+-- `SUPERMERCADOS (derivado)` = combinado − farmacias solo es correcto si el combinado CONTIENE a
+-- farmacias. Se validó al construirlo (0 negativos en las 56.815 celdas de farmacias), pero **el
+-- export de Nielsen cambia cada mes y ya cambió de forma dos veces**: si en una carga futura la
+-- contención se rompe, la resta publicaría supermercados con ventas NEGATIVAS.
+--
+-- No se tapan con GREATEST(x,0): eso convertiría un problema del origen en un dato plausible y
+-- falso. Se publican y se aíslan aquí. **Revisar esta vista tras cada carga de Nielsen**: si
+-- devuelve filas, el derivado no es de fiar para esas celdas y hay que hablar con Nielsen.
+-- Mismo patrón que `v_nc_sin_asignar` (ventas) y `v_compras_descuadre` (compras).
+-- ════════════════════════════════════════════════════════════════════════════
+DROP VIEW IF EXISTS marts.v_nielsen_derivado_negativo;
+
+CREATE VIEW marts.v_nielsen_derivado_negativo AS
+SELECT semana, categoria, fabricante, marca, presentacion, tipo, promocion, valor, unidades
+FROM marts.mv_nielsen_semana
+WHERE market = 'SUPERMERCADOS (derivado)'
+  AND (valor < 0 OR unidades < 0);
+
+COMMENT ON VIEW marts.v_nielsen_derivado_negativo IS
+  'Celdas donde (combinado - farmacias) sale NEGATIVO, o sea donde el combinado no contiene a '
+  'farmacias. Debe estar VACIA: si trae filas, el market SUPERMERCADOS (derivado) no es de fiar '
+  'ahi. Revisar tras cada carga de Nielsen.';
