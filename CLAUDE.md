@@ -245,6 +245,49 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   se **eliminó**: metía proveedores extranjeros como "United States".)
   ⚠ `fact.categoria` = categoría de **CLIENTE**; `dim_producto.categoria` es la de **PRODUCTO**
   (en `v_ventas_producto` se expone como `producto_categoria`). Son cosas distintas.
+- **CIUDAD DEL TERCERO — `dim_tercero.ciudad`: EL CATÁLOGO MANDA, EL TEXTO LIBRE RELLENA**
+  (`_ciudad_tercero` + `ciudades_odoo`, 2026-09-07). En Odoo la ciudad vive en **dos** campos:
+  `city_id` (many2one al catálogo `res.city`, **1.172 municipios**) y `city` (char de **texto
+  libre**). El DW leía **solo el texto libre** y ahora va en cascada: **`city_id` → `res.city.name`
+  primero, `city` después**, `None` si Odoo no tiene ninguno.
+  ⚠ **El motivo NO es la cobertura, es la NORMALIZACIÓN.** Medido sobre los 121.568 clientes con
+  venta: el texto libre está poblado en el **99,82 %** y el catálogo en el **97,68 %** — o sea que
+  el texto cubre *más*. El problema es que lo **digitan a mano** (quien vende por Shopify), así que
+  el mismo municipio llegaba en muchas formas: **3.194 valores distintos para 1.172 municipios
+  reales**. `'Bogotá'` (18.001), `'Bogota'` (2.458), `'BOGOTA'` (977), `'BogotÁ'` (584),
+  `'Bogotá D.C.'`, `'Bogotá DC'`, `'bogota'`… todos son `'BOGOTÁ, D.C.'`. El catálogo además pone
+  el nombre oficial donde el texto usa el corto (`'Cartagena'`→`'CARTAGENA DE INDIAS'`,
+  `'TUMACO'`→`'SAN ANDRÉS DE TUMACO'`, `'Ubate'`→`'VILLA DE SAN DIEGO DE UBATÉ'`).
+  **Impacto medido** (clientes / % de la venta 2025): **96,78 % de la venta NO cambia** (los dos
+  campos ya coincidían exacto, 93.706 clientes) · **24.112 clientes / 2,80 %** son la misma ciudad
+  con otra grafía ⇒ se consolidan (⭐ el objetivo) · **740 / 0,07 %** son **conflictos de dato en
+  Odoo** (catálogo y texto apuntan a municipios distintos; gana el catálogo) · 194 / 0,01 % ganan
+  ciudad donde no la tenían · 2.797 / 0,35 % solo tienen texto libre y **se conservan** · **19
+  clientes / 1,2 M** siguen sin ciudad porque Odoo no la tiene.
+  ⚠ Los 740 conflictos **no son todos errores del catálogo**: revisados los de más venta, casi
+  siempre el catálogo es el que acierta (barrio→municipio: `'Bogotá bosa antonia santos'`,
+  `'BAYUNCA'`→`'CARTAGENA DE INDIAS'`, `'LLORENTE'`→`'SAN ANDRÉS DE TUMACO'`; typo→oficial:
+  `'LEGANIAS'`→`'LEJANÍAS'`). Los ambiguos son de **área metropolitana** (`'ENVIGADO'` vs
+  `'ITAGÜÍ'`, `'CÚCUTA'` vs `'LOS PATIOS'`) y hay unos pocos que sí huelen a error del catálogo
+  (`'BOGOTÁ, D.C.'`→`'SOGAMOSO'`). Se auditan con `python diagnosticar_ciudad_terceros.py`, que
+  separa «misma ciudad, otra grafía» de «conflicto real» y los lista por venta.
+  ⚠ **El id se resuelve contra el `name` del CATÁLOGO, no contra el display_name** del par
+  `[id, nombre]`: `res.city.name` es `'MEDELLÍN'` y su display name `'MEDELLÍN (05001)'`. Parsear
+  display names es atarse al `name_get` de Odoo. El catálogo se cachea una vez por proceso
+  (`ciudades_odoo`, patrón de `cat_map_tercero`).
+  ⚠ **`zip_id` NO entra en la cascada**: es el catálogo de códigos POSTALES (`res.city.zip`) y su
+  nombre no es una ciudad sino `'130001-Urbano, CARTAGENA DE INDIAS, Bolívar'`. Y el char `zip`
+  está poblado en **10 de 121.568** clientes (0,01 %).
+  ⚠⚠ **NADA de esto se aplica a `departamento`**: sigue siendo `m2o_nombre(state_id)`, o sea
+  `'Bolívar (CO)'` **con** el sufijo, porque de ese formato exacto depende el `LEFT JOIN` de
+  `map_zona` en `24_rol_intranet.sql:62`. Validado: lo llevan **209.157** terceros, **0** se quedan
+  sin él, y solo **7** clientes con venta (**0,00 %** de la venta) no tienen departamento.
+  ⚠ Los campos y el row-builder viven en **`PARTNER_FIELDS` + `_fila_tercero`**, compartidos por
+  las **dos** rutas que leen `res.partner` (`cargar_terceros` y `refrescar_dimensiones`) — antes
+  estaban **duplicados literalmente**, que es cómo el DW se quedó leyendo un solo campo.
+  **Repoblar: `python etl_dw_marts.py --backfill-terceros`** (⚠ `--dims` NO sirve: va por
+  `write_date`). ⚠⚠ **Desplegar en Railway ANTES del backfill**: el `--rebuild` de los días 3 y 24
+  corre `refrescar_dimensiones(full=True)` y con el código viejo borraría la repoblación entera.
 - **IDENTIFICADOR EXTERNO DEL PRODUCTO — `dim_producto.codigo_barras` + `ean_valido`**
   (`33_producto_identificadores.sql`, 2026-08-06). `codigo` (`default_code`) es el código **interno**
   (`PCN01`) y no sirve para hablar con nadie de fuera; `codigo_barras` (= `barcode` de Odoo) es el

@@ -192,7 +192,8 @@ se edita el grupo en la intranet; no hay nada que correr aquí.
 | Cliente/producto/centro de costo nuevo no aparece | `python etl_dw_marts.py --dims` |
 | Una **orden de compra** nueva no aparece | `python etl_dw_marts.py --dims` (las OC se refrescan completas en cada corrida: son 1.066) |
 | Las líneas de compra viejas no tienen su **OC enlazada** | `python etl_dw_marts.py --backfill-compras` (74k líneas, ~45 s, una sola vez) |
-| Se añadió un campo nuevo a **dim_producto** | ⚠ `--dims` NO sirve: va por `write_date` y solo relee lo que cambió en Odoo. Hay que releer el catálogo con `cargar_productos()` |
+| Los terceros tienen mal (o no tienen) la **ciudad** | `python etl_dw_marts.py --backfill-terceros` (relee los ~209k `res.partner` completos, ~5 min, una sola vez; el cron no lo corre). Auditar antes/después con `python diagnosticar_ciudad_terceros.py` |
+| Se añadió un campo nuevo a **una dimensión** (`dim_producto`, `dim_tercero`…) | ⚠ `--dims` NO sirve: va por `write_date` y solo relee lo que cambió en Odoo, así que las filas existentes se quedan con el valor viejo. Hay que releer el catálogo COMPLETO: `--backfill-terceros` para terceros, `cargar_productos()` para productos |
 | Cambié la clasificación de cuentas (estados financieros) | aplicar el DDL si tocó columnas + `python etl_dw_marts.py --dims` |
 | Poblar enriquecimiento de ventas / kits (tel/email/etiqueta/es_kit) | aplicar DDL 15/15b + `python etl_dw_marts.py --dims` |
 | Cambió un Excel de zonas / clientes padres / categorías | `python cargar_mapeos.py` |

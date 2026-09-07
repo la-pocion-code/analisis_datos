@@ -35,6 +35,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 load_dotenv()
 
 PAGINA = 5000  # líneas por lote
+# ⚠ res.partner va con la MITAD de página. Cada tercero ya viaja con 3 many2one (estado, país,
+# cliente padre) y CLAUDE.md avisa de que el payload de 5.000 «quedó al filo» del IncompleteRead
+# al añadir campos. Al sumar `city_id` se consume parte de ese margen, así que se restaura aquí:
+# el tiempo por página lo domina la consulta de Odoo, no el tamaño, de modo que duplicar el número
+# de páginas cuesta poco y devuelve el doble de holgura para el siguiente campo que se añada.
+PAGINA_DIM = {"res.partner": 2500}
 CTX_ALL = {"active_test": False}  # incluir registros ARCHIVADOS (active=False) en dimensiones
 
 # Rol de cada plan analítico en el hecho. NO se hardcodean IDs: se derivan del NOMBRE del plan
@@ -558,26 +564,124 @@ def cargar_catalogos_pequenos(od, loader):
     return an_plan, an_nombre, plan_rol, clasificar, nombre_puc
 
 
+# ── Ciudad del tercero: EL CATÁLOGO MANDA, EL TEXTO LIBRE RELLENA ────────────
+# En Odoo la ciudad vive en DOS campos: `city_id` (many2one al catálogo `res.city`, 1.172
+# municipios) y `city` (char de TEXTO LIBRE). El DW leía SOLO el texto libre.
+#
+# ⭐ Se invierte el orden: manda `city_id`. El motivo NO es la cobertura —medido el 2026-09-07 con
+# `diagnosticar_ciudad_terceros.py`, sobre los 121.568 clientes con venta el texto libre está
+# poblado en el 99,82 % y el catálogo en el 97,68 %— sino la NORMALIZACIÓN: el texto libre lo
+# digita a mano quien vende por Shopify, así que el mismo municipio llega en muchas formas y el
+# análisis por ciudad sale partido en pedazos. Eran **3.194 valores distintos para 1.172
+# municipios reales**: 'Bogotá' (18.001 terceros), 'Bogota' (2.458), 'BOGOTA' (977), 'BogotÁ'
+# (584), 'Bogotá D.C.', 'Bogotá DC', 'bogota'… todos son 'BOGOTÁ, D.C.'.
+# El catálogo además pone el nombre oficial donde el texto usa el corto ('Cartagena' →
+# 'CARTAGENA DE INDIAS', 'TUMACO' → 'SAN ANDRÉS DE TUMACO').
+#
+# ⚠ El id se resuelve contra el `name` del CATÁLOGO, NO contra el display_name del par
+# [id, nombre]: `res.city.name` es 'MEDELLÍN' mientras su display_name es 'MEDELLÍN (05001)'.
+# Parsear display names sería atarse al name_get de Odoo; el catálogo son 1.172 filas cacheadas
+# una vez por proceso (mismo patrón que cat_map_tercero con las etiquetas).
+#
+# ⚠ NO entra `zip_id` en la cascada. Es el catálogo de códigos POSTALES (`res.city.zip`) y su
+# nombre no es una ciudad sino '130001-Urbano, CARTAGENA DE INDIAS, Bolívar'. Con `city_id` al
+# 97,68 % no aporta nada y obligaría a parsear un texto compuesto. (`zip`, el char, está poblado
+# en 10 de los 121.568 clientes: 0,01 %.)
+#
+# ⚠⚠ NADA DE ESTO SE APLICA A `departamento`: sigue siendo m2o_nombre(state_id), o sea
+# 'Bolívar (CO)' CON el sufijo, porque de ese formato exacto depende el LEFT JOIN de map_zona en
+# sql/marts/24_rol_intranet.sql:62. Verificado: lo llevan 209.157 terceros y 0 se quedan sin él.
+_CIUDADES_ODOO = None
+
+
+def ciudades_odoo(od):
+    """Mapa id→name de res.city (los 1.172 municipios); cacheado por proceso."""
+    global _CIUDADES_ODOO
+    if _CIUDADES_ODOO is None:
+        filas = od.search_read("res.city", [], ["id", "name"], context=CTX_ALL)
+        _CIUDADES_ODOO = {c["id"]: c.get("name") for c in filas}
+    return _CIUDADES_ODOO
+
+
+def _texto_ciudad(v):
+    """Limpia un candidato a ciudad (char, o el nombre de un many2one) → str o None.
+
+    Quita el sufijo entre paréntesis del display name ('MEDELLÍN (05001)' → 'MEDELLÍN') como red
+    de seguridad, por si se llega aquí sin el catálogo cargado.
+
+    ⚠ NO cambia mayúsculas ni quita tildes: el `name` del catálogo YA es el nombre canónico, y
+    reescribirlo convertiría esto en un renombrado en vez de una consolidación.
+
+    Un valor sin ninguna letra ('.', '0', '-') cuenta como VACÍO: no es una ciudad y ocupa el
+    sitio de la que sí lo es.
+    """
+    if isinstance(v, (list, tuple)):
+        v = v[1] if len(v) > 1 else None
+    s = ("" if v is None or v is False else str(v)).strip()
+    while True:
+        s2 = re.sub(r"\s*\([^()]*\)\s*$", "", s).strip()
+        if s2 == s:
+            break
+        s = s2
+    s = re.sub(r"\s+", " ", s)
+    return s if s and any(c.isalpha() for c in s) else None
+
+
+def _ciudad_tercero(r, ciudades=None):
+    """Ciudad del tercero: primero el CATÁLOGO (`city_id`), luego el texto libre (`city`).
+
+    None si Odoo no tiene ninguno de los dos: un tercero sin ciudad debe quedar SIN ciudad. No se
+    deduce del `zip` (130001 es un código, no un nombre), ni del `street`, ni se copia el
+    departamento.
+    """
+    ciudades = ciudades or {}
+    cid = m2o_id(r.get("city_id"))
+    if cid:
+        c = _texto_ciudad(ciudades.get(cid)) or _texto_ciudad(r.get("city_id"))
+        if c:
+            return c
+    return _texto_ciudad(r.get("city"))
+
+
+# Campos de res.partner que alimentan dim_tercero. Se comparten entre la carga por-id
+# (cargar_terceros) y el refresco por write_date (refrescar_dimensiones) para que no se
+# desincronicen: añadir un campo aquí lo lleva a las DOS rutas.
+#
+# ⚠ Sin team_id: el equipo de ventas va en el hecho (fact.equipo), no en el tercero
+# (res.partner.team_id está VACÍO en este Odoo). Ver sql/marts/15_dims_ventas.sql.
+PARTNER_FIELDS = ["id", "name", "vat", "city", "city_id", "state_id", "country_id",
+                  "phone", "mobile", "email", "category_id", "commercial_partner_id"]
+
+
+def _fila_tercero(r, cmap, ciudades=None):
+    """res.partner de Odoo → fila de dim_tercero (las columnas COMUNES a las dos rutas).
+
+    ⚠ `tipo_cliente` NO va aquí: viene de la cabecera del asiento (partner_type_id) y lo añade
+    cargar_terceros; refrescar_dimensiones no debe tocarlo.
+    """
+    return {"tercero_id": as_int(r["id"]),
+            "nombre": r.get("name"),
+            "identificacion": r.get("vat"),
+            "ciudad": _ciudad_tercero(r, ciudades),
+            "departamento": m2o_nombre(r.get("state_id")),   # ⚠ CON sufijo: lo exige map_zona
+            "pais": m2o_nombre(r.get("country_id")),
+            "telefono": r.get("phone") or r.get("mobile"),
+            "email": r.get("email"),
+            "etiqueta": etiquetas_nombres(r.get("category_id"), cmap),
+            "cliente_padre_id": m2o_id(r.get("commercial_partner_id")),
+            "cliente_padre": m2o_nombre(r.get("commercial_partner_id"))}
+
+
 # ══ Terceros (dim_tercero) — usado por el hecho y por cartera ══
 def cargar_terceros(od, loader, part_ids, tipo_tercero):
     part_ids = [p for p in part_ids if p]
     if not part_ids:
         return
     cmap = cat_map_tercero(od)
-    # Sin team_id: el equipo de ventas va en el hecho (fact.equipo), no en el tercero.
-    partners = od.read("res.partner", part_ids,
-                       ["id", "name", "vat", "city", "state_id", "country_id",
-                        "phone", "mobile", "email", "category_id", "commercial_partner_id"],
-                       context=CTX_ALL)
-    dt = pd.DataFrame([{
-        "tercero_id": as_int(p["id"]), "nombre": p.get("name"), "identificacion": p.get("vat"),
-        "tipo_cliente": tipo_tercero.get(p["id"]), "ciudad": p.get("city"),
-        "departamento": m2o_nombre(p.get("state_id")), "pais": m2o_nombre(p.get("country_id")),
-        "telefono": p.get("phone") or p.get("mobile"), "email": p.get("email"),
-        "etiqueta": etiquetas_nombres(p.get("category_id"), cmap),
-        "cliente_padre_id": m2o_id(p.get("commercial_partner_id")),
-        "cliente_padre": m2o_nombre(p.get("commercial_partner_id")),
-    } for p in partners])
+    ciudades = ciudades_odoo(od)
+    partners = od.read("res.partner", part_ids, PARTNER_FIELDS, context=CTX_ALL)
+    dt = pd.DataFrame([{**_fila_tercero(p, cmap, ciudades),
+                        "tipo_cliente": tipo_tercero.get(p["id"])} for p in partners])
     # tipo_cliente vía COALESCE: no borrar el existente si esta fuente no lo trae.
     upsert(loader, dt, "dim_tercero", "tercero_id", coalesce=["tipo_cliente"])
 
@@ -643,22 +747,18 @@ def cargar_productos(od, loader, prod_ids):
 
 # ══ Refresco de dimensiones por su propio write_date (clientes/productos/vendedores) ══
 # Cierra el gap: capta creados/modificados en Odoo aunque no tengan transacción nueva.
-def refrescar_dimensiones(od, loader, full=False):
+def refrescar_dimensiones(od, loader, full=False, modelos=None):
+    """`modelos` acota el refresco a esos modelos de Odoo (p.ej. `["res.partner"]`). Con
+    `full=True` los relee COMPLETOS, ignorando el watermark: es lo que necesita un backfill
+    después de añadir un campo a la dimensión, porque el refresco normal va por `write_date` y
+    solo trae lo que cambió en Odoo. Ver `--backfill-terceros`."""
     cmap = cat_map_tercero(od)  # etiquetas de terceros (m2m id→nombre), cargado una vez
+    ciudades = ciudades_odoo(od)  # catálogo res.city id→name, para la cascada de ciudad
     specs = [
-        # OJO: nada de team_id aquí — el equipo de ventas vive en el asiento (fact.equipo), no en
-        # el tercero (res.partner.team_id está vacío en este Odoo).
-        ("res.partner", ["id", "name", "vat", "city", "state_id", "country_id",
-                         "phone", "mobile", "email", "category_id", "commercial_partner_id"],
-         "dim_tercero", "tercero_id",
-         lambda r: {"tercero_id": as_int(r["id"]), "nombre": r.get("name"),
-                    "identificacion": r.get("vat"), "ciudad": r.get("city"),
-                    "departamento": m2o_nombre(r.get("state_id")),
-                    "pais": m2o_nombre(r.get("country_id")),
-                    "telefono": r.get("phone") or r.get("mobile"), "email": r.get("email"),
-                    "etiqueta": etiquetas_nombres(r.get("category_id"), cmap),
-                    "cliente_padre_id": m2o_id(r.get("commercial_partner_id")),
-                    "cliente_padre": m2o_nombre(r.get("commercial_partner_id"))}),
+        # Campos y builder compartidos con cargar_terceros (PARTNER_FIELDS/_fila_tercero) para
+        # que las dos rutas que leen res.partner no se desincronicen.
+        ("res.partner", PARTNER_FIELDS, "dim_tercero", "tercero_id",
+         lambda r: _fila_tercero(r, cmap, ciudades)),
         # tipo_cliente no se toca (viene del asiento)
         # es_kit NO se setea aquí: lo fija cargar_kits desde dim_kit_componente (BOM phantom).
         # `bom_count > 0` marcaría también los productos FABRICADOS, que no son kits.
@@ -668,6 +768,8 @@ def refrescar_dimensiones(od, loader, full=False):
          lambda r: {"vendedor_id": as_int(r["id"]), "nombre": r.get("name")}),
     ]
     for modelo, fields, tabla, pk, builder in specs:
+        if modelos and modelo not in modelos:
+            continue
         dom = []
         if not full:
             marca = get_watermark(loader, modelo)
@@ -679,7 +781,8 @@ def refrescar_dimensiones(od, loader, full=False):
         offset, total, mw = 0, 0, None
         while True:
             regs = od.search_read(modelo, dom, fields + ["write_date"],
-                                  limit=PAGINA, offset=offset, context=CTX_ALL)
+                                  limit=PAGINA_DIM.get(modelo, PAGINA), offset=offset,
+                                  context=CTX_ALL)
             if not regs:
                 break
             upsert(loader, pd.DataFrame([builder(r) for r in regs]), tabla, pk)
@@ -2142,6 +2245,12 @@ if __name__ == "__main__":
                    help="enlaza a su ORDEN DE COMPRA las líneas de compra YA cargadas en el hecho "
                         "(purchase_line_id de Odoo). UNA SOLA VEZ: las líneas nuevas ya llegan "
                         "enlazadas. No lo corre el cron.")
+    g.add_argument("--backfill-terceros", action="store_true",
+                   help="relee el CATÁLOGO COMPLETO de res.partner (~209k, paginado) y repuebla "
+                        "dim_tercero. Hace falta tras añadir o cambiar un campo del tercero: "
+                        "--dims va por write_date y solo relee lo que cambió en Odoo, así que los "
+                        "terceros existentes se quedarían con el valor viejo. UNA SOLA VEZ, ~5 min. "
+                        "No lo corre el cron.")
     ap.add_argument("--rehacer-iva", action="store_true",
                     help="con --backfill-iva: re-lee TODAS las líneas de venta, no solo las que "
                          "tienen total_con_impuesto en NULL.")
@@ -2162,6 +2271,12 @@ if __name__ == "__main__":
     elif args.backfill_compras:
         db, uid, pw, models = conectar_odoo()
         backfill_orden_compra(Odoo(db, uid, pw, models), DBLoader())
+    elif args.backfill_terceros:
+        # Refresco TOTAL de res.partner solamente: reusa el bucle paginado de
+        # refrescar_dimensiones (paginar no es opcional, ver el aviso de PAGINA_DIM).
+        db, uid, pw, models = conectar_odoo()
+        refrescar_dimensiones(Odoo(db, uid, pw, models), DBLoader(),
+                              full=True, modelos=["res.partner"])
     else:
         modo = ("rebuild" if args.rebuild else "full" if args.full
                 else "dims" if args.dims else "incremental")
