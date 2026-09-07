@@ -99,7 +99,7 @@ en Odoo. Para eso hay que releer el catálogo (ver la guía de operación).
 | `sql/marts/*.sql` | DDL del modelo estrella, vistas, MV, roles. Idempotentes |
 | `refrescar_mv_dashboards.py` | refresca las 29 MV; decide qué va en cada tick |
 | `cargar_bi_datasets.py` · `cargar_cuentas_clave.py` · `cargar_mapeos.py` · `cargar_marketing.py` | cargas **a demanda** desde Google Drive y APIs |
-| `estado_dw.py` · `validar_ventas.py` · `validar_nc.py` · `diagnosticar_fecha_venta.py` | diagnóstico y conciliación (solo lectura) |
+| `estado_dw.py` · `validar_ventas.py` · `validar_nc.py` · `diagnosticar_fecha_venta.py` · `conciliar_shopify.py` | diagnóstico y conciliación (solo lectura) |
 | `classes/` | `DBLoader` (PG), `DriveLoader` (Drive), `MailSender` (SMTP), `ReportClassNew` (BI manual) |
 | `ejecuciones_anilista.ipynb` | **operacional**: procesos que se ejecutan a mano desde el área (informes diarios, correos) |
 | `notebooks/pruebas/` | exploración; **nada de esto es automatización** ([README](notebooks/pruebas/README.md)) |

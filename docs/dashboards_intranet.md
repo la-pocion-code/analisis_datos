@@ -553,6 +553,63 @@ curso se mueve. Entre dos mediciones del mismo día MAYORISTA NV pasó de
 - **Cartera** sigue pendiente como hoja propia (§7).
 - **Clientes Elite** y **Mayoristas2**: no hay captura de referencia.
 
+### 10.7 ⚠⚠ La venta de SHOPIFY del DW **no es comparable** con el `Total` de Shopify
+
+Medido el **2026-09-07** cruzando el export de pedidos de Shopify contra el DW (agosto de 2026).
+Auditor reusable: **`python conciliar_shopify.py --csv <orders_export.csv>`** (solo lectura).
+
+**La llave existe y funciona:** `Name` de Shopify (`#157126`) ↔ **`account.move.ref`** de Odoo, que
+en el DW es `fact_movimiento_contable.referencia`. Casan **5.385 de 5.424** pedidos.
+
+⭐ **El `Total` de Shopify incluye el FLETE y la venta del DW no.** No es un error de nadie: en Odoo
+todo Shopify aterriza en **una sola cuenta clase 4** (`41353801 VENTA DE COSMETICOS GRAVADO 19%`,
+12.132 líneas en agosto) y **no existe cuenta ni producto de transporte**. Contablemente el flete no
+es venta de cosméticos. **Quien compare las dos cifras de frente verá un ~3,4 % de hueco que no
+existe.**
+
+El puente de agosto de 2026, concepto por concepto:
+
+```
+Shopify `Total` (5.424 pedidos) ..............  1.017.897.929
+(−) 34 pedidos `expired` (no pagados) ........     −7.500.470   correcto: Odoo no factura lo no pagado
+(−)  5 pedidos `paid` facturados en SEPT .....       −824.200   correcto: borde de mes (ver abajo)
+(−) FLETE cobrado (2.846 pedidos) ............    −34.152.000   correcto: Odoo no factura el flete
+= producto de los 5.385 comunes ..............    975.421.259
+  Odoo con IVA de esos mismos pedidos ........    975.421.259   ✔ AL PESO
+(+)  3 facturas de pedidos de julio ..........       +798.200   borde de mes
+(−) 13 notas credito (retractos) .............     −4.136.920   devoluciones reales
+= Odoo/DW agosto con IVA .....................    972.082.539   ✔ AL PESO (base 816.876.092 × 1,19)
+```
+
+**La prueba fuerte:** de los 5.385 pedidos comunes, **cada uno** cumple `dif = 0` **o**
+`dif = flete`; el residuo «otra cosa» es **0 pedidos**. El flete explica el **74,5 %** de la
+diferencia del mes. Shopify facturó 57.096.000 de flete y **regaló 22.944.000** en 1.912 pedidos
+(envío gratis: `Shipping` 12.000 anulado por `Discount Amount` 12.000) — de ahí que 2.539 pedidos
+cuadren exactos sin restar nada.
+
+⚠ **`Taxes` del CSV NO es el IVA del 19 %** (7.168,91 en un pedido de 214.500). No sirve para el
+cruce. El IVA se lee del **asiento** (base clase 4 + cuenta **2408**), como en §«tres lecturas del
+dinero». Y **el factor no se cablea**: en Shopify sale **1,19000 exacto** (a consumidor final todo
+es gravado), pero se mide — en cuanto entre un producto excluido, un 1,19 fijo mentiría.
+
+⚠ **El borde de mes es ASIMÉTRICO por construcción:** el CSV se filtra por `Created at` y el DW por
+`fecha_factura`. Un pedido de julio facturado en agosto está en el DW y no en el CSV (los 3
+`out_invoice`, con `#` bajo: `#157048/70/78`); uno de agosto facturado en septiembre, al revés.
+
+⚠ **Las notas crédito no traen `#` de Shopify:** su `ref` es `'Reversión de: FE51933, CLIENTE SE
+RETRACTA DE LA COMPRA'`. Por eso quedan como «solo en Odoo» y hay que sumarlas al puente a mano;
+no son un descuadre.
+
+⭐ **CERO HUECOS REALES.** Los 5 pedidos pagados que aparecían sin factura en agosto (`#161669`,
+`#161951`, `#162069`, `#162449`, `#162548` = 824.200) son todos del **28–31 de agosto** y **se
+facturaron el 1–2 de septiembre**: `FE55848`, `FE55851`, `FE55852`, `FE55796`, `FE55502`, y sus
+bases × 1,19 dan **exactamente** el `Total` de Shopify de cada uno. Eran **borde de mes**, no un
+hueco. ⇒ **Todos los pesos de agosto están explicados y no hay nada que arreglar en el DW.**
+
+⚠ Por eso el auditor **no llama «hueco» a ese bloque**: lo marca «a revisar» y recuerda comprobar
+el mes siguiente antes de escalarlo. Llamarlo hueco habría mandado a contabilidad a buscar 824.200
+que estaban perfectamente facturados.
+
 ## 11. Fase 4 — hoja de NIELSEN (2026-07-30)
 
 DDL: `sql/marts/28_nielsen_dashboards.sql`. GRANTs: `sql/marts/24_rol_intranet.sql`
@@ -561,10 +618,13 @@ DDL: `sql/marts/28_nielsen_dashboards.sql`. GRANTs: `sql/marts/24_rol_intranet.s
 
 ### 11.1 El dataset
 
-**837.500 filas** · 164 semanas (**2023-06-11 → 2026-07-26**) · **4 markets** · 3 categorías ·
-250 marcas · 194 fabricantes · **3.617 ítems** · 13 presentaciones (una vacía).
-*(Export del 2026-08-06. Antes: 573.013 filas y otros 4 markets — ver la trampa 10, la ventana
-es móvil, y la trampa 1, el conjunto de markets cambió.)*
+**636.106 filas** · 164 semanas (**2023-07-09 → 2026-08-23**) · **3 markets del origen + 1
+derivado** · 3 categorías · 13 presentaciones (una vacía).
+*(Export del 2026-09-07. Antes: 837.500 filas con 4 markets del origen, y antes 573.013 — ver la
+trampa 0, el conjunto de markets cambió dos veces, y la trampa 10, la ventana es móvil.)*
+
+Totales por market: combinado **2.520.247.408.238** · derivado (supermercados)
+**2.027.703.713.951** · farmacias **492.543.694.288** · e-commerce **132.300.816.488**.
 
 Los tres casts son **perfectos**: 0 filas mal formadas de 573.013 en `vtas_valor`,
 `vtas_unds` y `dist_num`. Y `periods` parsea al **100 %** con
@@ -627,6 +687,23 @@ volver a cambiar.
 
 ### 11.3 Las trampas del dataset
 
+0. ⚠⚠ **EL CONJUNTO DE MARKETS NO ES ESTABLE: cambió DOS VECES en un mes.** El 2026-08-06 se
+   retiró `Total Colombia Supermercados` y entró el combinado; el **2026-09-07 desapareció
+   `NEW TOTAL COLOMBIA`** (la matriz pasó de 3 categorías × 4 markets = 12 archivos a 3 × 3 = 9).
+   ⇒ **No fijar «4 markets» como invariante en ningún test**, y la semilla conserva las filas de los
+   markets retirados con su motivo en vez de borrarlas.
+   ⇒ Como `NEW TOTAL COLOMBIA` era el canal de **supermercados**, ahora se materializa
+   **`SUPERMERCADOS (derivado)` = combinado − farmacias** en `mv_nielsen_semana`. ⚠ Es un dato
+   **CALCULADO aquí, no medido por Nielsen**: la resta se validó contra el market real mientras los
+   dos coexistían (al peso en 99,23 % de las celdas, 0,00043 % de diferencia agregada) y la
+   contención se re-verificó sobre el export nuevo: de las **56.699** celdas de farmacias las
+   56.699 tienen par en el combinado, con **0 negativos**. `items` va **NULL** (un `COUNT(DISTINCT)`
+   no se puede restar). La red de seguridad es **`v_nielsen_derivado_negativo`**, que debe estar
+   VACÍA: **revisarla tras cada carga de Nielsen**.
+   ⚠ **El export del 2026-09-07 no lo puede leer openpyxl**: los 9 archivos fallan con
+   `could not read stylesheet from None` y **no están corruptos** (son xlsx completos, con su
+   `_rels/.rels`). Los lee `calamine`, y el loader ahora prueba los dos (`_excel_tolerante` en
+   `cargar_bi_datasets.py`). El síntoma parece un archivo roto y no lo es.
 1. ⚠⚠ **LOS MARKETS NO SE SUMAN, Y SUS NOMBRES ENGAÑAN** (re-medido 2026-08-06, el export
    trajo un market nuevo). La jerarquía **se midió, no se dedujo de los nombres**:
 

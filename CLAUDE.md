@@ -225,6 +225,27 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `mv_ventas_mes`/`dia`/`kpi_mes`/`cliente_primera`/`recompra`/`kit_mes` → `v_ventas_bi` →
   `v_ventas_explotada` → `v_precio_componente`) y volver a aplicar 14 → 15b → 21 → 23 → 27 → **24**
   (los `GRANT` a `intranet_ro` se pierden al recrear las MV) y refrescar. Medido: 85 s en total.
+- ⚠⚠ **LA VENTA DE SHOPIFY DEL DW NO ES COMPARABLE CON EL `Total` DE SHOPIFY: EL `Total` LLEVA
+  FLETE Y EL DW NO** (medido 2026-09-07 sobre agosto; auditor `python conciliar_shopify.py --csv
+  <orders_export.csv>`, solo lectura). No es error de nadie: en Odoo todo Shopify cae en **una sola
+  cuenta clase 4** (`41353801 VENTA DE COSMETICOS GRAVADO 19%`) y **no hay cuenta ni producto de
+  transporte** — el flete no es venta de cosméticos. Comparar de frente muestra un **~3,4 % de hueco
+  que no existe**. Llave del cruce: `Name` de Shopify (`#157126`) ↔ **`account.move.ref`** =
+  `fact.referencia` (casan 5.385 de 5.424 pedidos). Puente de agosto: Shopify 1.017.897.929 − 7,5M
+  de pedidos `expired` (no pagados, Odoo no los factura) − 0,8M de 5 pedidos del 28-31 de ago que
+  **se facturaron el 1-2 de sept** (`FE55848/55851/55852/55796/55502`, base × 1,19 = su `Total`
+  exacto ⇒ borde de mes, **no un hueco**) − **34,2M de flete** = 975.421.259 = **el Odoo de esos
+  pedidos AL PESO**; + 0,8M de 3 facturas de julio − 4,1M de 13 NC por retracto = 972.082.539 = el
+  DW del mes. ⭐ **De los 5.385 pedidos comunes, cada uno cumple `dif = 0` o `dif = flete`: residuo
+  0 ⇒ CERO huecos reales, todo agosto explicado.** ⚠ El auditor marca ese bloque «a revisar», no
+  «hueco»: llamarlo hueco manda a contabilidad a buscar un dinero que sí está facturado. Shopify facturó 57,1M de flete y
+  **regaló 22,9M** (envío gratis: `Shipping` 12.000 anulado por `Discount Amount` 12.000), de ahí
+  que 2.539 cuadren exactos. ⚠ **`Taxes` del CSV NO es el IVA del 19 %** (7.168,91 en un pedido de
+  214.500): el IVA se lee del **asiento** (clase 4 + cuenta 2408) y **el factor no se cablea** —
+  sale 1,19000 exacto porque a consumidor final todo es gravado, pero se mide. ⚠ El borde de mes es
+  **asimétrico**: el CSV filtra por `Created at` y el DW por `fecha_factura`. ⚠ Las NC **no traen
+  `#`** (su `ref` es `'Reversión de: FE51933, motivo'`), así que salen como «solo en Odoo» sin ser
+  un descuadre. Detalle en `docs/dashboards_intranet.md` §10.7.
 - **Mapeos de negocio NO-Odoo (única excepción local, a demanda):** `cargar_mapeos.py` lee de Drive
   (`DriveLoader` + `DRIVE_IDS`) → `marts.map_*`: ZONA por depto+categoría (+ Cundinamarca por
   depto+ciudad), CLIENTE PADRE, y CATEGORÍA normalizada. Correr cuando cambie un Excel.
@@ -618,6 +639,19 @@ definidos por el admin). **Contrato de datos completo:
     `'1 sem 9-26 fin 01/03/26'` > `'1 sem 26-26 fin 28/06/26'`). Hizo creer que la serie de
     POCION se cortaba en marzo-2026 y que `PCN POCION` era un renombre; falso, POCION llega a
     junio. Usar `to_date(split_part(periods,'fin ',2),'DD/MM/YY')`, como hacen las dos MV.
+  - ⚠⚠ **EL CONJUNTO DE MARKETS NO ES ESTABLE: cambió dos veces en un mes.** El 2026-09-07
+    **desapareció `NEW TOTAL COLOMBIA`** (la matriz pasó de 3×4 = 12 archivos a 3×3 = 9). Como ese
+    era el canal de **supermercados**, ahora se materializa **`SUPERMERCADOS (derivado)` =
+    combinado − farmacias** en `mv_nielsen_semana`. ⚠ Es **CALCULADO aquí, no medido por Nielsen**;
+    se validó contra el market real mientras coexistían (99,23 % de celdas al peso) y la contención
+    se re-verificó en el export nuevo: **0 negativos** en las 56.699 celdas de farmacias. `items` va
+    NULL (un `COUNT(DISTINCT)` no se resta). Red de seguridad: **`v_nielsen_derivado_negativo`**,
+    debe estar vacía — **revisarla tras cada carga**. ⚠ Esto **invirtió** la conclusión del
+    2026-08-06 («no hace falta un derivado, ya existe»), que era correcta con los 12 archivos.
+  - ⚠⚠ **El export del 2026-09-07 no lo puede leer openpyxl**: falla con `could not read stylesheet
+    from None` en los 9 archivos, y **no están corruptos** (xlsx completos, magic PK, `_rels/.rels`
+    presente). Los lee **calamine**; el loader prueba los dos (`_excel_tolerante`). `python-calamine`
+    quedó declarado en `requirements.txt` — estaba instalado pero sin declarar.
   - ⚠ **La carpeta de Drive de Nielsen se mantiene a mano** (3 archivos por categoría): subir el
     export nuevo sin borrar el viejo duplica semanas y `mv_nielsen_semana` **dobla los valores en
     silencio** (agrega con GROUP BY), mientras `mv_nielsen_item_semana` sí falla por su índice
