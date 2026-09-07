@@ -225,12 +225,21 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `mv_ventas_mes`/`dia`/`kpi_mes`/`cliente_primera`/`recompra`/`kit_mes` → `v_ventas_bi` →
   `v_ventas_explotada` → `v_precio_componente`) y volver a aplicar 14 → 15b → 21 → 23 → 27 → **24**
   (los `GRANT` a `intranet_ro` se pierden al recrear las MV) y refrescar. Medido: 85 s en total.
-- ⚠⚠ **LA VENTA DE SHOPIFY DEL DW NO ES COMPARABLE CON EL `Total` DE SHOPIFY: EL `Total` LLEVA
-  FLETE Y EL DW NO** (medido 2026-09-07 sobre agosto; auditor `python conciliar_shopify.py --csv
-  <orders_export.csv>`, solo lectura). No es error de nadie: en Odoo todo Shopify cae en **una sola
-  cuenta clase 4** (`41353801 VENTA DE COSMETICOS GRAVADO 19%`) y **no hay cuenta ni producto de
-  transporte** — el flete no es venta de cosméticos. Comparar de frente muestra un **~3,4 % de hueco
-  que no existe**. Llave del cruce: `Name` de Shopify (`#157126`) ↔ **`account.move.ref`** =
+- ⚠⚠ **EL FLETE QUE PAGA EL CLIENTE EN SHOPIFY NO SE FACTURA** (medido 2026-09-07 sobre agosto;
+  auditor `python conciliar_shopify.py --csv <orders_export.csv> --salida <detalle.csv>`, solo
+  lectura). **La prueba es la CxC**: la cuenta por cobrar del mes suma **972.082.539 = exactamente
+  `base + IVA`**, mientras el cliente pagó **1.017.897.929** ⇒ los **34,2 M de flete no están en
+  ninguna factura**, ni como venta ni en otra cuenta (`cxc_odoo = con_iva_odoo` en **todas** las
+  filas del CSV). En Odoo todo Shopify cae en **una sola cuenta clase 4** (`41353801 VENTA DE
+  COSMETICOS GRAVADO 19%`) y **no hay cuenta ni producto de transporte**.
+  ⚠ **No es un fallo del DW —refleja Odoo con exactitud— sino una PREGUNTA CONTABLE ABIERTA**: si el
+  cliente paga el flete, ¿debe ir en la factura? El repo la plantea con números y **no la responde**.
+  ⚠⚠ **TRES cifras se llaman «la venta de Shopify» y las tres son correctas** (agosto): **1.017.897.929**
+  lo que el cliente PAGÓ (con flete) · **972.082.539** lo que se le FACTURÓ (CxC con IVA) ·
+  **953.387.670** venta de PRODUCTO COMERCIAL (`mv_ventas_mes`, lo que ve la intranet). Comparar dos
+  cualesquiera de frente inventa un hueco — es lo que pasa cuando administración dice «975» y el
+  tablero «953». El puente entre las dos últimas son los **kits sin código** (ver más abajo).
+  Llave del cruce: `Name` de Shopify (`#157126`) ↔ **`account.move.ref`** =
   `fact.referencia` (casan 5.385 de 5.424 pedidos). Puente de agosto: Shopify 1.017.897.929 − 7,5M
   de pedidos `expired` (no pagados, Odoo no los factura) − 0,8M de 5 pedidos del 28-31 de ago que
   **se facturaron el 1-2 de sept** (`FE55848/55851/55852/55796/55502`, base × 1,19 = su `Total`
@@ -246,6 +255,17 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   **asimétrico**: el CSV filtra por `Created at` y el DW por `fecha_factura`. ⚠ Las NC **no traen
   `#`** (su `ref` es `'Reversión de: FE51933, motivo'`), así que salen como «solo en Odoo» sin ser
   un descuadre. Detalle en `docs/dashboards_intranet.md` §10.7.
+- ⚠⚠ **8 KITS SIN `default_code` EN ODOO NO APARECEN EN NINGÚN TABLERO** (2026-09-07).
+  `v_ventas_producto` exige prefijo `PCN%/KD%/TNG%/B8%` y estos kits (`es_kit = true`) no tienen
+  código, así que quedan fuera de `v_ventas_bi` y de **todas** las MV de ventas: **389.845.461 sin
+  IVA en 2026** (16.020.142 solo en Shopify-agosto). Es venta real, y es el puente entre «lo
+  facturado» y «lo que muestra el tablero». Listarlos: `conciliar_shopify.py --salida-kits`.
+  ⚠ **La corrección NO es quitar el filtro**: en el mismo saco caen `Descuento financiero en ventas`
+  (−2.876 M), ASESORÍA EN MERCADEO, COMISIONES, ARRENDAMIENTO, ALOJAMIENTO e INTERESES DE PRÉSTAMO,
+  que **no son venta de producto** y están bien excluidos. Lo mal excluido se detecta con
+  **`es_kit AND codigo IS NULL`**. La raíz está en Odoo (darles código); corregirlo en el DW subiría
+  ~390 M las cifras 2026 ya publicadas y obliga a recrear 6 MV + 3 vistas + re-aplicar los `GRANT`
+  ⇒ **decisión de negocio, pendiente**.
 - **Mapeos de negocio NO-Odoo (única excepción local, a demanda):** `cargar_mapeos.py` lee de Drive
   (`DriveLoader` + `DRIVE_IDS`) → `marts.map_*`: ZONA por depto+categoría (+ Cundinamarca por
   depto+ciudad), CLIENTE PADRE, y CATEGORÍA normalizada. Correr cuando cambie un Excel.
@@ -589,9 +609,20 @@ definidos por el admin). **Contrato de datos completo:
     pasó de 18.126.483.426 a 18.135.911.362. Usar **2025** (cerrado: venta 82.417.391.917) o
     invariantes («las 4 zonas suman el total del canal»).
 - **`sql/marts/28_nielsen_dashboards.sql`** (fase 4 = hoja **Nielsen**, aplicada 2026-07-30, 12 s).
-  ⚠ **Re-ejecutar `24_rol_intranet.sql` DESPUÉS.** `mv_nielsen_semana` (158.979 filas, agregada) +
-  `mv_nielsen_item_semana` (573.013, con `dist_num`) + las semillas `bi_nielsen_market` y
+  ⚠ **Re-ejecutar `24_rol_intranet.sql` DESPUÉS.** `mv_nielsen_semana` (256.072 filas, agregada) +
+  `mv_nielsen_item_semana` (636.106, con `dist_num`) + las semillas `bi_nielsen_market` y
   `bi_nielsen_marca_propia`. `MVS_NIELSEN` va **solo en el tick `:00`**: el dato es semanal.
+  ⭐ **`bi_nielsen_market.tiene_detalle_item` (2026-09-07)** — `FALSE` en un solo market,
+  `SUPERMERCADOS (derivado)`, porque **ese universo no existe en `mv_nielsen_item_semana`**: sale de
+  una resta y un `COUNT(DISTINCT item)` no se resta. La intranet la consume **igual que
+  `tiene_valor`**: si es `FALSE`, todo lo que baje al grano de producto (ranking por ítem, share por
+  ítem, `dist_num`, el conteo de productos de los KPI y el de `comparar`) devuelve `no_calculable`
+  con su razón — **nunca un `0` ni un «sin datos con estos filtros»**, que culpa al usuario de una
+  limitación del dataset. Sin esta señal la intranet pedía igual y recibía 0 filas en silencio.
+  ⚠ Va en la tabla y no derivada con un `EXISTS`: son metadatos del contrato y el `EXISTS` se pagaría
+  sobre 636 k filas en cada petición. Se añade con `ALTER TABLE … ADD COLUMN IF NOT EXISTS` ⇒ la
+  tabla **no se recrea**, el `GRANT` no se pierde y **no hay que re-ejecutar el 24 por esto**
+  (verificado: `has_table_privilege` sigue en `true`).
   `bi_nielsen` crudo **sigue negado**. Contrato y todas las mediciones en
   `docs/dashboards_intranet.md` §11. Cuadra al segundo decimal con el informe (farmacias:
   474.124.569.959 · 18.586.406 und · 207 marcas · 2.589 productos · las 3 categorías exactas).
@@ -759,6 +790,21 @@ definidos por el admin). **Contrato de datos completo:
 - `_pg_type` mapea tipos pandas→PG; default `VARCHAR(512)`, `TEXT` para columnas largas.
 
 ## Avisos / gotchas
+- ⛔⛔ **UNA CONSULTA AD-HOC LARGA SOBRE `marts` PARA EL CRON Y LA INTRANET. FIJAR SIEMPRE
+  `statement_timeout`.** Ocurrió el 2026-09-07: un `SELECT sum(...) FROM marts.v_ventas_producto`
+  de análisis se quedó **3 h 11 m** vivo reteniendo un lock sobre `dim_cuenta`; detrás se encoló el
+  **`ALTER TABLE marts.dim_cuenta ADD COLUMN IF NOT EXISTS …`** de `canonicalizar_puc` (2 h 25 m) y,
+  tras él, **8 sesiones más** del cron y la intranet. **El DW estuvo parado 2,5 horas.**
+  ⚠ Lo traicionero: un `ACCESS EXCLUSIVE` **en espera bloquea a todos los lectores que llegan
+  después**, aunque el lector que corre sí sería compatible con ellos ⇒ una sola consulta lenta
+  tumba la cola entera. Y el servidor **parece sano** (`SELECT 1` en 0,1 s): solo se cuelga lo que
+  toca la tabla.
+  **Diagnóstico:** `SELECT pid, pg_blocking_pids(pid), wait_event_type, now()-xact_start, query FROM
+  pg_stat_activity WHERE state='active'` → el que tiene `pg_blocking_pids = []` y más antigüedad es
+  la cabeza. **Solución:** `pg_cancel_backend(<pid>)` sobre esa cabeza; la cola se drena sola.
+  **Prevención:** conectar con `options='-c statement_timeout=<ms>'`, como hace `conciliar_shopify.py`.
+  ⚠ **NO** ponerlo en `classes/db_loader.py`: lo usan el ETL y los cargadores, que tienen consultas
+  legítimamente largas.
 - `date` / `invoice_date` aterrizan como `VARCHAR(512)` (Odoo los devuelve string y
   `_pg_type` solo convierte a TIMESTAMP los dtypes datetime64 reales).
 - `preparar_y_cargar` NO añade columnas de auditoría `_loaded_at` / `_source_file`

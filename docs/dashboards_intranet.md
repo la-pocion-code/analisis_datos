@@ -561,11 +561,35 @@ Auditor reusable: **`python conciliar_shopify.py --csv <orders_export.csv>`** (s
 **La llave existe y funciona:** `Name` de Shopify (`#157126`) ↔ **`account.move.ref`** de Odoo, que
 en el DW es `fact_movimiento_contable.referencia`. Casan **5.385 de 5.424** pedidos.
 
-⭐ **El `Total` de Shopify incluye el FLETE y la venta del DW no.** No es un error de nadie: en Odoo
-todo Shopify aterriza en **una sola cuenta clase 4** (`41353801 VENTA DE COSMETICOS GRAVADO 19%`,
-12.132 líneas en agosto) y **no existe cuenta ni producto de transporte**. Contablemente el flete no
-es venta de cosméticos. **Quien compare las dos cifras de frente verá un ~3,4 % de hueco que no
-existe.**
+#### ⭐⭐ El flete que paga el cliente NO SE FACTURA — la prueba está en la CxC
+
+La primera versión de esta sección decía que el flete «simplemente no es venta de cosméticos y no es
+error de nadie». **Se quedó corta.** La prueba decisiva no es el importe de la venta sino la
+**cuenta por cobrar**: la CxC de los documentos de Shopify de agosto suma **972.082.539**, que es
+**exactamente `base + IVA`**, mientras el cliente le pagó a Shopify **1.017.897.929**. En el CSV que
+produce el auditor, `cxc_odoo = con_iva_odoo` en **todas** las filas.
+
+⇒ **Los 34.152.000 de flete que el cliente pagó no están en ninguna factura** — ni como venta ni en
+otra cuenta. En Odoo todo Shopify aterriza en **una sola cuenta clase 4** (`41353801 VENTA DE
+COSMETICOS GRAVADO 19%`, 12.132 líneas en agosto) y **no existe cuenta ni producto de transporte**.
+
+⚠ **Esto NO es un fallo del DW: el DW refleja Odoo con exactitud.** Es una **pregunta contable
+abierta** — si el cliente paga el flete, ¿debe ir en la factura? Este repo la plantea con números y
+**no la responde**; no se debe cerrar desde aquí.
+
+#### Las TRES cifras que todo el mundo llama «la venta de Shopify»
+
+| cifra | qué es exactamente | agosto 2026 |
+|---|---|---:|
+| Shopify `Total` | lo que el cliente **pagó** (lleva flete) | 1.017.897.929 |
+| **CxC de Odoo con IVA** | lo que se le **facturó** al cliente | **972.082.539** |
+| base clase 4 | ingreso facturado, sin IVA | 816.876.092 |
+| **`mv_ventas_mes`** con IVA | venta de **producto comercial** ← lo que ve la intranet | **953.387.670** |
+| `mv_ventas_mes` sin IVA | ídem | 801.166.118 |
+
+**Las tres son correctas y miden cosas distintas.** Comparar dos cualesquiera de frente produce un
+«hueco» que no existe — y es exactamente lo que pasa cuando administración dice «975» y el tablero
+dice «953».
 
 El puente de agosto de 2026, concepto por concepto:
 
@@ -606,9 +630,49 @@ facturaron el 1–2 de septiembre**: `FE55848`, `FE55851`, `FE55852`, `FE55796`,
 bases × 1,19 dan **exactamente** el `Total` de Shopify de cada uno. Eran **borde de mes**, no un
 hueco. ⇒ **Todos los pesos de agosto están explicados y no hay nada que arreglar en el DW.**
 
-⚠ Por eso el auditor **no llama «hueco» a ese bloque**: lo marca «a revisar» y recuerda comprobar
-el mes siguiente antes de escalarlo. Llamarlo hueco habría mandado a contabilidad a buscar 824.200
-que estaban perfectamente facturados.
+⚠ Por eso el auditor **no llama «hueco» a ese bloque**: lo resuelve buscando esas referencias en el
+hecho **sin filtro de fecha** y las clasifica `FACTURADO_OTRO_MES` con su número de factura.
+Llamarlo hueco habría mandado a contabilidad a buscar 824.200 que estaban perfectamente facturados.
+
+#### El CSV factura a factura
+
+`python conciliar_shopify.py --csv <export.csv> --salida detalle.csv --salida-kits kits.csv`
+
+Una fila por pedido/documento con **`situacion`**, el **número de factura** (`fact.numero`) y
+`cxc_odoo`. Separador `;` y UTF-8 con BOM para que Excel es-CO lo abra bien. Agosto de 2026:
+
+| `situacion` | pedidos | Shopify pagó | Odoo facturó |
+|---|---:|---:|---:|
+| `CUADRA` | 2.539 | 517.575.090 | 517.575.090 |
+| `FLETE_NO_FACTURADO` | 2.846 | 491.998.169 | 457.846.169 |
+| `NO_PAGADO` (expirados) | 34 | 7.500.470 | 0 |
+| `FACTURADO_OTRO_MES` | 5 | 824.200 | 0 |
+| `FACTURA_DE_OTRO_MES` | 3 | 0 | 798.200 |
+| `NOTA_CREDITO` | 13 | 0 | −4.136.920 |
+| **TOTAL** | **5.440** | **1.017.897.929** | **972.082.539** |
+
+⚠ **`REVISAR` debe salir en 0 pedidos.** Es la clase residual: si aparece algo ahí, es un caso que
+ni cuadra ni se explica por el flete, o sea el problema nuevo.
+
+#### ⚠⚠ KITS SIN `default_code`: venta real que NINGÚN tablero cuenta
+
+**8 kits** (`es_kit = true`) **no tienen `default_code` en Odoo**, y `v_ventas_producto` exige
+prefijo `PCN%/KD%/TNG%/B8%` ⇒ quedan fuera de `v_ventas_bi` y de **todas** las MV de ventas.
+Medido: **16.020.142 sin IVA en Shopify-agosto** y **389.845.461 sin IVA en 2026**, todos los
+canales. Es el puente entre «lo facturado» y «lo que muestra el tablero».
+
+Los kits: KIT CONTROL GRASA Y CRECIMIENTO, KIT RIZOS LARGO Y ABUNDANTES, KIT MASCARILL SOS +
+BOOSTER, KIT ANTI-FRIZZ RIZOS, Kit Doble Poder Reparador, KIT PROTECCIÓN DE VERANO, KIT DE
+REPARACIÓN CON DOYPACK (+1). Lista completa por mes × canal con `--salida-kits`.
+
+⚠ **La corrección NO es quitar el filtro.** En el mismo saco caen `Descuento financiero en ventas`
+(−2.876 M en 2026), ASESORÍA EN MERCADEO, COMISIONES, ARRENDAMIENTO, ALOJAMIENTO e INTERESES DE
+PRÉSTAMO, que **no son venta de producto** y están bien excluidos. Lo único mal excluido son los
+kits, y se detectan con `es_kit AND codigo IS NULL`.
+
+⚠ **Decisión pendiente del negocio** (2026-09-07): corregirlo subiría ~390 M las cifras 2026 ya
+publicadas y obliga a recrear 6 MV + 3 vistas y re-aplicar los `GRANT`. La raíz está en Odoo (darles
+código a los 8 kits), no aquí.
 
 ## 11. Fase 4 — hoja de NIELSEN (2026-07-30)
 
@@ -802,12 +866,34 @@ volver a cambiar.
 
 | Objeto | Filas | Para qué |
 |---|---|---|
-| `mv_nielsen_semana` | **158.979** | share, ranking y series (agregada, sin `item` ni `dist_num`) |
-| `mv_nielsen_item_semana` | **573.013** | ranking de productos y `dist_num` (grano de ítem) |
-| `bi_nielsen_market` | 4 | metadatos: cuál es el total, cuál solo trae distribución |
+| `mv_nielsen_semana` | **256.072** | share, ranking y series (agregada, sin `item` ni `dist_num`) |
+| `mv_nielsen_item_semana` | **636.106** | ranking de productos y `dist_num` (grano de ítem) |
+| `bi_nielsen_market` | 6 | metadatos: cuál es el total, cuál trae valor, cuál tiene detalle por ítem |
 | `bi_nielsen_marca_propia` | 1 | las marcas de la casa, para no cablear 'POCION' en el código |
+| `v_nielsen_derivado_negativo` | 0 | guardarraíl del **operador** del DW — ⚠ NO concedida a `intranet_ro` |
 
 `bi_nielsen` **crudo sigue negado** a `intranet_ro`.
+
+#### ⚠⚠ `tiene_detalle_item` — la señal que la intranet TIENE que mirar (2026-09-07)
+
+`bi_nielsen_market` publica **`tiene_detalle_item BOOLEAN`**, y hoy está en **`FALSE` en un solo
+market: `SUPERMERCADOS (derivado)`**. Significa que ese universo **no existe en
+`mv_nielsen_item_semana`** (que solo tiene 3 markets), porque se calcula restando dos universos y un
+`COUNT(DISTINCT item)` **no se puede restar**.
+
+Se consume **igual que `tiene_valor`**: si está en `FALSE`, los paneles que bajan al grano de producto
+(ranking por ítem, share por ítem, `dist_num`, el conteo de productos de los KPI y el de `comparar`)
+devuelven **`no_calculable` con su razón**, nunca un `0` ni un «sin datos con estos filtros» — eso
+último culpa al usuario de una limitación del dataset y le hace quitar filtros para siempre.
+
+⚠ Va en la **tabla** y no derivado con un `EXISTS` en la intranet: son metadatos del contrato, y un
+`EXISTS` sobre las 636 k filas del detalle se pagaría en cada petición. Mismo espíritu que
+`tiene_valor`. La columna se añade con `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, así que **la tabla no
+se recrea y el `GRANT` no se pierde**: no hay que re-ejecutar `24_rol_intranet.sql` por esto.
+
+⚠ Los dos markets retirados (`NEW TOTAL COLOMBIA`, `Total Colombia Supermercados`) conservan
+`tiene_detalle_item = TRUE` a propósito: describe cómo eran cuando existían, y da igual porque salen
+con **`con_datos = FALSE`** (0 filas en la MV) y el selector los puede ocultar por ahí.
 
 ### 11.5 Lo que la intranet hace distinto del informe (autorizado)
 
