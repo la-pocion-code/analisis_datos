@@ -93,6 +93,10 @@ Así se cumple **una sola tabla de hechos** en Power BI (ventas y cartera por DA
 - **dim_cuenta** — catálogo PUC con jerarquía resuelta y `nivel_movimiento` (base de balance y
   estado de resultados).
 - **dim_tercero** — clientes; `tipo_cliente` = clasificación comercial; `identificacion` = NIT.
+  `ciudad` sale de una **cascada**: el catálogo `res.city` vía `city_id` **manda** y el char de
+  texto libre `city` **rellena** (el texto lo digitan a mano en Shopify y llegaba en muchas
+  grafías del mismo municipio). `departamento` = `state_id` **con** su sufijo `" (CO)"`, que es
+  el formato que exige el join de `map_zona`. Ver la sección de `dim_tercero` en `CLAUDE.md`.
 - **dim_diario / dim_producto / dim_vendedor / dim_fecha** — catálogos conformes; PK = id de Odoo
   (excepto `dim_fecha` = `fecha_key`).
 - **Planes comerciales** (canal, línea producto, tipo producto, país) — columnas degeneradas en
