@@ -168,7 +168,14 @@ GRANT SELECT ON
     marts.mv_ventas_mes,
     marts.mv_ventas_kpi_mes,
     marts.mv_presupuesto_mes,
-    marts.mv_ventas_presupuesto_mes   -- ventas vs presupuesto por mes × categoría
+    marts.mv_ventas_presupuesto_mes,  -- ventas vs presupuesto por mes × categoría
+    -- DEVOLUCIONES (notas crédito) por empresa × mes × canal. DDL en
+    -- 37_devoluciones_dashboards.sql ⇒ RE-EJECUTAR este archivo después del 37.
+    -- ⚠⚠ Es INFORMATIVA: `venta` en mv_ventas_mes YA es neta de devoluciones, así que
+    -- restarle estas cifras cuenta el mismo dinero dos veces. Antes del 2026-09-08 no
+    -- había NINGÚN objeto con devoluciones concedido al rol, y por eso la intranet y el
+    -- MCP no podían responder nada sobre el tema: faltaba la fuente, no el prompt.
+    marts.mv_ventas_devoluciones_mes
 TO intranet_ro;
 
 -- Vistas materializadas de dashboards (hoja Contabilidad — fase 2).

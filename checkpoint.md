@@ -45,7 +45,7 @@ Todas las hojas alimentan la **intranet** (`proyecto pocion/intranet`, otro repo
 | **Marketing** | 🟡 parcial | `31` | 3 | `:00` | [dashboards](docs/dashboards_intranet.md) |
 | **Compras** | ✅ **nueva (2026-08-12)** | `34`,`35` | 4 | cada tick | [dashboards §12](docs/dashboards_intranet.md) |
 
-**29 MV en total.** DDL en `sql/marts/NN_*.sql` (todos idempotentes).
+**30 MV en total.** DDL en `sql/marts/NN_*.sql` (todos idempotentes).
 ⚠ **`24_rol_intranet.sql` se re-ejecuta DESPUÉS de cualquier DDL que recree una MV**: los `GRANT` a
 `intranet_ro` se pierden al recrearla.
 
@@ -97,7 +97,7 @@ en Odoo. Para eso hay que releer el catálogo (ver la guía de operación).
 | `run_dw.py` | ⭐ **entrypoint del cron**: reparte ligera/completa y toma el advisory lock |
 | `etl_dw_marts.py` | ETL del DW (`--full`/`--incremental`/`--rebuild`/`--dims` + backfills) |
 | `sql/marts/*.sql` | DDL del modelo estrella, vistas, MV, roles. Idempotentes |
-| `refrescar_mv_dashboards.py` | refresca las 29 MV; decide qué va en cada tick |
+| `refrescar_mv_dashboards.py` | refresca las 30 MV; decide qué va en cada tick |
 | `cargar_bi_datasets.py` · `cargar_cuentas_clave.py` · `cargar_mapeos.py` · `cargar_marketing.py` | cargas **a demanda** desde Google Drive y APIs |
 | `estado_dw.py` · `validar_ventas.py` · `validar_nc.py` · `diagnosticar_fecha_venta.py` · `conciliar_shopify.py` · `diagnosticar_producto_comercial.py` | diagnóstico y conciliación (solo lectura) |
 | `classes/` | `DBLoader` (PG), `DriveLoader` (Drive), `MailSender` (SMTP), `ReportClassNew` (BI manual) |

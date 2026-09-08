@@ -558,6 +558,30 @@ definidos por el admin). **Contrato de datos completo:
   ⚠ Se refresca **AL FINAL** (lee de `mv_ventas_mes` y `mv_presupuesto_mes`). Asimetrías: presupuesto
   **solo 2026**, **sin empresa** (suma HFA+PCN) y `venta` por **`fecha_venta`** (no admite
   `date_basis=factura`). Cuadre verificado: `SUM(venta)` idéntico a `v_ventas_bi`.
+- **`sql/marts/37_devoluciones_dashboards.sql`** (2026-09-08): **`mv_ventas_devoluciones_mes`**
+  (246 filas), las **DEVOLUCIONES** (notas crédito de venta) por `empresa × mes × canal`, contadas
+  por la **fecha de la NC**. ⚠ **Re-ejecutar `24_rol_intranet.sql` DESPUÉS.** Va en `MVS_VENTAS`
+  (cada tick: sale del hecho). Existe porque **ningún** objeto concedido a `intranet_ro` tenía
+  devoluciones —revisados los 44 `GRANT`, cero coincidencias de `devol|nota_credito|refund`— así que
+  la intranet y el MCP no podían responder nada del tema: **faltaba la fuente, no el prompt.**
+  ⛔⛔ **`venta` YA ES NETA DE DEVOLUCIONES: nunca restarle estas cifras.** La **anulación total**
+  (`es_reverso`) hace que `v_ventas_producto` excluya la factura **y** su NC, y la **NC enlazada**
+  (`map_nc_factura`) ya resta dentro de `venta` en el mes de su factura original. La MV es
+  **informativa**, no un ajuste.
+  ⛔ **La tasa NO es columna, a propósito**: se agrega y luego se divide
+  (`SUM(con_iva)/SUM(facturado_con_iva)`). Guardarla invitaría a promediar filas, y en la empresa
+  pequeña salen tasas del 20 % sobre 4 facturas. ⚠ `facturado_con_iva` **puede ser 0** ⇒ tasa no
+  calculable, guion y no 0 %. ⚠ **El grano lleva empresa y hay que sumarla** para la vista del canal
+  (Shopify factura por las dos: febrero 2026 = 4.468 + 491 facturas).
+  ⚠ Importes **en positivo** con `abs()` (en el hecho `base`/`iva` son negativos y `cantidad`
+  positiva) para que nadie los sume a `venta` «para restar»; el IVA sale del **asiento**, no de un
+  factor fijo. Medido en Shopify 2026: tasa media **0,30 %** (banda 0,19-0,42 %), máximo **abril**
+  9.486.570/56 NC, mínimo **junio** 1.700.430/9 NC; **abril es volumen, no calidad** (18.426
+  facturas y tasa normal). ⚠ En Shopify **12 de 13 son anulación completa** del pedido, no parcial,
+  y la NC **no trae el `#`** del pedido. Contrato en `docs/dashboards_intranet.md` §10.10.
+  ⚠ La **tool del MCP** vive en el repo `intranet`: su descripción debe llevar los sinónimos
+  (devolución/retracto/nota crédito/NC/reversión/anulación/refund) y la regla de que `venta` ya es
+  neta.
 - **`sql/marts/24_rol_intranet.sql`**: rol **`intranet_ro`** + vistas de lookup `v_lk_tercero`,
   `v_lk_producto`, `v_lk_vendedor`, `v_lk_empresa`. Espejo de `20_agente.sql`: **NO** se concede
   acceso al hecho, a `dim_*` crudas, a `v_ventas_bi` ni a las `bi_*`. `v_lk_tercero` **excluye

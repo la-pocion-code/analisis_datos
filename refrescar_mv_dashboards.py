@@ -50,6 +50,9 @@ MVS_VENTAS = (
     "mv_ventas_kit_mes",          # fase 2 — unidades a nivel de kit
     "mv_ventas_cliente_primera",  # fase 2 — primera/última compra por cliente
     "mv_ventas_recompra",         # fase 2 — tasa de recompra (la más cara de las 3)
+    # Devoluciones (notas crédito) por empresa × mes × canal. Va en los ticks LIGEROS porque sale
+    # del hecho, que cambia cada 15 min. ⚠ No deriva de ninguna otra MV: no hay orden que respetar.
+    "mv_ventas_devoluciones_mes",
 )
 
 # ── CONTABILIDAD (sql/marts/26_contabilidad_dashboards.sql) — solo en el tick :00 ─

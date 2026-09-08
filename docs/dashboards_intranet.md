@@ -833,6 +833,77 @@ categoría los excluye igual** ⇒ el error humano **no rompe la definición**. 
 lleva `NOT LIKE '…/Add On''s%'` y `NOT LIKE '…/Sachet%'` explícitos como cinturón y tirantes, porque
 un error así **con venta** sí entraría.
 
+### 10.10 DEVOLUCIONES — `mv_ventas_devoluciones_mes` (2026-09-08)
+
+DDL: **`sql/marts/37_devoluciones_dashboards.sql`**. ⚠ **Re-ejecutar `24_rol_intranet.sql` después.**
+Refresco: **`MVS_VENTAS`**, en cada tick (sale del hecho). Medido: **246 filas, 4,3 s de DDL y 5,3 s
+de refresco**.
+
+**Por qué se creó:** hasta el 2026-09-08 **ningún** objeto concedido a `intranet_ro` contenía
+devoluciones — revisados los 44 `GRANT` del archivo 24, cero coincidencias de
+`devol|nota_credito|refund`. La intranet solo hace `SELECT` sobre esa whitelist, así que ni ella ni
+el MCP podían responder «cuántas devoluciones tuvo Shopify en agosto». **Faltaba la fuente, no el
+prompt.**
+
+**Qué es una devolución aquí:** una nota crédito de venta (`tipo_movimiento = 'out_refund'`),
+contada por **su propia fecha** (`fecha_factura` de la NC).
+
+**Grano:** `empresa_id × periodo_aaaamm × categoria`.
+**Columnas:** `documentos` · `documentos_anulacion` · `documentos_parcial` · `unidades` · `base` ·
+`iva` · `con_iva` · `facturas` · `facturado_con_iva`.
+
+#### ⚠⚠ Las cuatro reglas de uso
+
+1. ⛔ **`venta` YA ES NETA DE DEVOLUCIONES: nunca restar estas cifras de la venta.** Dos mecanismos:
+   la **anulación total** (`es_reverso`) hace que `v_ventas_producto` excluya la factura **y** su NC
+   —esa venta nunca existió—, y la **NC enlazada** por `map_nc_factura` resta dentro de `venta` en el
+   mes de **su factura original** (`fecha_venta`). La MV es **informativa**, no un ajuste.
+2. **El grano lleva empresa y hay que sumarla** para la vista del canal: Shopify factura por las dos
+   (febrero de 2026 = 4.468 + 491 facturas). Sin sumar, el mes sale partido en dos filas.
+3. ⛔ **La tasa NO es una columna, a propósito.** Se agrega primero y se divide después:
+   `SUM(con_iva) / SUM(facturado_con_iva)`. Guardarla invitaría a promediar filas, y en la empresa
+   pequeña salen tasas del 20 % sobre 4 facturas que se comerían la realidad.
+4. ⚠ **`facturado_con_iva` puede ser 0** (meses con NC de facturas de otro mes y cero facturación
+   propia) ⇒ la tasa **no es calculable**: pintar un guion, nunca un 0 %. Y **un mes en curso está
+   incompleto**: fuera de máximos, mínimos y promedios.
+
+⚠ Los importes se guardan **en positivo** (con `abs()`, porque `base`/`iva` vienen negativos del
+hecho y `cantidad` positiva) a propósito: una columna negativa invita a sumarla a `venta` «para
+restar», que es justo el doble conteo. La primera versión negaba las unidades y salían en negativo.
+⚠ El IVA sale del **asiento** documento por documento, no de un factor cableado (1,19 en gravado,
+1,00 en EXPORTACION).
+
+#### Cuadre verificado — SHOPIFY 2026 (agregando empresas)
+
+| mes | facturas | facturado c/IVA | devoluc. | anul. | parc. | und | devuelto c/IVA | tasa |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 202601 | 3.564 | 637.863.600 | 13 | 13 | 0 | 21 | 2.004.375 | 0,31 % |
+| 202602 | 4.959 | 859.425.255 | 19 | 18 | 1 | 38 | 3.398.820 | 0,40 % |
+| 202603 | 4.822 | 885.133.513 | 17 | 16 | 1 | 40 | 2.532.900 | 0,29 % |
+| 202604 | 18.426 | 3.126.464.245 | 56 | 53 | 3 | 150 | 9.486.570 | 0,30 % |
+| 202605 | 4.003 | 713.726.108 | 15 | 14 | 1 | 22 | 1.935.015 | 0,27 % |
+| 202606 | 4.409 | 795.742.480 | 9 | 9 | 0 | 22 | 1.700.430 | 0,21 % |
+| 202607 | 6.094 | 1.138.227.611 | 12 | 12 | 0 | 15 | 2.139.000 | 0,19 % |
+| 202608 | 5.388 | 976.219.459 | 13 | 12 | 1 | 50 | 4.136.920 | 0,42 % |
+
+⭐ **La tasa es notablemente estable: media 0,30 %, banda 0,19 %–0,42 %.** Máximo **abril**
+(9.486.570 / 56 NC) y mínimo **junio** (1.700.430 / 9 NC); promedio 3.416.754/mes y 19,3 NC/mes.
+⚠ **Abril no es un problema de calidad, es de volumen**: facturó 18.426 documentos contra los 4-6
+mil habituales y su tasa fue exactamente la normal. El mes que se sale es **agosto: 0,42 %**, la
+tasa más alta del año sobre volumen normal.
+⚠ **En Shopify casi todas son ANULACIONES COMPLETAS del pedido** (12 de 13 en agosto), no
+devoluciones parciales: el cliente se retracta y se reversa la factura entera. «Pedido anulado» y
+«devolución parcial» no son lo mismo para operaciones.
+⚠ **La NC no trae el `#` del pedido de Shopify** (su `ref` es `'Reversión de: FE51933, CLIENTE SE
+RETRACTA DE LA COMPRA'`): se atribuye al canal y al cliente, **no al pedido**.
+
+#### Lo que falta, y está en el otro repo
+
+La **tool del MCP** y el panel viven en `proyecto pocion/intranet`. Deben leer **solo** esta MV, y su
+descripción tiene que llevar los sinónimos (*devolución, retracto, nota crédito, NC, reversión,
+anulación, refund*) y las cuatro reglas de arriba — sobre todo la primera, porque es la que evita
+que el modelo reste las devoluciones de una venta que ya es neta.
+
 ## 11. Fase 4 — hoja de NIELSEN (2026-07-30)
 
 DDL: `sql/marts/28_nielsen_dashboards.sql`. GRANTs: `sql/marts/24_rol_intranet.sql`
