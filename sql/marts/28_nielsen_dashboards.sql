@@ -80,6 +80,47 @@ CREATE TABLE IF NOT EXISTS marts.bi_nielsen_market (
     nota              TEXT
 );
 
+-- ¿Este market existe a grano de ÍTEM (mv_nielsen_item_semana), o solo agregado?
+-- Aditivo e idempotente: la tabla ya existe en producción y NO se recrea (por eso ADD COLUMN IF
+-- NOT EXISTS y no una columna más en el CREATE de arriba, que solo corre la primera vez).
+--
+-- ⚠ Existe por `SUPERMERCADOS (derivado)`, el ÚNICO market que hoy la tiene en FALSE: se calcula
+-- restando dos universos, y `COUNT(DISTINCT item)` **no se puede restar** ⇒ no hay forma de bajarlo
+-- al ítem. Sin esta señal la intranet lo pide igual, recibe 0 filas y lo pinta como «0 productos» o
+-- «sin datos con estos filtros», culpando al usuario de una limitación del dataset.
+--
+-- Es el mismo patrón que `tiene_valor`: el almacén declara qué se puede preguntar, y la intranet
+-- corta con su razón en vez de adivinarlo con un EXISTS sobre las 636 k filas del detalle.
+ALTER TABLE marts.bi_nielsen_market
+    ADD COLUMN IF NOT EXISTS tiene_detalle_item BOOLEAN NOT NULL DEFAULT TRUE;
+
+COMMENT ON COLUMN marts.bi_nielsen_market.tiene_detalle_item IS
+  'FALSE = este market NO existe en mv_nielsen_item_semana, asi que no se puede pedir nada a '
+  'grano de item (ranking por producto, dist_num, conteo de productos). ⚠ Desde el 2026-09-08 '
+  'NINGUN market lo tiene en FALSE: el derivado bajo al grano de item. La columna se conserva '
+  'porque el conjunto de markets cambia cada mes y el proximo derivado puede no poder bajar.';
+
+-- ¿Es uno de los canales BASE, o sea disjunto de los demas?
+--
+-- ⚠⚠ ES LA REGLA QUE PERMITE SUMAR VARIOS MARKETS, y por eso es un DATO y no una lista de
+-- nombres cableada en la intranet: el conjunto de markets ya cambio dos veces en un mes.
+-- TRUE  = particiona el universo medido; cualquier subconjunto de estos se puede SUMAR.
+-- FALSE = es un roll-up (o esta retirado); solo se puede elegir SOLO.
+--
+-- Medido el 2026-09-08: Supermercados + Farmacias da 2.520.247.408.238, que es EXACTAMENTE el
+-- combinado (diferencia 0,00), y e-commerce esta declarado fuera de el. Los tres suman
+-- 2.652.548.224.726, cifra a la que se llega por dos caminos.
+--
+-- ⚠ Sumar el combinado con cualquiera de sus dos partes contaria esa parte DOS VECES: es lo que
+-- hace el informe de Power BI y por eso su mercado sale ~27 % inflado.
+ALTER TABLE marts.bi_nielsen_market
+    ADD COLUMN IF NOT EXISTS es_canal_base BOOLEAN NOT NULL DEFAULT FALSE;
+
+COMMENT ON COLUMN marts.bi_nielsen_market.es_canal_base IS
+  'TRUE = canal disjunto de los demas (Supermercados, Farmacias, E-commerce): un subconjunto '
+  'cualquiera de estos SE PUEDE SUMAR. FALSE = roll-up o retirado, solo se elige solo. Sumar un '
+  'roll-up con una de sus partes la contaria dos veces.';
+
 COMMENT ON TABLE marts.bi_nielsen_market IS
   'Metadatos de los universos de Nielsen. es_universo_total marca el que engloba a '
   'los demas: los markets NO se suman entre si. ⚠ El NOMBRE que da Nielsen no es fiable '
@@ -116,28 +157,34 @@ COMMENT ON TABLE marts.bi_nielsen_market IS
 --   semilla conserva las filas de los markets retirados con su motivo, en vez de borrarlas, y por
 --   eso NO se debe fijar «4 markets» como invariante en ningun test.
 INSERT INTO marts.bi_nielsen_market
-    (market, etiqueta, es_universo_total, tiene_valor, orden, nota) VALUES
-    ('NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA', 'Supermercados + Farmacias', TRUE, TRUE, 1,
+    (market, etiqueta, es_universo_total, tiene_valor, tiene_detalle_item, es_canal_base,
+     orden, nota) VALUES
+    ('NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA', 'Supermercados + Farmacias', TRUE, TRUE, TRUE,
+     FALSE, 1,
      'Universo MAYOR de los cuatro (2.501.713.761.171). CONTIENE a Supermercados y a '
-     'Farmacias: no sumarlo con ninguno de los dos. NO incluye e-commerce.'),
-    ('SUPERMERCADOS (derivado)', 'Supermercados', FALSE, TRUE, 2,
-     '⚠ CALCULADO AQUI, NO MEDIDO POR NIELSEN: combinado - farmacias, al grano de la MV. Existe '
-     'porque el export del 2026-09-07 dejo de traer NEW TOTAL COLOMBIA, que era este canal. La '
-     'resta se validO contra el market real mientras los dos coexistian: coincidia al peso en '
-     '99,23 % de las celdas, con 0,00043 % de diferencia agregada y 0 negativos. ⚠ `items` va NULL: '
-     'un COUNT(DISTINCT) no se puede restar.'),
-    ('NEW TOTAL COLOMBIA', 'Supermercados (retirado)', FALSE, FALSE, 8,
+     'Farmacias: no sumarlo con ninguno de los dos. NO incluye e-commerce. ⚠ es_canal_base=FALSE: '
+     'es un roll-up, asi que solo se puede elegir SOLO. Elegir Supermercados+Farmacias a la vez da '
+     'exactamente esta misma cifra (medido, diferencia 0,00), pero MEDIDA en vez de derivada.'),
+    ('SUPERMERCADOS (derivado)', 'Supermercados', FALSE, TRUE, TRUE, TRUE, 2,
+     '⚠ CALCULADO AQUI, NO MEDIDO POR NIELSEN: combinado - farmacias. Existe porque el export del '
+     '2026-09-07 dejo de traer NEW TOTAL COLOMBIA, que era este canal. La resta se validO contra '
+     'el market real mientras los dos coexistian: coincidia al peso en 99,23 % de las celdas, con '
+     '0,00043 % de diferencia agregada y 0 negativos. 🔴 Desde el 2026-09-08 la resta se hace '
+     'PRODUCTO A PRODUCTO (v_nielsen_item_derivado), asi que este market YA existe a grano de item '
+     'y `items` ya no va NULL: 2.625 productos con venta, 0 celdas negativas, y el total no se '
+     'movio. ⚠ Lo unico que sigue sin poder derivarse es `dist_num`: es un porcentaje.'),
+    ('NEW TOTAL COLOMBIA', 'Supermercados (retirado)', FALSE, FALSE, TRUE, FALSE, 8,
      '⚠ EL NOMBRE ENGANABA: no era el total del pais, era el canal de SUPERMERCADOS. **Ya no viene '
      'en el export desde el 2026-09-07**; lo reemplaza SUPERMERCADOS (derivado). Se conserva la '
      'fila como historia y para que nadie lo vuelva a leer como «total nacional».'),
-    ('TOTAL COLOMBIA FARMACIAS', 'Farmacias', FALSE, TRUE, 3,
+    ('TOTAL COLOMBIA FARMACIAS', 'Farmacias', FALSE, TRUE, TRUE, TRUE, 3,
      'Subconjunto de Supermercados + Farmacias. Su valor no cambio con el export nuevo '
      '(484.179.801.326 antes y despues), asi que el share propio de farmacias es comparable.'),
-    ('TOTAL CO ECOMMERCE', 'E-commerce', FALSE, TRUE, 4,
+    ('TOTAL CO ECOMMERCE', 'E-commerce', FALSE, TRUE, TRUE, TRUE, 4,
      'FUERA del combinado (no cuadra en su aritmetica). ⚠ El export del 2026-08-06 RE-MIDIO '
      'este universo: paso de 20.355 a 48.733 filas y de 77.582 M a 131.245 M de valor, asi '
      'que su share NO es comparable con medidas anteriores a esa fecha.'),
-    ('Total Colombia Supermercados', 'Supermercados (retirado)', FALSE, FALSE, 9,
+    ('Total Colombia Supermercados', 'Supermercados (retirado)', FALSE, FALSE, TRUE, FALSE, 9,
      'YA NO VIENE en el export (lo reemplazo NEW TOTAL SUPERMERCADOS + FARMACIAS el '
      '2026-08-06). Se conserva la fila como historia: solo traia distribucion, sin valor.')
 -- ⚠ DO UPDATE, no DO NOTHING (y es deliberado, al contrario que en bi_nielsen_marca_propia).
@@ -147,11 +194,13 @@ INSERT INTO marts.bi_nielsen_market
 -- mano, que es como se llega a que el archivo y la base digan cosas distintas. Re-ejecutar este
 -- DDL deja la metadata correcta por si sola.
 ON CONFLICT (market) DO UPDATE SET
-    etiqueta          = EXCLUDED.etiqueta,
-    es_universo_total = EXCLUDED.es_universo_total,
-    tiene_valor       = EXCLUDED.tiene_valor,
-    orden             = EXCLUDED.orden,
-    nota              = EXCLUDED.nota;
+    etiqueta           = EXCLUDED.etiqueta,
+    es_universo_total  = EXCLUDED.es_universo_total,
+    tiene_valor        = EXCLUDED.tiene_valor,
+    tiene_detalle_item = EXCLUDED.tiene_detalle_item,
+    es_canal_base      = EXCLUDED.es_canal_base,
+    orden              = EXCLUDED.orden,
+    nota               = EXCLUDED.nota;
 
 
 -- ════════════════════════════════════════════════════════════════════════════
@@ -190,9 +239,157 @@ ON CONFLICT (marca) DO NOTHING;
 --
 -- ⚠ Sin `dist_num`: es un porcentaje POR ÍTEM y no se puede agregar (ver trampa 4).
 -- ⚠ `items` es un COUNT(DISTINCT) al grano de esta vista: **NO es aditivo**.
--- ════════════════════════════════════════════════════════════════════════════
+-- Las dos MV cuelgan de las vistas de abajo, asi que se tiran ANTES que ellas.
+DROP MATERIALIZED VIEW IF EXISTS marts.mv_nielsen_item_semana CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS marts.mv_nielsen_semana CASCADE;
+DROP VIEW IF EXISTS marts.v_nielsen_item_derivado CASCADE;
+DROP VIEW IF EXISTS marts.v_nielsen_item_base CASCADE;
 
+-- ════════════════════════════════════════════════════════════════════════════
+-- LAS DOS VISTAS QUE SOSTIENEN EL MARKET DERIVADO
+--
+-- ⚠⚠ LA RESTA VIVE AQUI Y EN NINGUN OTRO SITIO, y eso es lo que las hace existir. La
+-- consumen las DOS materializadas —`mv_nielsen_semana` para su rama `derivado` y
+-- `mv_nielsen_item_semana` para sus filas de detalle—, asi que escribirla dos veces seria
+-- dejar que las dos MV se desviaran en silencio: la misma cifra por dos caminos distintos.
+--
+-- Son VISTAS NORMALES, no materializadas, y eso tambien es deliberado: una MV que
+-- dependiera de otra obligaria a refrescarlas en un orden concreto, y el orden actual
+-- (`semana` primero, `item` despues) esta elegido a proposito en
+-- refrescar_mv_dashboards.py — si el tick se queda sin tiempo es mejor perder el ranking
+-- de productos que el share. Con vistas corrientes cada MV se calcula sola contra
+-- `bi_nielsen` y el orden sigue siendo libre.
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- El tipado y el parseo de la fecha, UNA vez. Es lo que antes estaba escrito dentro de
+-- `mv_nielsen_item_semana`; se saca a vista para que la resta pueda leerlo sin duplicarlo.
+CREATE VIEW marts.v_nielsen_item_base AS
+SELECT
+    btrim(n.markets)                                                  AS market,
+    to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY')             AS semana,
+    EXTRACT(YEAR  FROM to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY'))::SMALLINT AS anio,
+    EXTRACT(MONTH FROM to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY'))::SMALLINT AS mes,
+    (EXTRACT(YEAR  FROM to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY')) * 100
+     + EXTRACT(MONTH FROM to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY')))::INTEGER
+                                                                      AS periodo_aaaamm,
+    COALESCE(NULLIF(btrim(n.categoria),   ''), '(sin categoria)')      AS categoria,
+    COALESCE(NULLIF(btrim(n.fabricantes), ''), '(sin fabricante)')     AS fabricante,
+    COALESCE(NULLIF(btrim(n.marcas),      ''), '(sin marca)')          AS marca,
+    COALESCE(NULLIF(btrim(n.marca_origen), ''), '(sin marca)')         AS marca_origen,
+    COALESCE(NULLIF(btrim(n.item),         ''), '(sin item)')          AS item,
+    COALESCE(NULLIF(btrim(n.upc),          ''), '(sin upc)')           AS upc,
+    COALESCE(NULLIF(btrim(n.presentacion_unif), ''), '(sin presentacion)') AS presentacion,
+    COALESCE(NULLIF(btrim(n.tipo_unif),    ''), '(sin tipo)')          AS tipo,
+    COALESCE(NULLIF(btrim(n.promocionno_promocion_unif), ''), '(sin dato)') AS promocion,
+    NULLIF(btrim(n.peso_vol_unitario_unif), '')                        AS peso_vol,
+    NULLIF(btrim(n.vtas_valor), '')::NUMERIC                           AS valor,
+    NULLIF(btrim(n.vtas_unds),  '')::NUMERIC                           AS unidades,
+    -- ⚠ PORCENTAJE POR ÍTEM (0,016 a 69,47), no una fracción ni un share. Sumarlo o
+    -- promediarlo entre ítems no significa nada: la suma por categoría/semana da
+    -- 1.814 %. Se lee por ítem, o se pondera explícitamente por valor.
+    NULLIF(btrim(n.dist_num),   '')::NUMERIC                           AS dist_num
+FROM marts.bi_nielsen n
+WHERE n.periods IS NOT NULL
+  AND to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY') IS NOT NULL;
+
+COMMENT ON VIEW marts.v_nielsen_item_base IS
+  'Nielsen crudo, tipado y con la fecha parseada. Insumo de mv_nielsen_item_semana y de '
+  'v_nielsen_item_derivado. No se consulta directamente: usar las materializadas.';
+
+
+-- ────────────────────────────────────────────────────────────────────────────
+-- `SUPERMERCADOS (derivado)` A GRANO DE ITEM = combinado − farmacias, producto a producto.
+--
+-- 🔴 CORRIGE lo que este fichero afirmaba hasta el 2026-09-08: que este universo «no puede
+-- existir a grano de producto porque un COUNT(DISTINCT) no se puede restar». Lo que no se
+-- puede restar es el CONTEO YA AGREGADO; los VALORES POR ITEM si se restan, y el conteo
+-- sale de ellos. El comentario viejo lo decia sin darse cuenta —«no se sabe que items del
+-- combinado estan en supermercados SIN BAJAR AL GRANO DE ITEM»—: bajar al grano era
+-- exactamente lo que faltaba.
+--
+-- Medido contra produccion el 2026-09-08, sobre el export vigente:
+--   · 280.143 filas derivadas, las mismas que el combinado;
+--   · 0 celdas negativas — farmacias es SUBCONJUNTO ESTRICTO (0 filas suyas sin par);
+--   · total 2.027.703.713.950,70 contra los 2.027.703.713.951 que ya publica la agregada,
+--     o sea 0,30 pesos de redondeo;
+--   · 2.625 productos con venta en supermercados (de 3.583 en el combinado).
+--
+-- ⚠⚠ LA LLAVE NO LLEVA `upc`, Y ESA ES LA TRAMPA CARA. El combinado trae UN solo valor de
+-- upc —el centinela '(sin upc)'— y farmacias trae 2.590 reales. Con `upc` en la llave el
+-- FULL OUTER JOIN casa CERO filas, y la resta «funciona»: suma todo lo uno y resta todo lo
+-- otro, asi que **el total sale bien y todas las filas estan mal**. Sobre la llave sin upc
+-- el combinado es unico (280.143 de 280.143), medido.
+--
+-- ⚠⚠ Y EL LADO DE FARMACIAS SE PRE-AGREGA. Tiene 2.692 filas repetidas sobre esa llave (el
+-- mismo producto con dos UPC); sin agruparlas antes, el join las multiplica contra la fila
+-- unica del combinado y el total sube a 2.081.092.677.323 — **53.388 millones de mas**, una
+-- cifra perfectamente creible.
+--
+-- ⚠ `dist_num` va NULL, y es LO UNICO que de verdad no se puede derivar: es un porcentaje
+-- de distribucion por item dentro de su universo, y restar porcentajes no significa nada.
+-- El panel de distribucion se niega con su razon, como ya hacia.
+--
+-- ⚠ Solo se emiten las filas con venta (`valor > 0 OR unidades > 0`). Una fila en cero
+-- significa «este producto se vende en farmacias y NADA en supermercados», y contarla como
+-- producto del canal seria falso: es la diferencia entre 3.583 y 2.625. Ademas mantiene
+-- coherentes las dos MV — la intranet cuenta productos con COUNT(DISTINCT item) sobre el
+-- detalle, y `items` de la agregada sale del mismo conjunto.
+-- ────────────────────────────────────────────────────────────────────────────
+CREATE VIEW marts.v_nielsen_item_derivado AS
+WITH sf AS (
+    SELECT semana, anio, mes, periodo_aaaamm, categoria, fabricante, marca,
+           item, presentacion, tipo, promocion,
+           -- Unicos sobre esta llave (medido), asi que MIN() solo desempata un empate
+           -- que no existe; se usa para no meterlos en el GROUP BY.
+           MIN(marca_origen) AS marca_origen,
+           MIN(peso_vol)     AS peso_vol,
+           SUM(valor)        AS valor,
+           SUM(unidades)     AS unidades
+    FROM marts.v_nielsen_item_base
+    WHERE market = 'NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA'
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+),
+fa AS (
+    SELECT semana, categoria, fabricante, marca, item, presentacion, tipo, promocion,
+           SUM(valor)    AS valor,
+           SUM(unidades) AS unidades
+    FROM marts.v_nielsen_item_base
+    WHERE market = 'TOTAL COLOMBIA FARMACIAS'
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+)
+SELECT
+    'SUPERMERCADOS (derivado)'::text                       AS market,
+    sf.semana, sf.anio, sf.mes, sf.periodo_aaaamm,
+    sf.categoria, sf.fabricante, sf.marca, sf.marca_origen,
+    sf.item,
+    '(sin upc)'::text                                      AS upc,
+    sf.presentacion, sf.tipo, sf.promocion, sf.peso_vol,
+    COALESCE(sf.valor, 0)    - COALESCE(fa.valor, 0)       AS valor,
+    COALESCE(sf.unidades, 0) - COALESCE(fa.unidades, 0)    AS unidades,
+    NULL::NUMERIC                                          AS dist_num
+FROM sf
+LEFT JOIN fa
+       ON  fa.semana       = sf.semana
+       AND fa.categoria    = sf.categoria
+       AND fa.fabricante   = sf.fabricante
+       AND fa.marca        = sf.marca
+       AND fa.item         = sf.item
+       AND fa.presentacion = sf.presentacion
+       AND fa.tipo         = sf.tipo
+       AND fa.promocion    = sf.promocion
+WHERE COALESCE(sf.valor, 0)    - COALESCE(fa.valor, 0)    > 0
+   OR COALESCE(sf.unidades, 0) - COALESCE(fa.unidades, 0) > 0;
+
+COMMENT ON VIEW marts.v_nielsen_item_derivado IS
+  'SUPERMERCADOS (derivado) a grano de ITEM: combinado - farmacias, producto a producto. '
+  'LA UNICA definicion de esa resta; la consumen las dos materializadas. ⚠ La llave NO '
+  'lleva upc (el combinado solo trae el centinela) y el lado de farmacias se PRE-AGREGA '
+  '(tiene el mismo producto con varios UPC). dist_num va NULL: es un porcentaje y no se '
+  'resta. Solo filas con venta.';
+
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- (El DROP va arriba, con el de las vistas: las MV cuelgan de ellas y hay que tirarlas antes.)
 CREATE MATERIALIZED VIEW marts.mv_nielsen_semana AS
 WITH base AS (
     SELECT
@@ -243,26 +440,27 @@ GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 -- agregada, y de las 56.815 celdas de farmacias las 56.815 tenian par en el combinado con **0
 -- negativos**.
 --
--- ⚠ `items` va en NULL: es un COUNT(DISTINCT item) y **no se puede restar** (no se sabe que items
--- del combinado estan en supermercados sin bajar al grano de item). Poner el del combinado seria
--- mentir. La columna ya esta documentada como NO aditiva.
+-- 🔴 `items` YA NO VA EN NULL (2026-09-08). Hasta esa fecha esta rama restaba al grano de la
+-- agregada y no podia contar productos; ahora se agrega DESDE `v_nielsen_item_derivado`, que hace
+-- la resta producto a producto, asi que `items` es un COUNT(DISTINCT item) de verdad — 2.625
+-- productos con venta en supermercados, medido.
+-- ⚠ `valor` y `unidades` NO se mueven: sumar por item y luego agrupar da lo mismo que restar ya
+-- agrupado (la suma es asociativa y la contencion se cumple). Es el gate de la migracion: si la
+-- cifra se movia de 2.027.703.713.951, no entraba.
 -- ⚠ `dist_num` no aparece aqui: es un porcentaje por item y vive solo en mv_nielsen_item_semana.
 -- ⚠ Si un export futuro rompe la contencion, la resta daria NEGATIVOS. No se tapan con GREATEST:
 -- se publican y se aislan en `v_nielsen_derivado_negativo`, que hay que revisar tras cada carga.
 -- ════════════════════════════════════════════════════════════════════════════
 derivado AS (
     SELECT
-        'SUPERMERCADOS (derivado)'::text AS market,
+        market,
         semana, anio, mes, periodo_aaaamm,
         categoria, fabricante, marca, presentacion, tipo, promocion,
-        SUM(CASE WHEN market = 'NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA'
-                 THEN valor ELSE -valor END)                          AS valor,
-        SUM(CASE WHEN market = 'NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA'
-                 THEN unidades ELSE -unidades END)                    AS unidades,
-        NULL::bigint                                                  AS items
-    FROM agg
-    WHERE market IN ('NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA', 'TOTAL COLOMBIA FARMACIAS')
-    GROUP BY 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
+        SUM(valor)                                                    AS valor,
+        SUM(unidades)                                                 AS unidades,
+        COUNT(DISTINCT item)                                          AS items
+    FROM marts.v_nielsen_item_derivado
+    GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11
 )
 SELECT * FROM agg
 UNION ALL
@@ -292,36 +490,21 @@ COMMENT ON MATERIALIZED VIEW marts.mv_nielsen_semana IS
 -- reducir filas sino en **tipar una vez** y **parsear la fecha una vez** en vez de
 -- hacerlo en cada consulta sobre 573k VARCHAR.
 -- ════════════════════════════════════════════════════════════════════════════
-DROP MATERIALIZED VIEW IF EXISTS marts.mv_nielsen_item_semana CASCADE;
-
+-- (El DROP va arriba, con el de las vistas.)
+-- 🔴 Desde el 2026-09-08 esta MV tiene CUATRO markets, no tres: el derivado ya existe a grano de
+-- producto. El tipado vive en `v_nielsen_item_base` y la resta en `v_nielsen_item_derivado`, que
+-- es la MISMA que alimenta la rama `derivado` de mv_nielsen_semana — por eso las dos MV no pueden
+-- desviarse.
 CREATE MATERIALIZED VIEW marts.mv_nielsen_item_semana AS
-SELECT
-    btrim(n.markets)                                                  AS market,
-    to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY')             AS semana,
-    EXTRACT(YEAR  FROM to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY'))::SMALLINT AS anio,
-    EXTRACT(MONTH FROM to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY'))::SMALLINT AS mes,
-    (EXTRACT(YEAR  FROM to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY')) * 100
-     + EXTRACT(MONTH FROM to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY')))::INTEGER
-                                                                      AS periodo_aaaamm,
-    COALESCE(NULLIF(btrim(n.categoria),   ''), '(sin categoria)')      AS categoria,
-    COALESCE(NULLIF(btrim(n.fabricantes), ''), '(sin fabricante)')     AS fabricante,
-    COALESCE(NULLIF(btrim(n.marcas),      ''), '(sin marca)')          AS marca,
-    COALESCE(NULLIF(btrim(n.marca_origen), ''), '(sin marca)')         AS marca_origen,
-    COALESCE(NULLIF(btrim(n.item),         ''), '(sin item)')          AS item,
-    COALESCE(NULLIF(btrim(n.upc),          ''), '(sin upc)')           AS upc,
-    COALESCE(NULLIF(btrim(n.presentacion_unif), ''), '(sin presentacion)') AS presentacion,
-    COALESCE(NULLIF(btrim(n.tipo_unif),    ''), '(sin tipo)')          AS tipo,
-    COALESCE(NULLIF(btrim(n.promocionno_promocion_unif), ''), '(sin dato)') AS promocion,
-    NULLIF(btrim(n.peso_vol_unitario_unif), '')                        AS peso_vol,
-    NULLIF(btrim(n.vtas_valor), '')::NUMERIC                           AS valor,
-    NULLIF(btrim(n.vtas_unds),  '')::NUMERIC                           AS unidades,
-    -- ⚠ PORCENTAJE POR ÍTEM (0,016 a 69,47), no una fracción ni un share. Sumarlo o
-    -- promediarlo entre ítems no significa nada: la suma por categoría/semana da
-    -- 1.814 %. Se lee por ítem, o se pondera explícitamente por valor.
-    NULLIF(btrim(n.dist_num),   '')::NUMERIC                           AS dist_num
-FROM marts.bi_nielsen n
-WHERE n.periods IS NOT NULL
-  AND to_date(split_part(n.periods, 'fin ', 2), 'DD/MM/YY') IS NOT NULL;
+SELECT market, semana, anio, mes, periodo_aaaamm, categoria, fabricante, marca,
+       marca_origen, item, upc, presentacion, tipo, promocion, peso_vol,
+       valor, unidades, dist_num
+FROM marts.v_nielsen_item_base
+UNION ALL
+SELECT market, semana, anio, mes, periodo_aaaamm, categoria, fabricante, marca,
+       marca_origen, item, upc, presentacion, tipo, promocion, peso_vol,
+       valor, unidades, dist_num
+FROM marts.v_nielsen_item_derivado;
 
 -- El origen no tiene clave natural única (un mismo ítem puede venir repetido con y
 -- sin UPC), así que el índice único incluye `id` del origen… que no está en la vista.
@@ -360,15 +543,43 @@ COMMENT ON MATERIALIZED VIEW marts.mv_nielsen_item_semana IS
 -- devuelve filas, el derivado no es de fiar para esas celdas y hay que hablar con Nielsen.
 -- Mismo patrón que `v_nc_sin_asignar` (ventas) y `v_compras_descuadre` (compras).
 -- ════════════════════════════════════════════════════════════════════════════
+-- ⚠ Desde el 2026-09-08 mira LOS DOS GRANOS. La resta se hace ahora producto a producto, asi que
+-- una rotura de la contencion aparece PRIMERO ahi: al agregar, un item negativo puede quedar
+-- tapado por otro positivo de la misma marca y la celda saldria en positivo. Vigilar solo la
+-- agregada seria vigilar el sintoma tardio. (El detalle solo emite filas con venta, asi que un
+-- negativo ahi no llega ni a publicarse: lo que se lista es la evidencia de la rotura.)
 DROP VIEW IF EXISTS marts.v_nielsen_derivado_negativo;
 
 CREATE VIEW marts.v_nielsen_derivado_negativo AS
-SELECT semana, categoria, fabricante, marca, presentacion, tipo, promocion, valor, unidades
-FROM marts.mv_nielsen_semana
-WHERE market = 'SUPERMERCADOS (derivado)'
-  AND (valor < 0 OR unidades < 0);
+SELECT 'agregado'::text AS grano, item, semana, categoria, fabricante, marca,
+       presentacion, tipo, promocion, valor, unidades
+FROM (SELECT NULL::text AS item, semana, categoria, fabricante, marca, presentacion,
+             tipo, promocion, valor, unidades
+      FROM marts.mv_nielsen_semana
+      WHERE market = 'SUPERMERCADOS (derivado)') a
+WHERE valor < 0 OR unidades < 0
+UNION ALL
+SELECT 'item'::text AS grano, sf.item, sf.semana, sf.categoria, sf.fabricante, sf.marca,
+       sf.presentacion, sf.tipo, sf.promocion,
+       COALESCE(sf.valor, 0)    - COALESCE(fa.valor, 0),
+       COALESCE(sf.unidades, 0) - COALESCE(fa.unidades, 0)
+FROM (SELECT semana, categoria, fabricante, marca, item, presentacion, tipo, promocion,
+             SUM(valor) valor, SUM(unidades) unidades
+      FROM marts.v_nielsen_item_base
+      WHERE market = 'NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA'
+      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8) sf
+FULL OUTER JOIN
+     (SELECT semana, categoria, fabricante, marca, item, presentacion, tipo, promocion,
+             SUM(valor) valor, SUM(unidades) unidades
+      FROM marts.v_nielsen_item_base
+      WHERE market = 'TOTAL COLOMBIA FARMACIAS'
+      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8) fa
+  USING (semana, categoria, fabricante, marca, item, presentacion, tipo, promocion)
+WHERE COALESCE(sf.valor, 0)    - COALESCE(fa.valor, 0)    < 0
+   OR COALESCE(sf.unidades, 0) - COALESCE(fa.unidades, 0) < 0;
 
 COMMENT ON VIEW marts.v_nielsen_derivado_negativo IS
   'Celdas donde (combinado - farmacias) sale NEGATIVO, o sea donde el combinado no contiene a '
-  'farmacias. Debe estar VACIA: si trae filas, el market SUPERMERCADOS (derivado) no es de fiar '
-  'ahi. Revisar tras cada carga de Nielsen.';
+  'farmacias. Mira los DOS granos (columna `grano`): el de item es el que avisa primero, porque '
+  'al agregar un negativo se tapa con un positivo de la misma marca. Debe estar VACIA: si trae '
+  'filas, SUPERMERCADOS (derivado) no es de fiar ahi. Revisar tras cada carga de Nielsen.';
