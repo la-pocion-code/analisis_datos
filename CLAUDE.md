@@ -278,11 +278,22 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   `Descuento financiero en ventas` tiene `available_in_pos = true` y vale **−2.854.516.334** en 2026;
   definir «comercial» solo por el flag **hundiría las ventas**. Hay 5 productos así en el catálogo
   (`Discount`, `IMPUESTOS ASUMIDOS`, `(VTAS) IVA ASUMIDO`, un template sin nombre y ese).
-  **Falta en Odoo, y es de negocio:** (a) `KIT MASCARILL SOS + BOOSTER` (48.070.864) está en
-  `.../Kits` **sin marcar en PdV** ⇒ con la casilla el salto sube a **+381,5 M**; (b) confirmar si
-  `PCNKIT16`/`PCNKIT39` (8.617.160, categoría `All`) son **duplicados** — si no lo son, hay que
-  darles categoría y PdV en Odoo, **no** una excepción en el SQL. Detalle en
-  `docs/dashboards_intranet.md` §10.9.
+  ⛔⛔ **PRIMERO 3 FICHAS EN ODOO, o el cambio saca del tablero 8,6 M que SÍ se venden** (regla de
+  William: «si se está vendiendo, se debe mostrar»): (a) `KIT MASCARILL SOS + BOOSTER` (48.070.864)
+  está en `.../Kits` **sin marcar en PdV**; (b) `PCNKIT16` (7.715.899) y (c) `PCNKIT39` (901.261)
+  necesitan **categoría `PT/Kits` + PdV** (hoy están en `All`). ⚠ Los dos últimos **NO son
+  «duplicados descartables»** —así se escribió el 2026-09-07 y era incorrecto—: venden en 2026, solo
+  por Shopify, **en paralelo** a su gemelo archivado. Con las 3 arregladas el cambio suma **~390 M y
+  no resta nada**; sin ellas suma 333 M y resta 8,6 M. Detalle en `docs/dashboards_intranet.md` §10.9.
+  ⚠⚠ **NO dar por hecho que el SKU de Shopify existe en Odoo.** Búsqueda exhaustiva del 2026-09-08
+  (`ilike` sobre `default_code` y `barcode`, en template **y** product, con archivados): de los 7 SKU
+  que Shopify manda para estos kits **solo `PCNKIT16` y `PCNKIT39` existen** (y en categoría `All`,
+  fuera de la lista de Kits); **`PCNKIT17`, `PCNKIT23`, `PCNKIT30`, `PCNKIT6` y `PCNKIT3` NO
+  EXISTEN** — viven solo en Shopify. Odoo tiene 32 códigos `PCNKIT*` y la numeración **salta justo
+  en los que Shopify usa**. ⭐ La lección: **el `default_code` no lo escribe la integración de
+  Shopify**, así que el reporte no puede depender de él — y por eso la definición por categoría +
+  PdV es la salida buena. Las fichas archivadas que reciben las facturas **no tienen ningún
+  identificador**: `default_code` y `barcode` los dos en NULL.
 - ⚠⚠ **9 KITS *ARCHIVADOS* SIN `default_code` NO APARECEN EN NINGÚN TABLERO** (medido 2026-09-08).
   `v_ventas_producto` exige prefijo `PCN%/KD%/TNG%/B8%` y estos kits (`es_kit = true`) no tienen
   código, así que quedan fuera de `v_ventas_bi` y de **todas** las MV de ventas: **390.085.902 sin

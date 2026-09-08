@@ -744,7 +744,13 @@ de Odoo el 2026-07-30 por este mismo argumento (§10.5).
   de negocio**.
 - Se perderían `PCNKIT16` y `PCNKIT39`, que tienen **`categoria = 'All'`** (sin categoría asignada
   en Odoo).
-- ⚠ **Y esos dos parecen DUPLICADOS en Odoo** de dos de los kits sin código: `PCNKIT16 Kit Control
+- ⚠⚠ **Y NO son «duplicados descartables»** (así se escribió el 2026-09-07 y **era incorrecto**):
+  medido el 2026-09-08, `PCNKIT16` vende **7.715.899** y `PCNKIT39` **901.261** en 2026, los dos
+  **solo por Shopify** y **en paralelo** a su gemelo archivado (que vende 131.141.970). O sea que
+  hay **dos fichas del mismo kit recibiendo ventas del mismo canal**, y las dos son venta real.
+  Por la regla del negocio («si se está vendiendo, se debe mostrar») **no pueden salir del tablero**:
+  la salida es darles **categoría `PT/Kits` + `Disponible en PdV` en Odoo**, no una excepción en el
+  SQL. Redacción anterior, que se conserva por trazabilidad: `PCNKIT16 Kit Control
   grasa y crecimiento` (categoría `All`, `es_kit = false`, 7,7 M) contra `KIT CONTROL GRASA Y
   CRECIMIENTO` (categoría `.../Kits`, `es_kit = true`, 131,1 M). Si lo son, **la raíz está en Odoo,
   no en el filtro del DW**. El auditor lo reporta como *sospecha*, no como hecho.
@@ -801,9 +807,21 @@ El cambio de definición espera **dos cosas en Odoo**, las dos de negocio:
 1. **`KIT MASCARILL SOS + BOOSTER`** (48.070.864 en 2026) está en `.../Kits` pero **sin marcar en
    PdV** ⇒ con la casilla entra solo y el salto pasa de +333,4 M a **+381,5 M**. (`KIT LOVE REFILL`
    tampoco está marcado, pero no vende en 2026.)
-2. **`PCNKIT16`/`PCNKIT39`** (8.617.160): categoría `All` y sin PdV ⇒ **saldrían**. Están bajo
-   sospecha de duplicado; si NO lo son, hay que darles categoría y PdV **en Odoo**, no rescatarlos
-   con una excepción en el SQL.
+2. **`PCNKIT16`/`PCNKIT39`** (8.617.160): categoría `All` y sin PdV ⇒ **saldrían**, y **sí se
+   venden** (medido 2026-09-08: solo por Shopify, en paralelo a su gemelo archivado). Por la regla
+   «si se está vendiendo, se debe mostrar» hay que **darles categoría `PT/Kits` + PdV en Odoo antes
+   de aplicar el cambio**, no rescatarlos con una excepción en el SQL.
+
+⚠⚠ **Y no dar por hecho que el SKU de Shopify existe en Odoo.** Búsqueda exhaustiva del 2026-09-08
+(`ilike` sobre `default_code` y `barcode`, en `product.template` **y** `product.product`, incluyendo
+archivados): de los 7 SKU que Shopify manda para estos kits, **solo `PCNKIT16` y `PCNKIT39` existen**
+—y en categoría `All`, o sea fuera de la lista de Kits— mientras **`PCNKIT17`, `PCNKIT23`,
+`PCNKIT30`, `PCNKIT6` y `PCNKIT3` NO EXISTEN en Odoo**: viven solo en Shopify. Odoo tiene 32 códigos
+`PCNKIT*` y su numeración **salta justo en los que Shopify usa**.
+⭐ **La lección de fondo: el `default_code` no lo escribe la integración de Shopify**, así que el
+reporte no puede depender de él — que es exactamente lo que arregla definir el producto comercial
+por **categoría + PdV**. Las fichas archivadas que reciben las facturas no tienen **ningún**
+identificador: `default_code` y `barcode` los dos en NULL, verificado ficha por ficha.
 
 Cuando se aplique, el cambio va en `sql/marts/14_ventas.sql:213` **y `:259`** (que repite la
 condición para `v_nc_sin_asignar`), y ⛔ **obliga a soltar 6 MV y 3 vistas** y re-aplicar

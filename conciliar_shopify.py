@@ -32,15 +32,22 @@ esta en ninguna factura** — ni como venta ni en otra cuenta.
   Ninguno de los dos esta inflando: el gerente mira lo FACTURADO BRUTO y el tablero la VENTA NETA
   de producto comercial. Pero la parte grande SI es un problema real, y esta en Odoo.
 
-⚠⚠ Y LA CAUSA RAIZ: **SHOPIFY SI MANDA EL SKU** de esos kits (0 vacios en 3.019 lineas de kit) y es
-  un codigo que EXISTE en Odoo — `PCNKIT16`, `PCNKIT39`, `PCNKIT17`, `PCNKIT30`, `PCNKIT6`,
-  `PCNKIT23`, `PCNKIT3`. La factura esta cayendo en un producto **ARCHIVADO y sin `default_code`**
-  en vez de en el bueno, y `v_ventas_producto` exige prefijo PCN/KD/TNG/B8 => esa venta no llega a
-  ningun tablero (16.201.235 en Shopify-agosto; **390.085.902 en 2026**, 99,7 % Shopify).
-  ⇒ Es el **mapeo de producto Shopify<->Odoo**, no el filtro del DW. Prueba fina: el
-  `precio_shopify` coincide AL PESO con el `con_iva` de Odoo (177.600 = 177.600) — mismo dinero,
-  producto equivocado. Detalle factura a factura y cliente: `--salida-kits-detalle`; el recorte de
-  Shopify de esos mismos productos: `--salida-shopify-kits`.
+⚠⚠ Y LA CAUSA RAIZ: **SHOPIFY SI MANDA EL SKU** de esos kits (0 vacios en 3.019 lineas de kit),
+  mientras la ficha de Odoo que recibe la factura esta **ARCHIVADA y sin NINGUN identificador**
+  (`default_code` Y `barcode` los dos en NULL, verificado ficha por ficha). `v_ventas_producto`
+  exige prefijo PCN/KD/TNG/B8 => esa venta no llega a ningun tablero (16.201.235 en Shopify-agosto;
+  **390.085.902 en 2026**, 99,7 % Shopify — cada kit es 99,3-100 % Shopify, casi en exclusiva).
+  ⚠⚠ **NO dar por hecho que ese SKU existe en Odoo.** Medido el 2026-09-08 con busqueda exhaustiva
+  (`ilike` sobre `default_code` y `barcode`, en template Y product, incluyendo archivados):
+  `PCNKIT16` y `PCNKIT39` **si** existen —en categoria `All`, o sea FUERA de la lista de Kits— y
+  `PCNKIT17`, `PCNKIT23`, `PCNKIT30`, `PCNKIT6`, `PCNKIT3` **NO EXISTEN**: viven solo en Shopify.
+  Odoo tiene 32 codigos `PCNKIT*` y su numeracion SALTA justo en los que Shopify usa.
+  ⭐ La leccion: **el `default_code` no lo escribe la integracion de Shopify**, asi que el reporte
+  NO puede depender de el. Eso es lo que resuelve definir el producto comercial por
+  **categoria + `Disponible en PdV`** (ver `36_producto_comercial.sql`), que no mira el codigo.
+  Prueba fina de que es el mismo dinero: el `precio_shopify` coincide AL PESO con el `con_iva` de
+  Odoo (177.600 = 177.600). Detalle factura a factura y cliente: `--salida-kits-detalle`; el recorte
+  de Shopify de esos mismos productos: `--salida-shopify-kits`.
   ⚠ El mismo filtro excluye BIEN descuentos, asesorias, arriendos e intereses, que no son venta de
   producto: lo unico mal excluido son los kits.
 
@@ -562,9 +569,14 @@ def main(csv, mes=None, salida=None, salida_kits=None, salida_kits_detalle=None,
                       con_iva=("con_iva", "sum")).reset_index()
                  .sort_values("con_iva", ascending=False))
         print(res.to_string(index=False))
-        print("\n  ⇒ La factura esta cayendo en un producto ARCHIVADO y SIN codigo, cuando el")
-        print("    codigo que Shopify envia SI existe en Odoo. Es el mapeo de producto")
-        print("    Shopify<->Odoo, no el filtro del DW.")
+        print("\n  ⇒ La factura cae en un producto ARCHIVADO y SIN NINGUN identificador en Odoo")
+        print("    (`default_code` y `barcode` los dos en NULL, verificado ficha por ficha).")
+        print("  ⚠ Y de esos SKU, SOLO ALGUNOS existen en Odoo: medido el 2026-09-08, `PCNKIT16` y")
+        print("    `PCNKIT39` si (en categoria `All`, fuera de la lista de Kits) y `PCNKIT17`,")
+        print("    `PCNKIT23`, `PCNKIT30`, `PCNKIT6`, `PCNKIT3` NO EXISTEN en Odoo: viven solo en")
+        print("    Shopify. Verificar antes de afirmar que 'el SKU ya existe en Odoo'.")
+        print("  ⇒ El `default_code` NO lo escribe la integracion de Shopify, asi que el reporte")
+        print("    NO puede depender de el. Es lo que resuelve la definicion por categoria + PdV.")
 
         if salida_kits_detalle:
             kd[cols].sort_values(["kit_odoo", "fecha_factura", "factura"]).to_csv(
