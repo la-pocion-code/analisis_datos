@@ -18,16 +18,31 @@ esta en ninguna factura** — ni como venta ni en otra cuenta.
 
 ⚠⚠ TRES CIFRAS DISTINTAS QUE TODO EL MUNDO LLAMA «LA VENTA DE SHOPIFY» (agosto de 2026):
     1.017.897.929  Shopify `Total` .......... lo que el cliente PAGO (lleva flete)
-      975.354.259  CxC de Odoo con IVA ...... lo que se le FACTURO al cliente
-      953.387.670  `mv_ventas_mes` con IVA .. venta de PRODUCTO COMERCIAL (lo que ve la intranet)
+      975.421.259  facturas del mes ......... lo que se FACTURO ← la que cita el gerente
+      953.211.070  `mv_ventas_mes` con IVA .. venta de PRODUCTO COMERCIAL ← la del tablero
   Las tres son correctas y **miden cosas distintas**. Comparar dos cualesquiera de frente produce
-  un «hueco» que no existe.
+  un «hueco» que no existe. El bloque **LA ESCALERA COMPLETA** las une paso a paso y cierra AL PESO
+  contra `mv_ventas_mes`.
 
-⚠ El puente entre 975 y 953 son **KITS SIN `default_code` EN ODOO**: `v_ventas_producto` exige
-  prefijo PCN/KD/TNG/B8 y estos kits no tienen codigo, asi que **no aparecen en ningun tablero**
-  (16.020.143 sin IVA solo en Shopify-agosto; ~368 M en todo 2026 y todos los canales). Se listan
-  con `--salida-kits`. ⚠ El mismo filtro excluye BIEN descuentos, asesorias, arriendos e intereses,
-  que no son venta de producto: lo unico mal excluido son los kits.
+⭐ EL REPARTO DE LOS 22,2 M ENTRE 975 Y 953, cada parte con su dueño:
+    19.279.469  (87 %)  kits ARCHIVADOS sin codigo   -> TIENE RAZON EL GERENTE: es venta real
+     4.136.920  (19 %)  notas credito por retracto   -> TIENE RAZON EL TABLERO: son devoluciones
+      -798.200          facturas de pedidos de julio -> borde de mes
+      -408.000          lineas anuladas (es_reverso) -> anulaciones
+  Ninguno de los dos esta inflando: el gerente mira lo FACTURADO BRUTO y el tablero la VENTA NETA
+  de producto comercial. Pero la parte grande SI es un problema real, y esta en Odoo.
+
+⚠⚠ Y LA CAUSA RAIZ: **SHOPIFY SI MANDA EL SKU** de esos kits (0 vacios en 3.019 lineas de kit) y es
+  un codigo que EXISTE en Odoo — `PCNKIT16`, `PCNKIT39`, `PCNKIT17`, `PCNKIT30`, `PCNKIT6`,
+  `PCNKIT23`, `PCNKIT3`. La factura esta cayendo en un producto **ARCHIVADO y sin `default_code`**
+  en vez de en el bueno, y `v_ventas_producto` exige prefijo PCN/KD/TNG/B8 => esa venta no llega a
+  ningun tablero (16.201.235 en Shopify-agosto; **390.085.902 en 2026**, 99,7 % Shopify).
+  ⇒ Es el **mapeo de producto Shopify<->Odoo**, no el filtro del DW. Prueba fina: el
+  `precio_shopify` coincide AL PESO con el `con_iva` de Odoo (177.600 = 177.600) — mismo dinero,
+  producto equivocado. Detalle factura a factura y cliente: `--salida-kits-detalle`; el recorte de
+  Shopify de esos mismos productos: `--salida-shopify-kits`.
+  ⚠ El mismo filtro excluye BIEN descuentos, asesorias, arriendos e intereses, que no son venta de
+  producto: lo unico mal excluido son los kits.
 
 Dos trampas del CSV de Shopify, medidas:
   ⚠ La columna `Taxes` **NO es el IVA del 19 %** (7.168,91 en un pedido de 214.500). No sirve para
@@ -46,6 +61,8 @@ Dos trampas del CSV de Shopify, medidas:
 
 Uso:  python conciliar_shopify.py --csv D:\\Downloads\\orders_export_1.csv
       python conciliar_shopify.py --csv ... --salida detalle.csv --salida-kits kits.csv
+      python conciliar_shopify.py --csv ... --salida-kits-detalle facturas.csv \\
+                                            --salida-shopify-kits recorte.csv
       python conciliar_shopify.py --csv ... --mes 2026-09
 """
 import os
@@ -119,7 +136,9 @@ def leer_shopify(ruta):
     ped["envio"] = ped["envio"].fillna(0)
     ped["descuento"] = ped["descuento"].fillna(0)
     ped["mes"] = ped["creado"].str.slice(0, 7)
-    return ped
+    # Se devuelve tambien el CSV CRUDO: los CSV de detalle necesitan las lineas de pedido
+    # (`Lineitem sku`/`name`/`quantity`/`price`), que la agregacion por pedido pierde.
+    return ped, sh
 
 
 def leer_dw(conn, mes):
@@ -203,6 +222,107 @@ def leer_kits(conn, desde):
     return df
 
 
+def leer_kits_detalle(conn, mes):
+    """FACTURA a FACTURA los kits sin codigo: numero de factura, cliente, unidades y valor.
+
+    Es el soporte para sentarse con el gerente de Shopify y con contabilidad: no basta con el total,
+    hay que poder senalar la factura y el cliente.
+
+    ⚠ Mismos filtros que `v_ventas_producto` (clase 4 + es_venta + sin reversos). El IVA sale del
+    factor del PROPIO documento, no de un 1,19 cableado.
+    """
+    return pd.read_sql("""
+      WITH factor AS (
+        SELECT f.factura_id,
+               sum(CASE WHEN c.clase_codigo = '4' THEN f.venta_neta ELSE 0 END)          AS base,
+               sum(CASE WHEN c.codigo LIKE '2408%%' THEN f.credito - f.debito ELSE 0 END) AS iva
+        FROM marts.fact_movimiento_contable f
+        JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
+        WHERE f.categoria = 'SHOPIFY' AND f.es_venta
+          AND f.fecha_factura >= DATE %(ini)s
+          AND f.fecha_factura <  (DATE %(ini)s + INTERVAL '1 month')
+        GROUP BY 1)
+      SELECT f.referencia                              AS pedido,
+             max(f.numero)                             AS factura,
+             max(f.fecha_factura)::text                AS fecha_factura,
+             p.nombre                                  AS kit_odoo,
+             coalesce(p.codigo, '(SIN CODIGO)')        AS sku_odoo,
+             max(t.nombre)                             AS cliente,
+             sum(f.cantidad)                           AS unidades,
+             sum(f.venta_neta)                         AS base,
+             sum(f.venta_neta * CASE WHEN fa.base <> 0 THEN fa.iva / fa.base ELSE 0 END) AS iva
+      FROM marts.fact_movimiento_contable f
+      JOIN marts.dim_cuenta   c  ON c.cuenta_id   = f.cuenta_id
+      JOIN marts.dim_producto p  ON p.producto_id = f.producto_id
+      LEFT JOIN marts.dim_tercero t ON t.tercero_id = f.tercero_id
+      LEFT JOIN factor fa ON fa.factura_id = f.factura_id
+      WHERE f.categoria = 'SHOPIFY' AND f.es_venta AND c.clase_codigo = '4'
+        AND f.es_reverso IS NOT TRUE
+        AND p.es_kit AND p.codigo IS NULL
+        AND f.fecha_factura >= DATE %(ini)s
+        AND f.fecha_factura <  (DATE %(ini)s + INTERVAL '1 month')
+      GROUP BY f.referencia, p.nombre, p.codigo
+    """, conn, params={"ini": f"{mes}-01"})
+
+
+def leer_anuladas(conn, mes):
+    """Valor con IVA de las lineas ANULADAS (`es_reverso`) del mes.
+
+    Estan DENTRO de lo facturado (son clase 4 y `es_venta`) pero FUERA del tablero, porque
+    `v_ventas_producto` las excluye. Sin este escalon la escalera no cierra: en agosto de 2026 son
+    -408.000 y dejaban un residuo de exactamente esa cifra.
+    """
+    df = pd.read_sql("""
+      WITH factor AS (
+        SELECT f.factura_id,
+               sum(CASE WHEN c.clase_codigo = '4' THEN f.venta_neta ELSE 0 END)          AS base,
+               sum(CASE WHEN c.codigo LIKE '2408%%' THEN f.credito - f.debito ELSE 0 END) AS iva
+        FROM marts.fact_movimiento_contable f
+        JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
+        WHERE f.categoria = 'SHOPIFY' AND f.es_venta
+          AND f.fecha_factura >= DATE %(ini)s
+          AND f.fecha_factura <  (DATE %(ini)s + INTERVAL '1 month')
+        GROUP BY 1)
+      SELECT count(*) AS lineas,
+             sum(f.venta_neta * (1 + CASE WHEN fa.base <> 0 THEN fa.iva / fa.base ELSE 0 END))
+               AS con_iva
+      FROM marts.fact_movimiento_contable f
+      JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
+      LEFT JOIN factor fa ON fa.factura_id = f.factura_id
+      WHERE f.categoria = 'SHOPIFY' AND f.es_venta AND c.clase_codigo = '4'
+        AND f.es_reverso IS TRUE
+        AND f.fecha_factura >= DATE %(ini)s
+        AND f.fecha_factura <  (DATE %(ini)s + INTERVAL '1 month')
+    """, conn, params={"ini": f"{mes}-01"})
+    return int(df["lineas"].iloc[0] or 0), float(pd.to_numeric(df["con_iva"]).fillna(0).iloc[0])
+
+
+def sku_shopify_de_los_kits(sh, det):
+    """Mapa `kit_odoo` -> (SKU, nombre) de Shopify, por VOTO MAYORITARIO sobre los pedidos.
+
+    ⭐ El hallazgo que esto documenta: **Shopify SÍ manda el SKU** de estos kits (0 vacíos en 3.019
+    líneas de kit), y es un código que EXISTE en Odoo (`PCNKIT16`, `PCNKIT39`, `PCNKIT17`…). O sea
+    que la factura está cayendo en un registro de producto ARCHIVADO y sin código en vez de en el
+    bueno: el problema es el mapeo de producto Shopify↔Odoo.
+
+    ⚠ NO se empareja por nombre normalizado: no basta. `KIT MASCARILL SOS + BOOSTER` (Odoo) contra
+    `Kit Mascarilla S.O.S + Booster` (Shopify) no coinciden ni normalizando (MASCARILL/MASCARILLA).
+    Se resuelve por PEDIDO: dentro del pedido se mira qué línea lleva un SKU de kit, y se vota.
+    ⚠ Y se filtra a SKU de kit a propósito: un pedido con el kit trae también sus otras líneas
+    (BOOSTER `PCN30`, Sport `PCN31`…), y atribuírselas al kit inventaría filas.
+    """
+    li = sh[sh["Lineitem sku"].notna() & sh["Lineitem name"].notna()]
+    li_kit = li[li["Lineitem sku"].str.upper().str.contains("KIT", na=False)]
+    j = det[["kit_odoo", "pedido"]].merge(
+        li_kit[["Name", "Lineitem sku", "Lineitem name"]], left_on="pedido", right_on="Name")
+    if j.empty:
+        return {}
+    votos = (j.groupby(["kit_odoo", "Lineitem sku", "Lineitem name"]).size()
+              .reset_index(name="votos").sort_values("votos", ascending=False))
+    return {k: (g.iloc[0]["Lineitem sku"], g.iloc[0]["Lineitem name"])
+            for k, g in votos.groupby("kit_odoo")}
+
+
 def clasificar(ped, dw, extra):
     """Devuelve una fila por pedido/documento con su `situacion`. Toda fila de las dos fuentes
     tiene que salir exactamente una vez: es lo que hace que el CSV cuadre con el puente."""
@@ -261,8 +381,20 @@ def clasificar(ped, dw, extra):
     return det[COLS_CSV]
 
 
-def main(csv, mes=None, salida=None, salida_kits=None, timeout=120):
-    ped = leer_shopify(csv)
+def leer_mv(conn, mes):
+    """Lo que muestra la intranet, por `periodo_factura_aaaamm` para comparar por la MISMA fecha
+    que el resto del informe (el puente va por `fecha_factura`)."""
+    df = pd.read_sql("""
+      SELECT sum(venta) AS venta, sum(venta_con_iva) AS con_iva
+      FROM marts.mv_ventas_mes
+      WHERE categoria = 'SHOPIFY' AND periodo_factura_aaaamm = %(p)s
+    """, conn, params={"p": int(mes.replace("-", ""))})
+    return float(pd.to_numeric(df["con_iva"]).fillna(0).iloc[0])
+
+
+def main(csv, mes=None, salida=None, salida_kits=None, salida_kits_detalle=None,
+         salida_shopify_kits=None, timeout=120):
+    ped, sh_raw = leer_shopify(csv)
     if mes is None:
         mes = ped["mes"].mode().iloc[0]
         fuera = int((ped["mes"] != mes).sum())
@@ -280,8 +412,14 @@ def main(csv, mes=None, salida=None, salida_kits=None, timeout=120):
         pendientes = ped.loc[(~ped["name"].isin(por_name)) & (ped["estado"] == "paid"), "name"]
         extra = buscar_facturas(conn, list(pendientes))
         kits = leer_kits(conn, f"{mes[:4]}-01-01")
+        kd = leer_kits_detalle(conn, mes)
+        n_anul, anul = leer_anuladas(conn, mes)
+        mv_con_iva = leer_mv(conn, mes)
     finally:
         conn.close()
+    for col in ("base", "iva", "unidades"):
+        if col in kd:
+            kd[col] = pd.to_numeric(kd[col]).fillna(0)
 
     base_mes, iva_mes = dw["base"].sum(), dw["iva"].sum()
     con_iva_mes, cxc_mes = base_mes + iva_mes, dw["cxc"].sum()
@@ -345,6 +483,53 @@ def main(csv, mes=None, salida=None, salida_kits=None, timeout=120):
         print("  Causa: no tienen `default_code` en Odoo y `v_ventas_producto` exige prefijo")
         print("  PCN/KD/TNG/B8. Por eso `mv_ventas_mes` (la intranet) va por debajo de lo facturado.")
 
+    # ── LA ESCALERA: de lo que dice el panel de Shopify a lo que dice el tablero ─────────────
+    print(f"\n{'=' * 94}\nLA ESCALERA COMPLETA — las tres cifras que se citan y por qué difieren"
+          f"\n{'=' * 94}")
+    def _sit(s, col="con_iva_odoo"):
+        f = det["situacion"] == s
+        return int(f.sum()), det.loc[f, col].sum()
+
+    n_nopag, v_nopag = _sit("NO_PAGADO", "total_shopify")
+    n_otro, v_otro = _sit("FACTURADO_OTRO_MES", "total_shopify")
+    n_jul, otro_mes = _sit("FACTURA_DE_OTRO_MES")
+    n_nc, nc = _sit("NOTA_CREDITO")
+    fact_ago = det.loc[det["situacion"].isin(["CUADRA", "FLETE_NO_FACTURADO"]), "con_iva_odoo"].sum()
+    kits_iva = (kd["base"].sum() + kd["iva"].sum()) if len(kd) else 0.0
+    for et, v, nota in [
+        ("Shopify `Total` — lo que PAGÓ el cliente", ped["total"].sum(), "el panel de Shopify"),
+        ("(−) flete cobrado y NO facturado", -fl, ""),
+        (f"(−) {n_nopag} pedidos sin pagar (expirados)", -v_nopag, ""),
+        (f"(−) {n_otro} pedidos facturados en otro mes", -v_otro, ""),
+        ("= FACTURAS de los pedidos del mes", fact_ago, "⭐ la cifra del gerente"),
+        (f"(+) {n_jul} facturas de pedidos de otro mes", otro_mes, ""),
+        (f"(−) {n_nc} notas crédito por retracto", nc, ""),
+        ("= FACTURADO NETO del mes", fact_ago + otro_mes + nc, ""),
+        ("(−) kits ARCHIVADOS sin código en Odoo", -kits_iva, "⚠ venta real que no se ve"),
+        (f"(−) {n_anul} líneas anuladas (es_reverso)", -anul, "no cuentan en ninguno de los dos"),
+    ]:
+        print(f"  {et:<48}{_fmt(v)}   {nota}")
+    tablero = fact_ago + otro_mes + nc - kits_iva - anul
+    print(f"  {'':<48}{'-' * 18}")
+    print(f"  {'= lo que muestra la INTRANET':<48}{_fmt(tablero)}   ⭐ la cifra del tablero")
+    if mv_con_iva:
+        d = tablero - mv_con_iva
+        print(f"  {'  mv_ventas_mes dice':<48}{_fmt(mv_con_iva)}   "
+              f"{'✔ AL PESO' if abs(d) < 1000 else f'⚠ residuo {d:,.0f}'}")
+
+    print(f"\n  ── EL REPARTO DE LA DIFERENCIA, CON SU DUEÑO ──")
+    dif = fact_ago - tablero
+    for et, v, quien in [
+        ("kits archivados sin código en Odoo", kits_iva, "⭐ TIENE RAZÓN EL GERENTE: es venta real"),
+        ("notas crédito por retracto", -nc, "⭐ TIENE RAZÓN EL TABLERO: son devoluciones"),
+        ("facturas de pedidos de otro mes", -otro_mes, "borde de mes, de ninguno de los dos"),
+        ("líneas anuladas (es_reverso)", anul, "anulaciones, de ninguno de los dos"),
+    ]:
+        pct = f"{100 * v / dif:.0f} %" if dif else "n/d"
+        print(f"    {et:<38}{_fmt(v)}  {pct:>6}   {quien}")
+    print(f"    {'':<38}{'-' * 18}")
+    print(f"    {'diferencia gerente vs tablero':<38}{_fmt(dif)}")
+
     if salida:
         det.sort_values(["situacion", "pedido"]).to_csv(
             salida, index=False, sep=";", encoding="utf-8-sig", decimal=",", float_format="%.2f")
@@ -353,6 +538,45 @@ def main(csv, mes=None, salida=None, salida_kits=None, timeout=120):
         kits.to_csv(salida_kits, index=False, sep=";", encoding="utf-8-sig", decimal=",",
                     float_format="%.2f")
         print(f"✔ CSV de kits escrito: {salida_kits}   ({len(kits):,} filas)")
+
+    if (salida_kits_detalle or salida_shopify_kits) and len(kd):
+        mapa = sku_shopify_de_los_kits(sh_raw, kd)
+        kd["sku_shopify"] = kd["kit_odoo"].map(lambda k: mapa.get(k, (None, None))[0])
+        kd["nombre_shopify"] = kd["kit_odoo"].map(lambda k: mapa.get(k, (None, None))[1])
+        kd["con_iva"] = kd["base"] + kd["iva"]
+        # La linea EXACTA de Shopify: por pedido + SKU (no por pedido a secas, ver el aviso de
+        # sku_shopify_de_los_kits).
+        li = sh_raw[sh_raw["Lineitem sku"].notna()][
+            ["Name", "Lineitem sku", "Lineitem quantity", "Lineitem price"]].copy()
+        li = li.rename(columns={"Lineitem quantity": "cantidad_shopify",
+                                "Lineitem price": "precio_shopify"})
+        kd = kd.merge(li, how="left",
+                      left_on=["pedido", "sku_shopify"], right_on=["Name", "Lineitem sku"])
+        cols = ["kit_odoo", "sku_odoo", "sku_shopify", "nombre_shopify", "factura",
+                "fecha_factura", "pedido", "cliente", "unidades", "base", "iva", "con_iva",
+                "cantidad_shopify", "precio_shopify"]
+
+        print(f"\n{'-' * 94}\nEL SKU QUE FALTA EN ODOO **SÍ LO MANDA SHOPIFY**\n{'-' * 94}")
+        res = (kd.groupby(["kit_odoo", "sku_odoo", "sku_shopify", "nombre_shopify"], dropna=False)
+                 .agg(facturas=("factura", "nunique"), unidades=("unidades", "sum"),
+                      con_iva=("con_iva", "sum")).reset_index()
+                 .sort_values("con_iva", ascending=False))
+        print(res.to_string(index=False))
+        print("\n  ⇒ La factura esta cayendo en un producto ARCHIVADO y SIN codigo, cuando el")
+        print("    codigo que Shopify envia SI existe en Odoo. Es el mapeo de producto")
+        print("    Shopify<->Odoo, no el filtro del DW.")
+
+        if salida_kits_detalle:
+            kd[cols].sort_values(["kit_odoo", "fecha_factura", "factura"]).to_csv(
+                salida_kits_detalle, index=False, sep=";", encoding="utf-8-sig", decimal=",",
+                float_format="%.2f")
+            print(f"\n✔ CSV factura a factura: {salida_kits_detalle}   ({len(kd):,} filas)")
+        if salida_shopify_kits:
+            skus = set(kd["sku_shopify"].dropna())
+            reco = sh_raw[sh_raw["Lineitem sku"].isin(skus)]
+            reco.to_csv(salida_shopify_kits, index=False, sep=";", encoding="utf-8-sig")
+            print(f"✔ CSV recorte de Shopify: {salida_shopify_kits}   ({len(reco):,} lineas de "
+                  f"pedido, SKU {', '.join(sorted(skus))})")
 
     print(f"\n{'-' * 94}\nCOMO LEER ESTO\n{'-' * 94}")
     print("· TRES cifras distintas se llaman 'la venta de Shopify' y las tres son correctas:")
@@ -375,9 +599,16 @@ if __name__ == "__main__":
     ap.add_argument("--salida", default=None,
                     help="CSV de salida con una fila por pedido/documento y su situacion")
     ap.add_argument("--salida-kits", dest="salida_kits", default=None,
-                    help="CSV con los kits sin codigo que ningun tablero cuenta")
+                    help="CSV con los kits sin codigo que ningun tablero cuenta (resumen mes x canal)")
+    ap.add_argument("--salida-kits-detalle", dest="salida_kits_detalle", default=None,
+                    help="CSV FACTURA A FACTURA de los kits sin codigo: numero de factura, cliente, "
+                         "el SKU que manda Shopify y el que falta en Odoo, unidades y valor")
+    ap.add_argument("--salida-shopify-kits", dest="salida_shopify_kits", default=None,
+                    help="CSV con el recorte del export de Shopify de esos mismos kits, tal cual "
+                         "lo entrega Shopify (para poner los dos lados en la mesa)")
     ap.add_argument("--timeout", type=int, default=120,
                     help="statement_timeout en segundos (por defecto 120). Ver el aviso de la "
                          "cabecera: sin el, una consulta pesada puede parar el cron")
     a = ap.parse_args()
-    main(a.csv, a.mes, a.salida, a.salida_kits, a.timeout)
+    main(a.csv, a.mes, a.salida, a.salida_kits, a.salida_kits_detalle,
+         a.salida_shopify_kits, a.timeout)
