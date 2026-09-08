@@ -180,13 +180,22 @@ def leer_kits(conn, desde):
 
     ⚠ El filtro es `es_kit AND codigo IS NULL`, NO 'todo lo que el prefijo excluye': ahi dentro
     tambien caen descuentos, asesorias, arriendos e intereses, que NO son venta de producto y
-    estan bien excluidos."""
+    estan bien excluidos.
+
+    ⚠ Lleva los MISMOS filtros que `v_ventas_producto` —`clase_codigo = '4'` y **`es_reverso IS NOT
+    TRUE`**— o las dos cifras del repo no coinciden. Sin el de reversos entraba una linea de kit
+    ANULADA de −181.092 (la NC `RINV0670`) y este bloque decia 16.020.142 donde el puente de
+    `diagnosticar_producto_comercial.py` dice **16.201.235**. La cifra correcta es la del puente: una
+    linea anulada no la cuenta el tablero de ninguna manera, asi que no es parte de lo que se pierde
+    por no tener codigo."""
     df = pd.read_sql("""
       SELECT date_trunc('month', f.fecha_factura)::date AS mes, f.categoria, p.nombre AS kit,
              count(*) AS lineas, sum(f.venta_neta) AS base_sin_iva
       FROM marts.fact_movimiento_contable f
+      JOIN marts.dim_cuenta   c ON c.cuenta_id   = f.cuenta_id
       JOIN marts.dim_producto p ON p.producto_id = f.producto_id
-      WHERE f.es_venta AND f.fecha_factura >= DATE %(desde)s
+      WHERE f.es_venta AND c.clase_codigo = '4' AND f.es_reverso IS NOT TRUE
+        AND f.fecha_factura >= DATE %(desde)s
         AND p.es_kit AND p.codigo IS NULL
       GROUP BY 1, 2, 3 ORDER BY 1, 5 DESC
     """, conn, params={"desde": desde})

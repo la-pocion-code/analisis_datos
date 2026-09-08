@@ -255,11 +255,31 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   **asimétrico**: el CSV filtra por `Created at` y el DW por `fecha_factura`. ⚠ Las NC **no traen
   `#`** (su `ref` es `'Reversión de: FE51933, motivo'`), así que salen como «solo en Odoo» sin ser
   un descuadre. Detalle en `docs/dashboards_intranet.md` §10.7.
+- **QUÉ DEFINE UN «PRODUCTO COMERCIAL»: el PREFIJO del `default_code`**, una sola condición en
+  `sql/marts/14_ventas.sql:213` (y `:259`): `codigo IS NOT NULL AND codigo LIKE 'PCN%|KD%|TNG%|B8%'`.
+  Es una **convención de nombres**, no un campo del negocio. Auditor:
+  **`python diagnosticar_producto_comercial.py`** (solo lectura; `--mes`, `--categoria`, `--salida`).
+  ⭐ **UN PRODUCTO NUEVO ENTRA SOLO** — probado con **PCN34/PCN35** (primera venta 2026-06-03,
+  presentes en `mv_ventas_mes` de agosto en **9 canales** cada uno, ≈472 M y ≈420 M). La duda «el
+  tablero no cuenta los lanzamientos» es **infundada**: lo que se pierde es lo que no tiene código o
+  lleva otro prefijo. (`PCN37 SERUM DE PUNTAS` existe pero aún no vende nada.)
+  **La alternativa que Odoo ya mantiene** es el árbol de categorías
+  (`dim_producto.categoria LIKE 'Inventario/Producto Terminado%'`): captura **+445.404.849** en 2026
+  (18 productos) y perdería 8.617.160 (`PCNKIT16`/`PCNKIT39`, con `categoria='All'`). Precedente: la
+  *línea* de producto ya se migró de `bi_lineas` al árbol de Odoo (2026-07-30) por este argumento.
+  ⚠⚠ **SIN DECIDIR:** de esos 445,4 M, **390,1 M son los 8 kits** (lo que falta de verdad) pero
+  **55,3 M son merchandising y sachets de muestra `(OBS)`** (TOTE BAG, VASO KIDS, RIÑONERA, NECESER,
+  COSMETIQUERA) — si eso cuenta como «venta de producto» es **decisión de negocio**.
+  ⚠ `PCNKIT16`/`PCNKIT39` **parecen duplicados en Odoo** de dos de los kits sin código (mismo
+  nombre, uno con categoría `.../Kits` y `es_kit=true`, el otro con `All` y `es_kit=false`) ⇒ la raíz
+  sería de datos en Odoo, no del filtro. El auditor lo marca como **sospecha**, no como hecho.
 - ⚠⚠ **8 KITS SIN `default_code` EN ODOO NO APARECEN EN NINGÚN TABLERO** (2026-09-07).
   `v_ventas_producto` exige prefijo `PCN%/KD%/TNG%/B8%` y estos kits (`es_kit = true`) no tienen
-  código, así que quedan fuera de `v_ventas_bi` y de **todas** las MV de ventas: **389.845.461 sin
-  IVA en 2026** (16.020.142 solo en Shopify-agosto). Es venta real, y es el puente entre «lo
+  código, así que quedan fuera de `v_ventas_bi` y de **todas** las MV de ventas: **390.085.902 sin
+  IVA en 2026** (16.201.235 solo en Shopify-agosto). Es venta real, y es el puente entre «lo
   facturado» y «lo que muestra el tablero». Listarlos: `conciliar_shopify.py --salida-kits`.
+  ⚠ Las dos cifras exigen **`clase_codigo = '4'`**, igual que `v_ventas_producto`: sin ese filtro
+  salían 389.845.461 / 16.020.142 y dos informes del repo daban números distintos para lo mismo.
   ⚠ **La corrección NO es quitar el filtro**: en el mismo saco caen `Descuento financiero en ventas`
   (−2.876 M), ASESORÍA EN MERCADEO, COMISIONES, ARRENDAMIENTO, ALOJAMIENTO e INTERESES DE PRÉSTAMO,
   que **no son venta de producto** y están bien excluidos. Lo mal excluido se detecta con

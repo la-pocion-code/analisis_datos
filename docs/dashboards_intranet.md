@@ -674,6 +674,79 @@ kits, y se detectan con `es_kit AND codigo IS NULL`.
 publicadas y obliga a recrear 6 MV + 3 vistas y re-aplicar los `GRANT`. La raíz está en Odoo (darles
 código a los 8 kits), no aquí.
 
+### 10.8 Qué define un «PRODUCTO COMERCIAL» (y qué se queda fuera por eso)
+
+Auditor: **`python diagnosticar_producto_comercial.py`** (solo lectura; `--mes`, `--categoria`,
+`--salida`). Medido el 2026-09-08.
+
+**La definición vigente es UNA condición**, en `sql/marts/14_ventas.sql:213` (y repetida en `:259`
+para `v_nc_sin_asignar`):
+
+```sql
+AND p.codigo IS NOT NULL
+AND (p.codigo LIKE 'PCN%' OR p.codigo LIKE 'KD%' OR p.codigo LIKE 'TNG%' OR p.codigo LIKE 'B8%')
+```
+
+⇒ Es el **prefijo del `default_code` de Odoo**: una **convención de nombres**, no un campo del
+negocio ni una marca que alguien mantenga. De ahí sus **tres modos de fallo**, medidos en 2026
+(clase 4, `es_venta`, sin reversos):
+
+| modo de fallo | efecto | 2026 |
+|---|---|---:|
+| producto **sin `default_code`** | invisible | **8 kits = 390.085.902** |
+| código con **otro prefijo** | invisible | sachets `SCHT0x` 13,4 M · `MAE26` neceser 3,0 M · `ADD25/23/11` merch |
+| prefijo correcto pero **no es producto terminado** | entra sin deber | `PCNKIT16` 7,7 M · `PCNKIT39` 0,9 M |
+
+⭐ **UN PRODUCTO NUEVO ENTRA SOLO — no hay que hacer nada.** Comprobado con **PCN34** (MASCARILLA
+FORTALECEDORA ANTICAIDA) y **PCN35** (ACONDICIONADOR CRECIMIENTO Y CAIDA): código limpio de 5
+caracteres, primera venta el **2026-06-03**, y presentes en `mv_ventas_mes` de agosto **en 9 canales
+cada uno** (≈472 M y ≈420 M). La duda «el tablero no cuenta los lanzamientos» es **infundada**; lo
+que se pierde es lo que **no tiene código** o lleva **otro prefijo**. (El lanzamiento que aún no
+vende es **PCN37 SERUM DE PUNTAS**: en `dim_producto`, sin `codigo_barras` y con 0 líneas.)
+
+#### La alternativa que Odoo ya mantiene: el árbol de categorías
+
+`dim_producto.categoria` vale `Inventario/Producto Terminado/<Línea>` para un producto real. Las dos
+definiciones cruzadas sobre 2026:
+
+| pasa prefijo | es `Producto Terminado` | productos | líneas | base |
+|---|---|---:|---:|---:|
+| ✔ | ✔ | 68 | 193.421 | 65.484.906.812 ← el núcleo, coinciden |
+| ✘ | ✔ | 18 | 2.801 | **+445.404.849 ← lo que el tablero PIERDE** |
+| ✔ | ✘ | 2 | 56 | 8.617.160 ← se perdería al cambiar |
+| ✘ | ✘ | 31 | 1.054 | **−1.256.183.698** ← descuentos y servicios, bien fuera de ambas |
+
+La categoría es un **ancla mejor**: alguien la mantiene, recoge los kits sin código y **excluye sola**
+los descuentos y servicios. Precedente: la **línea de producto** ya se migró de `bi_lineas` al árbol
+de Odoo el 2026-07-30 por este mismo argumento (§10.5).
+
+⚠ **Pero el cambio NO está decidido, y no es gratis:**
+- De los 445,4 M, **390,1 M son los 8 kits** (lo que claramente falta) y **55,3 M son merchandising
+  y sachets de muestra** marcados `(OBS)` — TOTE BAG, VASO KIDS, RIÑONERA, NECESER, COSMETIQUERA
+  NOVAVENTA. Son producto terminado vendido, pero **si cuentan como «venta de producto» es decisión
+  de negocio**.
+- Se perderían `PCNKIT16` y `PCNKIT39`, que tienen **`categoria = 'All'`** (sin categoría asignada
+  en Odoo).
+- ⚠ **Y esos dos parecen DUPLICADOS en Odoo** de dos de los kits sin código: `PCNKIT16 Kit Control
+  grasa y crecimiento` (categoría `All`, `es_kit = false`, 7,7 M) contra `KIT CONTROL GRASA Y
+  CRECIMIENTO` (categoría `.../Kits`, `es_kit = true`, 131,1 M). Si lo son, **la raíz está en Odoo,
+  no en el filtro del DW**. El auditor lo reporta como *sospecha*, no como hecho.
+
+#### El puente «facturado → tablero» cierra
+
+Bloque 4 del auditor. Shopify-agosto, comparando **por `fecha_factura` en los dos lados**:
+
+```
+COMERCIAL (entra al tablero) ..  801.017.715   =  mv_ventas_mes  801.017.715   ✔ residuo 0
+KIT sin default_code .........   16.201.235   ← el único hueco
+es_reverso (anuladas) ........     −342.857   correctamente excluidas
+TOTAL facturado (clase 4) ....  816.876.092
+```
+
+⚠ **Comparar contra `periodo_aaaamm` (fecha de venta) en vez de `periodo_factura_aaaamm` inventa un
+residuo de 148.403** en ese mes: es el desplazamiento de las NC al mes de su factura, no un
+descuadre. Todos los canales juntos: residuo **+808.578 sobre 9.713 M = +0,008 %**, por lo mismo.
+
 ## 11. Fase 4 — hoja de NIELSEN (2026-07-30)
 
 DDL: `sql/marts/28_nielsen_dashboards.sql`. GRANTs: `sql/marts/24_rol_intranet.sql`
