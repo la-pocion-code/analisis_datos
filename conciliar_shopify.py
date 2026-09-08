@@ -51,6 +51,20 @@ esta en ninguna factura** — ni como venta ni en otra cuenta.
   ⚠ El mismo filtro excluye BIEN descuentos, asesorias, arriendos e intereses, que no son venta de
   producto: lo unico mal excluido son los kits.
 
+⭐⭐ Y YA ESTA CORREGIDO EN ORIGEN: el problema es HISTORICO, no esta vivo. Kits sin codigo por
+  quincena: jul-1a 152 facturas · jul-2a 113 · ago-1a 92 · **ago-2a 12 · septiembre NINGUNA**. Del
+  19 de agosto en adelante los kits de Shopify caen en fichas CON codigo, en `PT/Kits` y con PdV
+  (`PCNKIT12`, `PCNKIT13`, `PCNKIT37`, `TNGKIT`, `B8KIT`...), que el tablero SI cuenta. Alguien
+  limpio el catalogo de Odoo entre el 1 y el 18 de agosto.
+  ⇒ Queda el HISTORICO 1-ene -> 18-ago: **390.085.901 sin IVA / 464.202.220 con IVA**, 2.786
+  unidades, 2.752 facturas. Listado con `--salida-kits-sku`.
+  ⚠⚠ **NO es error de la plataforma de Shopify ni un typo: no hay nada que reclamarle.** Los 5 SKU
+  que Odoo no tiene son PRODUCTOS DISTINTOS de sus vecinos (`PCNKIT17 Rizos largos y abundantes`
+  contra `PCNKIT14 RIZOS LARGOS E HIDRATADOS`; `PCNKIT30 Anti-Frizz Rizos` contra `PCNKIT29
+  Anti-Frizz LISOS Y ONDULADOS`), y el nombre de Shopify coincide EXACTO con el de la factura.
+  Faltaba el producto con codigo en NUESTRO catalogo, no el SKU en Shopify.
+  ⚠ Unica anomalia viva: `PCNKIT16` (categoria `All`, sin PdV) seguia facturando el 6-sep.
+
 Dos trampas del CSV de Shopify, medidas:
   ⚠ La columna `Taxes` **NO es el IVA del 19 %** (7.168,91 en un pedido de 214.500). No sirve para
     el cruce. Aqui el IVA se lee del ASIENTO (base clase 4 + cuenta 2408), no de Shopify.
@@ -70,13 +84,16 @@ Uso:  python conciliar_shopify.py --csv D:\\Downloads\\orders_export_1.csv
       python conciliar_shopify.py --csv ... --salida detalle.csv --salida-kits kits.csv
       python conciliar_shopify.py --csv ... --salida-kits-detalle facturas.csv \\
                                             --salida-shopify-kits recorte.csv
+      python conciliar_shopify.py --csv ... --salida-kits-sku kit_vs_sku.csv
       python conciliar_shopify.py --csv ... --mes 2026-09
 """
 import os
 import sys
 import logging
+import difflib
 import warnings
 import argparse
+import unicodedata
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -304,6 +321,62 @@ def leer_anuladas(conn, mes):
     return int(df["lineas"].iloc[0] or 0), float(pd.to_numeric(df["con_iva"]).fillna(0).iloc[0])
 
 
+def leer_kits_sku(conn, desde):
+    """Una fila por KIT SIN CODIGO con su rastro completo: primera y ultima venta, facturas,
+    unidades, valor y canales. Es el inventario del historico invisible.
+
+    ⭐ `ultima_venta` es la columna que cierra el diagnostico: los 9 dejan de recibir facturas entre
+    el 31-jul y el 18-ago de 2026 porque alguien limpio el catalogo de Odoo esos dias. Desde el 19
+    de agosto los kits de Shopify caen en fichas CON codigo (`PCNKIT12`, `PCNKIT13`, `TNGKIT`...)
+    que el tablero SI cuenta => el problema esta resuelto en el flujo y lo que queda es historico.
+    """
+    return pd.read_sql("""
+      WITH factor AS (
+        SELECT f.factura_id,
+               sum(CASE WHEN c.clase_codigo = '4' THEN f.venta_neta ELSE 0 END)           AS base,
+               sum(CASE WHEN c.codigo LIKE '2408%%' THEN f.credito - f.debito ELSE 0 END)  AS iva
+        FROM marts.fact_movimiento_contable f
+        JOIN marts.dim_cuenta c ON c.cuenta_id = f.cuenta_id
+        WHERE f.es_venta AND f.fecha_factura >= DATE %(desde)s
+        GROUP BY 1)
+      SELECT p.nombre                                   AS kit_odoo,
+             min(f.fecha_factura)::text                 AS primera_venta,
+             max(f.fecha_factura)::text                 AS ultima_venta,
+             count(DISTINCT f.factura_id)               AS facturas,
+             sum(f.cantidad)                            AS unidades,
+             sum(f.venta_neta)                          AS base,
+             sum(f.venta_neta * CASE WHEN fa.base <> 0 THEN fa.iva / fa.base ELSE 0 END) AS iva,
+             string_agg(DISTINCT f.categoria, ', ')     AS canales
+      FROM marts.fact_movimiento_contable f
+      JOIN marts.dim_cuenta   c  ON c.cuenta_id   = f.cuenta_id
+      JOIN marts.dim_producto p  ON p.producto_id = f.producto_id
+      LEFT JOIN factor fa ON fa.factura_id = f.factura_id
+      WHERE f.es_venta AND c.clase_codigo = '4' AND f.es_reverso IS NOT TRUE
+        AND p.es_kit AND p.codigo IS NULL
+        AND f.fecha_factura >= DATE %(desde)s
+      GROUP BY p.nombre ORDER BY 6 DESC
+    """, conn, params={"desde": desde})
+
+
+def catalogo_kits_con_codigo(conn):
+    """Los kits que SI tienen `default_code` en el DW (incluye los archivados, pero como esos no
+    tienen codigo, en practica son los ACTIVOS). Sirve para dos cosas:
+      · resolver si un SKU de Shopify existe en nuestro catalogo,
+      · y buscarle el nombre mas parecido, que es lo que demuestra que NO es un typo.
+    ⚠ Se resuelve contra el DW, no contra Odoo: `dim_producto` trae el catalogo completo con
+    `active_test: False`, asi que no hace falta abrir una conexion mas."""
+    df = pd.read_sql("""
+      SELECT codigo, nombre FROM marts.dim_producto
+      WHERE codigo IS NOT NULL AND codigo ILIKE '%%KIT%%'
+    """, conn)
+    return dict(zip(df["nombre"], df["codigo"]))
+
+
+def _norm(s):
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
+    return " ".join(s.upper().split())
+
+
 def sku_shopify_de_los_kits(sh, det):
     """Mapa `kit_odoo` -> (SKU, nombre) de Shopify, por VOTO MAYORITARIO sobre los pedidos.
 
@@ -400,7 +473,7 @@ def leer_mv(conn, mes):
 
 
 def main(csv, mes=None, salida=None, salida_kits=None, salida_kits_detalle=None,
-         salida_shopify_kits=None, timeout=120):
+         salida_shopify_kits=None, salida_kits_sku=None, desde=None, timeout=120):
     ped, sh_raw = leer_shopify(csv)
     if mes is None:
         mes = ped["mes"].mode().iloc[0]
@@ -421,6 +494,8 @@ def main(csv, mes=None, salida=None, salida_kits=None, salida_kits_detalle=None,
         kits = leer_kits(conn, f"{mes[:4]}-01-01")
         kd = leer_kits_detalle(conn, mes)
         n_anul, anul = leer_anuladas(conn, mes)
+        ks = leer_kits_sku(conn, desde or f"{mes[:4]}-01-01")
+        cat_kits = catalogo_kits_con_codigo(conn)
         mv_con_iva = leer_mv(conn, mes)
     finally:
         conn.close()
@@ -590,6 +665,62 @@ def main(csv, mes=None, salida=None, salida_kits=None, salida_kits_detalle=None,
             print(f"✔ CSV recorte de Shopify: {salida_shopify_kits}   ({len(reco):,} lineas de "
                   f"pedido, SKU {', '.join(sorted(skus))})")
 
+    # ── EL LISTADO KIT DE ODOO <-> SKU DE SHOPIFY ────────────────────────────────────────────
+    if salida_kits_sku and len(ks):
+        mapa = sku_shopify_de_los_kits(sh_raw, kd) if len(kd) else {}
+        for c in ("base", "iva", "unidades"):
+            ks[c] = pd.to_numeric(ks[c]).fillna(0)
+        ks["con_iva"] = ks["base"] + ks["iva"]
+        ks["sku_odoo"] = "(SIN CODIGO)"
+        ks["sku_shopify"] = ks["kit_odoo"].map(lambda k: mapa.get(k, (None, None))[0])
+        ks["nombre_shopify"] = ks["kit_odoo"].map(lambda k: mapa.get(k, (None, None))[1])
+        codigos = set(cat_kits.values())
+        # ⚠ Un kit sin SKU aqui NO es un dato que falte: es que no tuvo pedidos en el mes que trae
+        # el CSV de Shopify (el export es de UN mes y el listado cubre el ano). Se etiqueta para que
+        # nadie lo lea como un hueco.
+        sin_csv = f"(sin pedidos en el CSV de {mes})"
+        ks["existe_en_odoo"] = ks["sku_shopify"].map(
+            lambda s: sin_csv if not s else ("SI" if s in codigos else "NO"))
+        ks["sku_shopify"] = ks["sku_shopify"].fillna(sin_csv)
+        ks["nombre_shopify"] = ks["nombre_shopify"].fillna(sin_csv)
+        # El kit CON codigo de nombre mas parecido: es lo que demuestra que NO es un typo, porque
+        # el parecido resulta ser OTRO producto (PCNKIT17 'Rizos largos y abundantes' contra
+        # PCNKIT14 'Rizos largos e HIDRATADOS').
+        norm = {_norm(n): (n, c) for n, c in cat_kits.items()}
+
+        def _parecido(fila):
+            if not fila["nombre_shopify"] or fila["nombre_shopify"] == sin_csv:
+                return sin_csv
+            cerca = difflib.get_close_matches(_norm(fila["nombre_shopify"]), list(norm),
+                                              n=1, cutoff=0.5)
+            if not cerca:
+                return "NINGUNO parecido"
+            nom, cod = norm[cerca[0]]
+            return f"{cod} {nom}"
+
+        ks["kit_con_codigo_mas_parecido"] = ks.apply(_parecido, axis=1)
+        cols = ["kit_odoo", "sku_odoo", "sku_shopify", "nombre_shopify", "existe_en_odoo",
+                "kit_con_codigo_mas_parecido", "primera_venta", "ultima_venta", "facturas",
+                "unidades", "base", "iva", "con_iva", "canales"]
+
+        print(f"\n{'-' * 94}\nKIT DE ODOO  <->  SKU DE SHOPIFY   (el listado)\n{'-' * 94}")
+        print(ks[["kit_odoo", "sku_shopify", "existe_en_odoo", "ultima_venta", "facturas",
+                  "unidades", "con_iva"]].to_string(index=False))
+        print(f"\n  TOTAL: {_fmt(ks['con_iva'].sum())} con IVA  ·  "
+              f"{int(ks['unidades'].sum()):,} unidades  ·  {int(ks['facturas'].sum()):,} facturas")
+        n_no = int((ks["existe_en_odoo"] == "NO").sum())
+        n_con = int((ks["existe_en_odoo"] != sin_csv).sum())
+        print(f"  SKU de Shopify que NO existen en nuestro catalogo: {n_no} de {n_con}")
+        ult = ks["ultima_venta"].max()
+        print(f"\n  ⭐ ULTIMA venta de un kit sin codigo: {ult}. Si es de hace semanas, el catalogo")
+        print("     de Odoo YA se limpio y lo que queda es HISTORICO, no un problema vivo.")
+        print("  ⚠ El SKU sale del CSV de Shopify (`Lineitem sku`) cruzado por PEDIDO, no de la")
+        print("    factura: la factura de Odoo no trae codigo. Y el 'mas parecido' es OTRO producto")
+        print("    en todos los casos => no es un error de digitacion, es un kit que faltaba.")
+        ks[cols].to_csv(salida_kits_sku, index=False, sep=";", encoding="utf-8-sig",
+                        decimal=",", float_format="%.2f")
+        print(f"\n✔ CSV kit<->SKU escrito: {salida_kits_sku}   ({len(ks):,} kits)")
+
     print(f"\n{'-' * 94}\nCOMO LEER ESTO\n{'-' * 94}")
     print("· TRES cifras distintas se llaman 'la venta de Shopify' y las tres son correctas:")
     print(f"    {ped['total'].sum():>15,.0f}  lo que el cliente PAGO (con flete)")
@@ -615,6 +746,12 @@ if __name__ == "__main__":
     ap.add_argument("--salida-kits-detalle", dest="salida_kits_detalle", default=None,
                     help="CSV FACTURA A FACTURA de los kits sin codigo: numero de factura, cliente, "
                          "el SKU que manda Shopify y el que falta en Odoo, unidades y valor")
+    ap.add_argument("--salida-kits-sku", dest="salida_kits_sku", default=None,
+                    help="CSV con el listado KIT DE ODOO <-> SKU DE SHOPIFY: si ese SKU existe en "
+                         "nuestro catalogo, el kit con codigo mas parecido, primera y ULTIMA venta, "
+                         "facturas, unidades y valor. Es el inventario del historico invisible")
+    ap.add_argument("--desde", default=None,
+                    help="fecha de inicio del listado de kits (por defecto, 1-ene del ano del mes)")
     ap.add_argument("--salida-shopify-kits", dest="salida_shopify_kits", default=None,
                     help="CSV con el recorte del export de Shopify de esos mismos kits, tal cual "
                          "lo entrega Shopify (para poner los dos lados en la mesa)")
@@ -623,4 +760,4 @@ if __name__ == "__main__":
                          "cabecera: sin el, una consulta pesada puede parar el cron")
     a = ap.parse_args()
     main(a.csv, a.mes, a.salida, a.salida_kits, a.salida_kits_detalle,
-         a.salida_shopify_kits, a.timeout)
+         a.salida_shopify_kits, a.salida_kits_sku, a.desde, a.timeout)

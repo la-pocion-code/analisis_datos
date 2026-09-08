@@ -294,6 +294,24 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   Shopify**, así que el reporte no puede depender de él — y por eso la definición por categoría +
   PdV es la salida buena. Las fichas archivadas que reciben las facturas **no tienen ningún
   identificador**: `default_code` y `barcode` los dos en NULL.
+- ⭐⭐ **EL PROBLEMA DE LOS KITS YA SE CORRIGIÓ EN ORIGEN: es HISTÓRICO, no está vivo**
+  (medido 2026-09-08). Venta de kits **sin código** por quincena: jul-1ª 152 facturas · jul-2ª 113 ·
+  **ago-1ª 92 · ago-2ª 12 · septiembre NINGUNA**. Del **19 de agosto** en adelante los kits de
+  Shopify caen en fichas **con código, en `PT/Kits` y con PdV** (`PCNKIT12`, `PCNKIT13`, `PCNKIT37`,
+  `TNGKIT`, `B8KIT`…) que el tablero **sí** cuenta. Alguien limpió el catálogo de Odoo entre el 1 y
+  el 18 de agosto: archivó las fichas viejas (`write_date = 2026-08-18`) y creó las nuevas
+  (`PCNKIT16` el 19-ago, `PCNKIT39` el 21-ago).
+  ⇒ **Lo que queda invisible es el histórico 1-ene → 18-ago: 390.085.901 sin IVA / 464.202.220 con
+  IVA, 2.786 unidades, 2.752 facturas.** Listado kit ↔ SKU con `conciliar_shopify.py
+  --salida-kits-sku`; detalle factura/cliente con `--salida-kits-detalle`.
+  ⚠⚠ **NO es un error de la plataforma de Shopify ni un typo, y no hay nada que reclamarle.** Los 5
+  SKU que Odoo no tiene (`PCNKIT17/23/30/6/3`) corresponden a **productos distintos** de los códigos
+  vecinos de Odoo: `PCNKIT17 Kit Rizos largos y abundantes` contra `PCNKIT14 KIT RIZOS LARGOS E
+  HIDRATADOS`, `PCNKIT30 Anti-Frizz Rizos` contra `PCNKIT29 Anti-Frizz LISOS Y ONDULADOS`… El nombre
+  de Shopify coincide **exacto** con el de la factura de Odoo. Faltaba el **producto con código en
+  nuestro catálogo**, no el SKU en Shopify.
+  ⚠ **La única anomalía viva** es `PCNKIT16` (categoría `All`, sin PdV), que **seguía facturando el
+  6-sep**: si se aplica la definición nueva sin completar su ficha, esa venta desaparece.
 - ⚠⚠ **9 KITS *ARCHIVADOS* SIN `default_code` NO APARECEN EN NINGÚN TABLERO** (medido 2026-09-08).
   `v_ventas_producto` exige prefijo `PCN%/KD%/TNG%/B8%` y estos kits (`es_kit = true`) no tienen
   código, así que quedan fuera de `v_ventas_bi` y de **todas** las MV de ventas: **390.085.902 sin
