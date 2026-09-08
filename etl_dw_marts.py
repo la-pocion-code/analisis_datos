@@ -701,7 +701,33 @@ def cargar_terceros(od, loader, part_ids, tipo_tercero):
 #
 # ⚠ NO se piden `hs_code` ni `unspsc_code_id`: verificado contra la API, están VACÍOS al 100 % en
 # los 85 productos comerciales. Ver sql/marts/33_producto_identificadores.sql.
-PRODUCTO_FIELDS = ["id", "default_code", "name", "categ_id", "barcode"]
+#
+# ⚠⚠ `product_tmpl_id` se pide para poder resolver `available_in_pos`, que está STORED **solo en
+# `product.template`**: en `product.product` es un campo `related` con `store = False` (verificado
+# con `fields_get`). Leerlo del producto repetiría el fallo de `valid_ean`. Ver `plantillas_pos`.
+PRODUCTO_FIELDS = ["id", "default_code", "name", "categ_id", "barcode", "product_tmpl_id"]
+
+_PLANTILLAS_POS = None
+
+
+def plantillas_pos(od):
+    """Mapa `product.template.id` → `available_in_pos` (bool); cacheado por proceso.
+
+    Es el marcador de COMERCIALIZACIÓN del negocio: junto con la categoría bajo
+    `Inventario/Producto Terminado/<Línea>` define qué es un producto comercial
+    (`sql/marts/36_producto_comercial.sql` y la condición de `v_ventas_producto`).
+
+    ⚠ Se lee del TEMPLATE porque en `product.product` el campo es `related` sin almacenar.
+    ⚠ Con `CTX_ALL`: los productos ARCHIVADOS tienen que venir. Los 9 kits que Shopify factura
+    cada mes (390 M en 2026) están archivados en Odoo, y su venta sí cuenta.
+    """
+    global _PLANTILLAS_POS
+    if _PLANTILLAS_POS is None:
+        filas = od.search_read("product.template", [], ["id", "available_in_pos"], context=CTX_ALL)
+        _PLANTILLAS_POS = {t["id"]: bool(t.get("available_in_pos")) for t in filas}
+        logging.info(f"  plantillas POS: {len(_PLANTILLAS_POS)} templates, "
+                     f"{sum(_PLANTILLAS_POS.values())} disponibles en PdV")
+    return _PLANTILLAS_POS
 
 
 def _ean13_valido(codigo):
@@ -722,17 +748,24 @@ def _ean13_valido(codigo):
     return (10 - (impares + 3 * pares) % 10) % 10 == int(s[12])
 
 
-def _fila_producto(p):
+def _fila_producto(p, pos=None):
     """product.product de Odoo → fila de dim_producto. ⚠ `es_kit` NO se toca: lo fija cargar_kits
-    desde los BOM phantom, y `bom_count > 0` marcaría también los productos FABRICADOS."""
+    desde los BOM phantom, y `bom_count > 0` marcaría también los productos FABRICADOS.
+
+    `pos` es el mapa de `plantillas_pos` (template → available_in_pos). Si no se pasa,
+    `disponible_pos` queda None y la vista de ventas no cuenta el producto (usa `IS TRUE`), así que
+    el mapa NO es opcional en las rutas reales: se pasa desde las dos que leen `product.product`.
+    """
     # Odoo devuelve False cuando está vacío; _limpiar ya lo pasa a None.
     barcode = p.get("barcode")
+    tmpl = m2o_id(p.get("product_tmpl_id"))
     return {"producto_id": as_int(p["id"]),
             "codigo": p.get("default_code"),
             "nombre": p.get("name"),
             "categoria": m2o_nombre(p.get("categ_id")),
             "codigo_barras": barcode,
-            "ean_valido": _ean13_valido(barcode)}
+            "ean_valido": _ean13_valido(barcode),
+            "disponible_pos": (pos or {}).get(tmpl)}
 
 
 def cargar_productos(od, loader, prod_ids):
@@ -740,8 +773,9 @@ def cargar_productos(od, loader, prod_ids):
     prod_ids = [p for p in prod_ids if p]
     if not prod_ids:
         return
+    pos = plantillas_pos(od)
     productos = od.read("product.product", prod_ids, PRODUCTO_FIELDS, context=CTX_ALL)
-    dp = pd.DataFrame([_fila_producto(p) for p in productos])
+    dp = pd.DataFrame([_fila_producto(p, pos) for p in productos])
     upsert(loader, dp, "dim_producto", "producto_id")
 
 
@@ -754,6 +788,7 @@ def refrescar_dimensiones(od, loader, full=False, modelos=None):
     solo trae lo que cambió en Odoo. Ver `--backfill-terceros`."""
     cmap = cat_map_tercero(od)  # etiquetas de terceros (m2m id→nombre), cargado una vez
     ciudades = ciudades_odoo(od)  # catálogo res.city id→name, para la cascada de ciudad
+    pos = plantillas_pos(od)  # template→available_in_pos: el marcador de comercialización
     specs = [
         # Campos y builder compartidos con cargar_terceros (PARTNER_FIELDS/_fila_tercero) para
         # que las dos rutas que leen res.partner no se desincronicen.
@@ -763,7 +798,8 @@ def refrescar_dimensiones(od, loader, full=False, modelos=None):
         # es_kit NO se setea aquí: lo fija cargar_kits desde dim_kit_componente (BOM phantom).
         # `bom_count > 0` marcaría también los productos FABRICADOS, que no son kits.
         # Campos y builder compartidos con cargar_productos (PRODUCTO_FIELDS/_fila_producto).
-        ("product.product", PRODUCTO_FIELDS, "dim_producto", "producto_id", _fila_producto),
+        ("product.product", PRODUCTO_FIELDS, "dim_producto", "producto_id",
+         lambda r: _fila_producto(r, pos)),
         ("res.users", ["id", "name"], "dim_vendedor", "vendedor_id",
          lambda r: {"vendedor_id": as_int(r["id"]), "nombre": r.get("name")}),
     ]
@@ -2251,6 +2287,11 @@ if __name__ == "__main__":
                         "--dims va por write_date y solo relee lo que cambió en Odoo, así que los "
                         "terceros existentes se quedarían con el valor viejo. UNA SOLA VEZ, ~5 min. "
                         "No lo corre el cron.")
+    g.add_argument("--backfill-productos", action="store_true",
+                   help="relee el CATÁLOGO COMPLETO de product.product y repuebla dim_producto. "
+                        "Hace falta tras añadir un campo del producto (p.ej. `disponible_pos`): "
+                        "--dims va por write_date y los productos existentes se quedarían en NULL. "
+                        "UNA SOLA VEZ, segundos (~1.100 productos). No lo corre el cron.")
     ap.add_argument("--rehacer-iva", action="store_true",
                     help="con --backfill-iva: re-lee TODAS las líneas de venta, no solo las que "
                          "tienen total_con_impuesto en NULL.")
@@ -2277,6 +2318,12 @@ if __name__ == "__main__":
         db, uid, pw, models = conectar_odoo()
         refrescar_dimensiones(Odoo(db, uid, pw, models), DBLoader(),
                               full=True, modelos=["res.partner"])
+    elif args.backfill_productos:
+        # Refresco TOTAL de product.product solamente. Mismo motivo que --backfill-terceros: un
+        # campo nuevo de la dimensión no lo puebla --dims, que va por write_date.
+        db, uid, pw, models = conectar_odoo()
+        refrescar_dimensiones(Odoo(db, uid, pw, models), DBLoader(),
+                              full=True, modelos=["product.product"])
     else:
         modo = ("rebuild" if args.rebuild else "full" if args.full
                 else "dims" if args.dims else "incremental")

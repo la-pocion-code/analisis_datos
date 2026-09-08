@@ -263,29 +263,49 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   presentes en `mv_ventas_mes` de agosto en **9 canales** cada uno, ≈472 M y ≈420 M). La duda «el
   tablero no cuenta los lanzamientos» es **infundada**: lo que se pierde es lo que no tiene código o
   lleva otro prefijo. (`PCN37 SERUM DE PUNTAS` existe pero aún no vende nada.)
-  **La alternativa que Odoo ya mantiene** es el árbol de categorías
-  (`dim_producto.categoria LIKE 'Inventario/Producto Terminado%'`): captura **+445.404.849** en 2026
-  (18 productos) y perdería 8.617.160 (`PCNKIT16`/`PCNKIT39`, con `categoria='All'`). Precedente: la
-  *línea* de producto ya se migró de `bi_lineas` al árbol de Odoo (2026-07-30) por este argumento.
-  ⚠⚠ **SIN DECIDIR:** de esos 445,4 M, **390,1 M son los 8 kits** (lo que falta de verdad) pero
-  **55,3 M son merchandising y sachets de muestra `(OBS)`** (TOTE BAG, VASO KIDS, RIÑONERA, NECESER,
-  COSMETIQUERA) — si eso cuenta como «venta de producto» es **decisión de negocio**.
-  ⚠ `PCNKIT16`/`PCNKIT39` **parecen duplicados en Odoo** de dos de los kits sin código (mismo
-  nombre, uno con categoría `.../Kits` y `es_kit=true`, el otro con `All` y `es_kit=false`) ⇒ la raíz
-  sería de datos en Odoo, no del filtro. El auditor lo marca como **sospecha**, no como hecho.
-- ⚠⚠ **8 KITS SIN `default_code` EN ODOO NO APARECEN EN NINGÚN TABLERO** (2026-09-07).
+- ⭐ **LA DEFINICIÓN NUEVA (decidida 2026-09-08, validada, AÚN NO APLICADA): producto terminado
+  DENTRO DE UNA LÍNEA + `Disponible en PdV`.** Los `Add On's` y los `Sachet` son producto terminado
+  pero **no** son comerciales. El campo `available_in_pos` **ya está en el DW** como
+  **`dim_producto.disponible_pos`** (`sql/marts/36_producto_comercial.sql`, aplicado y poblado).
+  Efecto medido: **70 → 75 productos, +333.397.879 en 2026 (+0,51 %)**.
+  ⚠⚠ **`available_in_pos` está STORED solo en `product.template`**; en `product.product` es un
+  `related` con `store=False` (`fields_get`) ⇒ leerlo del producto repetiría el fallo de `valid_ean`.
+  El ETL lo resuelve por `product_tmpl_id` con el caché **`plantillas_pos`** (patrón de
+  `ciudades_odoo`). Repoblar: **`python etl_dw_marts.py --backfill-productos`** (⚠ `--dims` no
+  sirve: va por `write_date`). Los 44 productos que quedan en NULL son borrados de Odoo y **no
+  tienen ni una línea de venta** (verificado) ⇒ `IS TRUE` no pierde nada.
+  ⛔⛔ **EL FLAG SOLO NO SIRVE: la condición lleva SIEMPRE la categoría además del flag.**
+  `Descuento financiero en ventas` tiene `available_in_pos = true` y vale **−2.854.516.334** en 2026;
+  definir «comercial» solo por el flag **hundiría las ventas**. Hay 5 productos así en el catálogo
+  (`Discount`, `IMPUESTOS ASUMIDOS`, `(VTAS) IVA ASUMIDO`, un template sin nombre y ese).
+  **Falta en Odoo, y es de negocio:** (a) `KIT MASCARILL SOS + BOOSTER` (48.070.864) está en
+  `.../Kits` **sin marcar en PdV** ⇒ con la casilla el salto sube a **+381,5 M**; (b) confirmar si
+  `PCNKIT16`/`PCNKIT39` (8.617.160, categoría `All`) son **duplicados** — si no lo son, hay que
+  darles categoría y PdV en Odoo, **no** una excepción en el SQL. Detalle en
+  `docs/dashboards_intranet.md` §10.9.
+- ⚠⚠ **9 KITS *ARCHIVADOS* SIN `default_code` NO APARECEN EN NINGÚN TABLERO** (medido 2026-09-08).
   `v_ventas_producto` exige prefijo `PCN%/KD%/TNG%/B8%` y estos kits (`es_kit = true`) no tienen
   código, así que quedan fuera de `v_ventas_bi` y de **todas** las MV de ventas: **390.085.902 sin
-  IVA en 2026** (16.201.235 solo en Shopify-agosto). Es venta real, y es el puente entre «lo
-  facturado» y «lo que muestra el tablero». Listarlos: `conciliar_shopify.py --salida-kits`.
-  ⚠ Las dos cifras exigen **`clase_codigo = '4'`**, igual que `v_ventas_producto`: sin ese filtro
-  salían 389.845.461 / 16.020.142 y dos informes del repo daban números distintos para lo mismo.
+  IVA en 2026** (16.201.235 solo en Shopify-agosto), de lo cual **99,7 % es SHOPIFY**.
+  ⭐ **No son registros muertos: venden todos los meses de 2026** ⇒ **Shopify factura contra
+  productos que Odoo tiene dados de baja**. Es un problema de datos en Odoo, no del DW.
+  Listarlos: `conciliar_shopify.py --salida-kits`.
+  ⚠⚠ **POR ESO CONTAR KITS EN LA UI DE ODOO DA 32 Y EN EL DW 41**: la categoría
+  `Inventario/Producto Terminado/Kits` (id 205) tiene **32 activos con código + 9 archivados sin
+  código**; la UI oculta los archivados y el ETL los trae a propósito (`CTX_ALL =
+  {"active_test": False}`). **No es el Excel** (`es_kit` sale de `mrp.bom` phantom de Odoo, 70 BOMs /
+  39 templates; el Excel carga `raw.dim_kits` desde una función **huérfana** de `drive_loader.py` que
+  nada de `marts` lee) **ni es multiempresa** (los 41 tienen `company_id` vacío). Y **ninguno de los
+  9 tiene un kit activo con el mismo nombre** ⇒ no son duplicados de los 32 (que venden 4.443 M).
+  ⛔⛔ **NUNCA filtrar por `active`** (decisión de William): la venta histórica de un producto
+  archivado tiene que seguir apareciendo, o **un informe de un mes cerrado cambiaría de cifra solo
+  con el tiempo**.
+  ⚠ Las cifras exigen **`clase_codigo = '4'` y `es_reverso IS NOT TRUE`**, igual que
+  `v_ventas_producto`: sin ellos salían 389.845.461 / 16.020.142 (entraba una línea de kit anulada de
+  −181.092) y dos informes del repo daban números distintos para lo mismo.
   ⚠ **La corrección NO es quitar el filtro**: en el mismo saco caen `Descuento financiero en ventas`
-  (−2.876 M), ASESORÍA EN MERCADEO, COMISIONES, ARRENDAMIENTO, ALOJAMIENTO e INTERESES DE PRÉSTAMO,
-  que **no son venta de producto** y están bien excluidos. Lo mal excluido se detecta con
-  **`es_kit AND codigo IS NULL`**. La raíz está en Odoo (darles código); corregirlo en el DW subiría
-  ~390 M las cifras 2026 ya publicadas y obliga a recrear 6 MV + 3 vistas + re-aplicar los `GRANT`
-  ⇒ **decisión de negocio, pendiente**.
+  (−2.854 M), ASESORÍA EN MERCADEO, COMISIONES, ARRENDAMIENTO, ALOJAMIENTO e INTERESES DE PRÉSTAMO,
+  que **no son venta de producto** y están bien excluidos. La salida buena es la definición nueva.
 - **Mapeos de negocio NO-Odoo (única excepción local, a demanda):** `cargar_mapeos.py` lee de Drive
   (`DriveLoader` + `DRIVE_IDS`) → `marts.map_*`: ZONA por depto+categoría (+ Cundinamarca por
   depto+ciudad), CLIENTE PADRE, y CATEGORÍA normalizada. Correr cuando cambie un Excel.

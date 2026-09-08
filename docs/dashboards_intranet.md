@@ -654,25 +654,42 @@ Una fila por pedido/documento con **`situacion`**, el **número de factura** (`f
 ⚠ **`REVISAR` debe salir en 0 pedidos.** Es la clase residual: si aparece algo ahí, es un caso que
 ni cuadra ni se explica por el flete, o sea el problema nuevo.
 
-#### ⚠⚠ KITS SIN `default_code`: venta real que NINGÚN tablero cuenta
+#### ⚠⚠ 9 KITS **ARCHIVADOS** SIN `default_code`: venta real que ningún tablero cuenta
 
-**8 kits** (`es_kit = true`) **no tienen `default_code` en Odoo**, y `v_ventas_producto` exige
-prefijo `PCN%/KD%/TNG%/B8%` ⇒ quedan fuera de `v_ventas_bi` y de **todas** las MV de ventas.
-Medido: **16.020.142 sin IVA en Shopify-agosto** y **389.845.461 sin IVA en 2026**, todos los
-canales. Es el puente entre «lo facturado» y «lo que muestra el tablero».
+**9 kits** (`es_kit = true`) **están ARCHIVADOS en Odoo y sin `default_code`**, y
+`v_ventas_producto` exige prefijo `PCN%/KD%/TNG%/B8%` ⇒ quedan fuera de `v_ventas_bi` y de **todas**
+las MV de ventas. Medido el 2026-09-08: **16.201.235 sin IVA en Shopify-agosto** y **390.085.902 en
+2026**, de los cuales **388.879.196 = 99,7 % es SHOPIFY** (el resto, call center).
 
-Los kits: KIT CONTROL GRASA Y CRECIMIENTO, KIT RIZOS LARGO Y ABUNDANTES, KIT MASCARILL SOS +
-BOOSTER, KIT ANTI-FRIZZ RIZOS, Kit Doble Poder Reparador, KIT PROTECCIÓN DE VERANO, KIT DE
-REPARACIÓN CON DOYPACK (+1). Lista completa por mes × canal con `--salida-kits`.
+⭐ **No son registros muertos: venden todos los meses de 2026** sin interrupción (37,6 M en enero,
+162,5 M en abril, 16,2 M en agosto) ⇒ **Shopify está facturando contra productos que Odoo tiene
+dados de baja**. Es un problema de datos en Odoo / la integración de Shopify, no del DW.
 
-⚠ **La corrección NO es quitar el filtro.** En el mismo saco caen `Descuento financiero en ventas`
-(−2.876 M en 2026), ASESORÍA EN MERCADEO, COMISIONES, ARRENDAMIENTO, ALOJAMIENTO e INTERESES DE
-PRÉSTAMO, que **no son venta de producto** y están bien excluidos. Lo único mal excluido son los
-kits, y se detectan con `es_kit AND codigo IS NULL`.
+Los 9: KIT CONTROL GRASA Y CRECIMIENTO · KIT RIZOS LARGO Y ABUNDANTES · KIT MASCARILL SOS + BOOSTER
+· KIT ANTI-FRIZZ RIZOS · Kit Doble Poder Reparador · KIT PROTECCIÓN DE VERANO · KIT PRE DECOLORACIÓN
+· KIT DE REPARACIÓN CON DOYPACK · KIT LOVE REFILL (este sin venta en 2026). Lista por mes × canal
+con `conciliar_shopify.py --salida-kits`.
 
-⚠ **Decisión pendiente del negocio** (2026-09-07): corregirlo subiría ~390 M las cifras 2026 ya
-publicadas y obliga a recrear 6 MV + 3 vistas y re-aplicar los `GRANT`. La raíz está en Odoo (darles
-código a los 8 kits), no aquí.
+⚠⚠ **POR ESO CONTAR KITS EN LA UI DE ODOO DA 32 Y AQUÍ 41.** La categoría
+`Inventario/Producto Terminado/Kits` (id **205**) tiene **32 activos —todos con código— + 9
+archivados —todos sin código— = 41**. La UI de Odoo **oculta los archivados** por defecto; el ETL
+los trae a propósito (`CTX_ALL = {"active_test": False}`) para que un hecho histórico conserve su
+fila de dimensión. **Ni es el Excel ni es multiempresa**: `es_kit` sale de `mrp.bom` phantom de Odoo
+(70 BOMs / 39 templates) y el Excel de kits de Drive carga `raw.dim_kits` desde una función
+**huérfana** de `classes/drive_loader.py` que ningún objeto de `marts` lee. Los 41 tienen
+`company_id` vacío.
+
+⚠ Y **ninguno de los 9 tiene un kit activo con el mismo nombre** ⇒ **no son duplicados** de los 32
+(que venden 4.443 M en 2026). La sospecha de duplicado aplica solo a `PCNKIT16`/`PCNKIT39`.
+
+⛔ **NUNCA filtrar por `active` para «limpiar» esto** (decisión de William, 2026-09-08): la venta
+histórica de un producto archivado tiene que seguir apareciendo. Si se filtrara, **un informe de un
+mes cerrado cambiaría de cifra solo con el tiempo**, cada vez que alguien archive un producto.
+
+⚠ **La corrección tampoco es quitar el filtro de producto comercial.** En el mismo saco caen
+`Descuento financiero en ventas` (−2.854 M en 2026), ASESORÍA EN MERCADEO, COMISIONES,
+ARRENDAMIENTO, ALOJAMIENTO e INTERESES DE PRÉSTAMO, que **no son venta de producto**. La salida
+buena es la definición de §10.8.
 
 ### 10.8 Qué define un «PRODUCTO COMERCIAL» (y qué se queda fuera por eso)
 
@@ -693,7 +710,7 @@ negocio ni una marca que alguien mantenga. De ahí sus **tres modos de fallo**, 
 
 | modo de fallo | efecto | 2026 |
 |---|---|---:|
-| producto **sin `default_code`** | invisible | **8 kits = 390.085.902** |
+| producto **sin `default_code`** | invisible | **9 kits archivados = 390.085.902** |
 | código con **otro prefijo** | invisible | sachets `SCHT0x` 13,4 M · `MAE26` neceser 3,0 M · `ADD25/23/11` merch |
 | prefijo correcto pero **no es producto terminado** | entra sin deber | `PCNKIT16` 7,7 M · `PCNKIT39` 0,9 M |
 
@@ -721,7 +738,7 @@ los descuentos y servicios. Precedente: la **línea de producto** ya se migró d
 de Odoo el 2026-07-30 por este mismo argumento (§10.5).
 
 ⚠ **Pero el cambio NO está decidido, y no es gratis:**
-- De los 445,4 M, **390,1 M son los 8 kits** (lo que claramente falta) y **55,3 M son merchandising
+- De los 445,4 M, **390,1 M son los 9 kits archivados** (lo que claramente falta) y **55,3 M son merchandising
   y sachets de muestra** marcados `(OBS)` — TOTE BAG, VASO KIDS, RIÑONERA, NECESER, COSMETIQUERA
   NOVAVENTA. Son producto terminado vendido, pero **si cuentan como «venta de producto» es decisión
   de negocio**.
@@ -746,6 +763,57 @@ TOTAL facturado (clase 4) ....  816.876.092
 ⚠ **Comparar contra `periodo_aaaamm` (fecha de venta) en vez de `periodo_factura_aaaamm` inventa un
 residuo de 148.403** en ese mes: es el desplazamiento de las NC al mes de su factura, no un
 descuadre. Todos los canales juntos: residuo **+808.578 sobre 9.713 M = +0,008 %**, por lo mismo.
+
+### 10.9 ⭐ La definición NUEVA: Producto Terminado con línea + `Disponible en PdV`
+
+**Decisión de William (2026-09-08), validada contra Odoo en vivo.** «Producto comercial» = **producto
+terminado, dentro de una LÍNEA, y marcado como disponible en el punto de venta**. Los `Add On's` y
+los `Sachet` son producto terminado pero **no** son comerciales.
+
+El campo es **`available_in_pos`** y ya está en el DW como **`dim_producto.disponible_pos`**
+(`sql/marts/36_producto_comercial.sql`, aplicado). ⚠⚠ **Está STORED solo en `product.template`**: en
+`product.product` es un `related` con `store = False` (verificado con `fields_get`), así que leerlo
+del producto repetiría el fallo de `valid_ean`. El ETL lo resuelve por `product_tmpl_id` con el
+caché `plantillas_pos` (patrón de `ciudades_odoo`). Repoblar:
+**`python etl_dw_marts.py --backfill-productos`** (⚠ `--dims` no sirve: va por `write_date`).
+
+**El flag separa el árbol casi perfecto** — es lo que valida la idea:
+
+| categoría bajo Producto Terminado | en PdV | fuera de PdV |
+|---|---:|---:|
+| las **11 líneas** (Reparación, Tongole, Pocion Plus, Anti Caída, Kids, Control Caspa, Especializada, B8, Sport, Facial) | **todas** | 0 |
+| `Kits` | 39 | **2** ⚠ |
+| `Add On's` | 0 | **5** (41.950.738) ✔ fuera, como pide el negocio |
+| `Sachet` | 0 | **5** (13.368.209) ✔ fuera |
+
+Efecto medido: **70 → 75 productos, +333.397.879 en 2026 (+0,51 %)**. Entran 7 de los 9 kits
+archivados; salen `PCNKIT16`/`PCNKIT39`.
+
+⛔ **EL FLAG SOLO NO SIRVE — la condición lleva SIEMPRE la categoría además del flag.** Medido:
+`Descuento financiero en ventas` tiene `available_in_pos = true` y vale **−2.854.516.334** en 2026.
+Definir «comercial» solo por el flag **hundiría las ventas**. En el catálogo hay 5 productos así
+(`Discount`, `IMPUESTOS ASUMIDOS`, `(VTAS) IVA ASUMIDO`, un template sin nombre y ese).
+
+⛔ **Y `active` NO entra nunca** (§10.7): los archivados siguen contando.
+
+**Estado (2026-09-08): la columna está en el DW y poblada; `v_ventas_producto` sigue con el prefijo.**
+El cambio de definición espera **dos cosas en Odoo**, las dos de negocio:
+1. **`KIT MASCARILL SOS + BOOSTER`** (48.070.864 en 2026) está en `.../Kits` pero **sin marcar en
+   PdV** ⇒ con la casilla entra solo y el salto pasa de +333,4 M a **+381,5 M**. (`KIT LOVE REFILL`
+   tampoco está marcado, pero no vende en 2026.)
+2. **`PCNKIT16`/`PCNKIT39`** (8.617.160): categoría `All` y sin PdV ⇒ **saldrían**. Están bajo
+   sospecha de duplicado; si NO lo son, hay que darles categoría y PdV **en Odoo**, no rescatarlos
+   con una excepción en el SQL.
+
+Cuando se aplique, el cambio va en `sql/marts/14_ventas.sql:213` **y `:259`** (que repite la
+condición para `v_nc_sin_asignar`), y ⛔ **obliga a soltar 6 MV y 3 vistas** y re-aplicar
+**14 → 15b → 21 → 23 → 27 → 24** (los `GRANT` se pierden) — medido ~85 s.
+
+**Los 2 add-ons mal etiquetados existen y son exactamente 2** (`ADD12 SALON BEATY BAG`, `ADD01
+CARTUCHERA KIDS (OBS)`, los dos con el flag en `true`). ⭐ **No tienen venta en 2026 y la condición de
+categoría los excluye igual** ⇒ el error humano **no rompe la definición**. Aun así, la condición
+lleva `NOT LIKE '…/Add On''s%'` y `NOT LIKE '…/Sachet%'` explícitos como cinturón y tirantes, porque
+un error así **con venta** sí entraría.
 
 ## 11. Fase 4 — hoja de NIELSEN (2026-07-30)
 

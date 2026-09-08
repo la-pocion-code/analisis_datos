@@ -85,7 +85,7 @@ Detalle completo y cuándo usar cada uno: **[`docs/GUIA_OPERACION.md`](docs/GUIA
 | Cliente / producto / centro de costo / **OC** nuevo | `python etl_dw_marts.py --dims` |
 | Un mes no cuadra (partida doble ≠ 0) | `python etl_dw_marts.py --rebuild --desde … --hasta …` |
 | Refrescar tableros a mano | `python refrescar_mv_dashboards.py [--mv …]` |
-| Rellenos de una sola vez (**no** los corre el cron) | `--backfill-iva` · `--backfill-compras` |
+| Rellenos de una sola vez (**no** los corre el cron) | `--backfill-iva` · `--backfill-compras` · `--backfill-terceros` · `--backfill-productos` |
 
 ⚠ **`--dims` NO puebla un campo NUEVO de dimensión**: va por `write_date` y solo relee lo que cambió
 en Odoo. Para eso hay que releer el catálogo (ver la guía de operación).

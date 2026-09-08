@@ -113,8 +113,13 @@ def leer_productos(conn, desde, categoria=None):
              p.nombre,
              p.es_kit,
              p.categoria,
+             coalesce(p.disponible_pos, false)    AS en_pdv,
              {SQL_PREFIJO}                        AS pasa_prefijo,
              (p.categoria LIKE %(raiz)s)          AS es_producto_terminado,
+             (p.categoria LIKE 'Inventario/Producto Terminado/%%'
+              AND p.categoria NOT LIKE 'Inventario/Producto Terminado/Add On''s%%'
+              AND p.categoria NOT LIKE 'Inventario/Producto Terminado/Sachet%%'
+              AND p.disponible_pos IS TRUE)       AS pasa_propuesta,
              count(*)                             AS lineas,
              sum(f.venta_neta)                    AS base
       FROM marts.fact_movimiento_contable f
@@ -194,6 +199,34 @@ def main(desde, mes, categoria, salida, timeout):
     print("\n   ⚠ Es el PREFIJO del `default_code` de Odoo: una convencion de nombres, no un campo")
     print("     del negocio. Un PCN nuevo entra solo; lo que se pierde es lo que no tiene codigo")
     print("     o no lleva un prefijo conocido.")
+    print("   ⚠ `es_kit` NO sale de ningun Excel: viene de `mrp.bom` tipo phantom de ODOO")
+    print("     (cargar_kits). El Excel de kits de Drive carga `raw.dim_kits` desde una funcion")
+    print("     HUERFANA de classes/drive_loader.py que ningun objeto de `marts` lee.")
+    print("   ⚠ El DW incluye productos ARCHIVADOS a proposito (`active_test: False`), porque la")
+    print("     venta historica tiene que seguir apareciendo. Por eso contar en la UI de Odoo da")
+    print("     MENOS productos que aqui: la UI oculta los archivados.")
+
+    print(f"\n{'-' * 96}\n1b. LAS TRES DEFINICIONES, LADO A LADO\n{'-' * 96}")
+    defs = [("prefijo del default_code (LA VIGENTE)", prod["pasa_prefijo"]),
+            ("Producto Terminado (todo el arbol)", prod["es_producto_terminado"]),
+            ("Producto Terminado + en PdV (PROPUESTA)", prod["pasa_propuesta"])]
+    for et, f in defs:
+        print(f"  {et:<42}{int(f.sum()):>5} productos {_fmt(prod.loc[f, 'base'].sum())}")
+    d_prop = prod.loc[prod["pasa_propuesta"], "base"].sum()
+    d_pref = prod.loc[prod["pasa_prefijo"], "base"].sum()
+    print(f"\n  propuesta - vigente: {_fmt(d_prop - d_pref)}"
+          f"   ({100 * (d_prop - d_pref) / d_pref:+.2f} %)")
+
+    print(f"\n{'-' * 96}\n1c. LA TRAMPA: marcados en PdV pero FUERA de Producto Terminado\n{'-' * 96}")
+    trampa = prod[prod["en_pdv"] & (~prod["es_producto_terminado"])]
+    if len(trampa):
+        print(trampa.sort_values("base")[["codigo", "nombre", "categoria", "base"]]
+              .to_string(index=False))
+        print(f"\n  suma: {_fmt(trampa['base'].sum())}")
+    print("  Por esto la definicion lleva SIEMPRE la categoria ademas del flag: definir")
+    print("  'comercial' solo por `disponible_pos` metería el descuento financiero y hundiría")
+    print("  las ventas. (La lista completa del catalogo, con los que no venden, sale del bloque")
+    print("  de abajo si se corre sin filtro de canal.)")
 
     print(f"\n{'-' * 96}\n2. LOS CUATRO CUADRANTES: prefijo  x  categoria de Odoo\n{'-' * 96}")
     cua = (prod.groupby(["pasa_prefijo", "es_producto_terminado"])
