@@ -294,7 +294,28 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   Shopify**, así que el reporte no puede depender de él — y por eso la definición por categoría +
   PdV es la salida buena. Las fichas archivadas que reciben las facturas **no tienen ningún
   identificador**: `default_code` y `barcode` los dos en NULL.
-- ⭐⭐ **EL PROBLEMA DE LOS KITS YA SE CORRIGIÓ EN ORIGEN: es HISTÓRICO, no está vivo**
+- ⛔⛔⛔ **LA CAUSA RAÍZ DE LOS KITS: LE QUITARON EL `default_code` AL PRODUCTO EN ODOO Y EL PASADO SE
+  REESCRIBIÓ** (medido 2026-09-08 — **no** es error de Shopify ni de despacho).
+  Odoo escribe el concepto de la línea como `[default_code] nombre` **al crearla**, y ese texto es
+  una foto que no se recalcula. En las **2.764 líneas de 2026** de los 9 kits el concepto trae el
+  código en **todas**, y **coincide EXACTO con el SKU de Shopify (7 de 7 comprobables)**:
+  `[PCNKIT16]` 1007 · `[PCNKIT17]` 576 · `[PCNKIT30]` 360 · `[PCNKIT39]` 333 · `[PCNKIT3]` 232 ·
+  `[PCNKIT23]` 114 · `[PCNKIT22]` 92 · `[PCNKIT6]` 50.
+  ⇒ **Sí tenían código el día de la venta.** Se lo quitaron el **18-19 de agosto**, y como
+  `v_ventas_producto` identificaba el producto comercial por el **prefijo del código**, esas **2.752
+  facturas de enero a agosto dejaron de contarse HACIA ATRÁS**: **390.085.901 sin IVA / 464.202.220
+  con IVA**, 2.786 unidades. Los «huecos» de la numeración (3, 6, 7, 17, 22, 23, 30) **son esos
+  códigos retirados**. Verlo: `conciliar_shopify.py --salida-kits-sku --odoo`.
+  ⭐ **Nada se facturó ni se despachó mal.** Trazado `#157143`: `sale.order S179675`
+  `delivery_status = full`, factura `FE49172` posted, albarán `MCALI/OUT/09457` en `done` el 1-ago
+  12:05, y de bodega salieron los **4 componentes** del kit phantom (`PCN25`, `PCN01`, `PCN04`,
+  `PCN19`). Lo que se rompió fue el **reporte**.
+  ⛔⛔ **REGLA: no vaciar el `default_code` de un producto con histórico de ventas.** Cambia informes
+  ya publicados. Si hay que reemplazar la ficha, la nueva nace **con categoría y PdV** y la vieja se
+  archiva **conservando el código**. Y toda ficha nueva de kit nace en `PT/<Línea>` con PdV.
+  ⭐ Lección para el DW: **una definición de venta no puede colgar de un campo mutable** — es el
+  argumento de fondo para pasar a categoría + `disponible_pos`.
+- ⭐⭐ **EL FLUJO YA ESTÁ BIEN: lo que queda es HISTÓRICO**
   (medido 2026-09-08). Venta de kits **sin código** por quincena: jul-1ª 152 facturas · jul-2ª 113 ·
   **ago-1ª 92 · ago-2ª 12 · septiembre NINGUNA**. Del **19 de agosto** en adelante los kits de
   Shopify caen en fichas **con código, en `PT/Kits` y con PdV** (`PCNKIT12`, `PCNKIT13`, `PCNKIT37`,

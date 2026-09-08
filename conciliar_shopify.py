@@ -32,38 +32,41 @@ esta en ninguna factura** — ni como venta ni en otra cuenta.
   Ninguno de los dos esta inflando: el gerente mira lo FACTURADO BRUTO y el tablero la VENTA NETA
   de producto comercial. Pero la parte grande SI es un problema real, y esta en Odoo.
 
-⚠⚠ Y LA CAUSA RAIZ: **SHOPIFY SI MANDA EL SKU** de esos kits (0 vacios en 3.019 lineas de kit),
-  mientras la ficha de Odoo que recibe la factura esta **ARCHIVADA y sin NINGUN identificador**
-  (`default_code` Y `barcode` los dos en NULL, verificado ficha por ficha). `v_ventas_producto`
-  exige prefijo PCN/KD/TNG/B8 => esa venta no llega a ningun tablero (16.201.235 en Shopify-agosto;
-  **390.085.902 en 2026**, 99,7 % Shopify — cada kit es 99,3-100 % Shopify, casi en exclusiva).
-  ⚠⚠ **NO dar por hecho que ese SKU existe en Odoo.** Medido el 2026-09-08 con busqueda exhaustiva
-  (`ilike` sobre `default_code` y `barcode`, en template Y product, incluyendo archivados):
-  `PCNKIT16` y `PCNKIT39` **si** existen —en categoria `All`, o sea FUERA de la lista de Kits— y
-  `PCNKIT17`, `PCNKIT23`, `PCNKIT30`, `PCNKIT6`, `PCNKIT3` **NO EXISTEN**: viven solo en Shopify.
-  Odoo tiene 32 codigos `PCNKIT*` y su numeracion SALTA justo en los que Shopify usa.
-  ⭐ La leccion: **el `default_code` no lo escribe la integracion de Shopify**, asi que el reporte
-  NO puede depender de el. Eso es lo que resuelve definir el producto comercial por
-  **categoria + `Disponible en PdV`** (ver `36_producto_comercial.sql`), que no mira el codigo.
-  Prueba fina de que es el mismo dinero: el `precio_shopify` coincide AL PESO con el `con_iva` de
-  Odoo (177.600 = 177.600). Detalle factura a factura y cliente: `--salida-kits-detalle`; el recorte
-  de Shopify de esos mismos productos: `--salida-shopify-kits`.
-  ⚠ El mismo filtro excluye BIEN descuentos, asesorias, arriendos e intereses, que no son venta de
-  producto: lo unico mal excluido son los kits.
+⚠⚠⚠ LA CAUSA RAIZ, medida el 2026-09-08 y **NO es lo que parecia**: **LE QUITARON EL CODIGO AL
+  PRODUCTO EN ODOO, Y EL PASADO SE REESCRIBIO.**
+  Odoo escribe el concepto de la linea como `[default_code] nombre` **al crearla**, y ese texto es
+  una foto que no se recalcula. Leidas las **2.764 lineas de 2026** de los 9 kits, el concepto trae
+  el codigo en TODAS y **coincide EXACTO con el SKU de Shopify (7 de 7 comprobables)**:
+    `[PCNKIT16]` 1007 lineas · `[PCNKIT17]` 576 · `[PCNKIT30]` 360 · `[PCNKIT39]` 333 ·
+    `[PCNKIT3]` 232 · `[PCNKIT23]` 114 · `[PCNKIT22]` 92 · `[PCNKIT6]` 50
+  ⇒ **Los productos SI tenian codigo el dia de la venta, y era el mismo de Shopify.** Alguien se lo
+  QUITO el 18-19 de agosto (en 2 casos lo paso a una ficha nueva). Y como `v_ventas_producto`
+  identificaba el producto comercial por el **PREFIJO DEL CODIGO**, esas **2.752 facturas de enero a
+  agosto dejaron de contarse HACIA ATRAS** sin que nadie tocara una venta: **390.085.901 sin IVA /
+  464.202.220 con IVA**, 2.786 unidades. Los «huecos» de la numeracion de Odoo (3, 6, 7, 17, 22, 23,
+  30) **no son huecos: son esos codigos retirados.** Verlo: `--salida-kits-sku --odoo`.
+  ⭐ **NO se facturo mal ni se despacho mal.** Trazado el pedido `#157143` de punta a punta:
+  `sale.order S179675` con `delivery_status = full`, factura `FE49172` posted, albaran
+  `MCALI/OUT/09457` en `done` el 1-ago 12:05, y de bodega salieron los 4 componentes del kit phantom
+  (`[PCN25]`, `[PCN01]`, `[PCN04]`, `[PCN19]`). Todo correcto: lo que se rompio fue el REPORTE.
+  ⛔ **LA REGLA QUE HAY QUE RESPETAR: no vaciar el `default_code` de un producto con historico de
+  ventas.** Cambia informes ya publicados. Si hay que reemplazar la ficha, la nueva nace con su
+  categoria y su PdV, y la vieja se archiva CONSERVANDO el codigo.
+  ⭐ La leccion para el DW: una definicion de venta **no puede colgar de un campo mutable**. Es lo
+  que resuelve definir el producto comercial por **categoria + `Disponible en PdV`**
+  (ver `36_producto_comercial.sql`), que no mira el codigo.
+  ⚠ Prueba de que es el mismo dinero: el `precio_shopify` coincide AL PESO con el `con_iva` de Odoo
+  (177.600 = 177.600). Detalle factura a factura y cliente: `--salida-kits-detalle`.
+  ⚠ El filtro de producto comercial excluye BIEN descuentos, asesorias, arriendos e intereses: lo
+  unico mal excluido son estos kits.
 
-⭐⭐ Y YA ESTA CORREGIDO EN ORIGEN: el problema es HISTORICO, no esta vivo. Kits sin codigo por
-  quincena: jul-1a 152 facturas · jul-2a 113 · ago-1a 92 · **ago-2a 12 · septiembre NINGUNA**. Del
-  19 de agosto en adelante los kits de Shopify caen en fichas CON codigo, en `PT/Kits` y con PdV
-  (`PCNKIT12`, `PCNKIT13`, `PCNKIT37`, `TNGKIT`, `B8KIT`...), que el tablero SI cuenta. Alguien
-  limpio el catalogo de Odoo entre el 1 y el 18 de agosto.
-  ⇒ Queda el HISTORICO 1-ene -> 18-ago: **390.085.901 sin IVA / 464.202.220 con IVA**, 2.786
-  unidades, 2.752 facturas. Listado con `--salida-kits-sku`.
-  ⚠⚠ **NO es error de la plataforma de Shopify ni un typo: no hay nada que reclamarle.** Los 5 SKU
-  que Odoo no tiene son PRODUCTOS DISTINTOS de sus vecinos (`PCNKIT17 Rizos largos y abundantes`
-  contra `PCNKIT14 RIZOS LARGOS E HIDRATADOS`; `PCNKIT30 Anti-Frizz Rizos` contra `PCNKIT29
-  Anti-Frizz LISOS Y ONDULADOS`), y el nombre de Shopify coincide EXACTO con el de la factura.
-  Faltaba el producto con codigo en NUESTRO catalogo, no el SKU en Shopify.
-  ⚠ Unica anomalia viva: `PCNKIT16` (categoria `All`, sin PdV) seguia facturando el 6-sep.
+⭐⭐ Y EL FLUJO YA ESTA BIEN: el problema es HISTORICO. Kits sin codigo por quincena: jul-1a 152
+  facturas · jul-2a 113 · ago-1a 92 · **ago-2a 12 · septiembre NINGUNA**. Del 19 de agosto en
+  adelante los kits de Shopify caen en fichas con codigo, en `PT/Kits` y con PdV (`PCNKIT12`,
+  `PCNKIT13`, `PCNKIT37`, `TNGKIT`, `B8KIT`...), que el tablero SI cuenta.
+  ⚠⚠ **Nada que reclamarle a Shopify: sus SKU eran correctos.**
+  ⚠ Unica anomalia viva: `PCNKIT16` (ficha nueva, categoria `All` y sin PdV) seguia facturando el
+  6-sep; si se aplica la definicion nueva sin completar su ficha, esa venta desaparece.
 
 Dos trampas del CSV de Shopify, medidas:
   ⚠ La columna `Taxes` **NO es el IVA del 19 %** (7.168,91 en un pedido de 214.500). No sirve para
@@ -89,6 +92,7 @@ Uso:  python conciliar_shopify.py --csv D:\\Downloads\\orders_export_1.csv
 """
 import os
 import sys
+import re
 import logging
 import difflib
 import warnings
@@ -377,6 +381,48 @@ def _norm(s):
     return " ".join(s.upper().split())
 
 
+def codigo_historico_en_facturas(nombres_kit, desde):
+    """Lee de ODOO el codigo que el producto tenia **AL FACTURAR**, no el que tiene hoy.
+
+    ⭐⭐ ES LA PRUEBA DE LA CAUSA RAIZ. Odoo escribe el concepto de la linea como
+    `[default_code] nombre` **en el momento de crearla**, y ese texto no se recalcula: es una foto.
+    Medido el 2026-09-08 sobre las 2.764 lineas de 2026 de los 9 kits archivados, el concepto trae
+    el codigo en TODAS (`[PCNKIT16]`, `[PCNKIT17]`, `[PCNKIT22]`…) y coincide EXACTO con el SKU que
+    manda Shopify.
+
+    ⇒ Los productos SI tenian codigo el dia de la venta. Alguien se lo QUITO el 18-19 de agosto, y
+    como el tablero identificaba el producto comercial por el PREFIJO DEL CODIGO, 2.752 facturas de
+    enero a agosto dejaron de contarse **hacia atras** sin que nadie tocara una venta. Los «huecos»
+    de la numeracion de Odoo (3, 6, 7, 17, 22, 23, 30) son exactamente esos codigos retirados.
+
+    ⚠ El concepto es TEXTO LIBRE: se hace voto mayoritario por producto y se devuelve tambien
+    **cuantas lineas** respaldan cada codigo, para mostrar la evidencia en vez de presentarlo como
+    un campo estructurado.
+    ⚠ Necesita Odoo porque el DW no guarda el concepto de la linea. Va detras de `--odoo`.
+    """
+    from etl_dw_marts import conectar_odoo, Odoo, CTX_ALL  # import perezoso: solo con --odoo
+    db, uid, pw, models = conectar_odoo()
+    od = Odoo(db, uid, pw, models)
+    prods = od.search_read("product.product",
+                           [["name", "in", list(nombres_kit)], ["default_code", "=", False]],
+                           ["id", "name"], limit=0, context=CTX_ALL)
+    if not prods:
+        return {}
+    por_id = {p["id"]: p["name"] for p in prods}
+    lineas = od.search_read("account.move.line",
+                            [["product_id", "in", list(por_id)], ["date", ">=", desde]],
+                            ["product_id", "name"], limit=0, context=CTX_ALL)
+    votos = {}
+    for ln in lineas:
+        pid = ln["product_id"][0] if ln["product_id"] else None
+        cod = re.match(r"^\[([^\]]+)\]", str(ln.get("name") or ""))
+        if pid is None or not cod:
+            continue
+        votos.setdefault(por_id[pid], {}).setdefault(cod.group(1), 0)
+        votos[por_id[pid]][cod.group(1)] += 1
+    return {k: max(v.items(), key=lambda kv: kv[1]) for k, v in votos.items()}
+
+
 def sku_shopify_de_los_kits(sh, det):
     """Mapa `kit_odoo` -> (SKU, nombre) de Shopify, por VOTO MAYORITARIO sobre los pedidos.
 
@@ -473,7 +519,8 @@ def leer_mv(conn, mes):
 
 
 def main(csv, mes=None, salida=None, salida_kits=None, salida_kits_detalle=None,
-         salida_shopify_kits=None, salida_kits_sku=None, desde=None, timeout=120):
+         salida_shopify_kits=None, salida_kits_sku=None, desde=None, usar_odoo=False,
+         timeout=120):
     ped, sh_raw = leer_shopify(csv)
     if mes is None:
         mes = ped["mes"].mode().iloc[0]
@@ -703,6 +750,31 @@ def main(csv, mes=None, salida=None, salida_kits=None, salida_kits_detalle=None,
                 "kit_con_codigo_mas_parecido", "primera_venta", "ultima_venta", "facturas",
                 "unidades", "base", "iva", "con_iva", "canales"]
 
+        if usar_odoo:
+            hist = codigo_historico_en_facturas(ks["kit_odoo"], desde or f"{mes[:4]}-01-01")
+            ks["codigo_historico_en_factura"] = ks["kit_odoo"].map(
+                lambda k: hist.get(k, (None, 0))[0])
+            ks["lineas_que_lo_respaldan"] = ks["kit_odoo"].map(lambda k: hist.get(k, (None, 0))[1])
+            ks["coincide_con_shopify"] = ks.apply(
+                lambda r: "—" if not r["codigo_historico_en_factura"]
+                or r["existe_en_odoo"] == sin_csv
+                else ("SI" if r["codigo_historico_en_factura"] == r["sku_shopify"] else "NO"),
+                axis=1)
+            cols = cols[:6] + ["codigo_historico_en_factura", "lineas_que_lo_respaldan",
+                               "coincide_con_shopify"] + cols[6:]
+            print(f"\n{'-' * 94}")
+            print("⭐ EL CODIGO QUE EL PRODUCTO TENIA **AL FACTURAR** (del concepto de la linea)")
+            print("-" * 94)
+            print(ks[["kit_odoo", "codigo_historico_en_factura", "lineas_que_lo_respaldan",
+                      "sku_shopify", "coincide_con_shopify"]].to_string(index=False))
+            n_si = int((ks["coincide_con_shopify"] == "SI").sum())
+            n_ev = int((ks["coincide_con_shopify"] != "—").sum())
+            print(f"\n  coinciden Odoo(al facturar) y Shopify: {n_si} de {n_ev}")
+            print("  ⇒ Los productos SI tenian codigo el dia de la venta, y era el MISMO que manda")
+            print("    Shopify. Se lo quitaron despues (18-19 de agosto), y por eso la venta se")
+            print("    volvio invisible HACIA ATRAS: el tablero identificaba el producto comercial")
+            print("    por el PREFIJO DEL CODIGO. No se facturo mal ni se despacho mal.")
+
         print(f"\n{'-' * 94}\nKIT DE ODOO  <->  SKU DE SHOPIFY   (el listado)\n{'-' * 94}")
         print(ks[["kit_odoo", "sku_shopify", "existe_en_odoo", "ultima_venta", "facturas",
                   "unidades", "con_iva"]].to_string(index=False))
@@ -750,6 +822,10 @@ if __name__ == "__main__":
                     help="CSV con el listado KIT DE ODOO <-> SKU DE SHOPIFY: si ese SKU existe en "
                          "nuestro catalogo, el kit con codigo mas parecido, primera y ULTIMA venta, "
                          "facturas, unidades y valor. Es el inventario del historico invisible")
+    ap.add_argument("--odoo", action="store_true",
+                    help="con --salida-kits-sku: lee de ODOO el codigo que el producto tenia AL "
+                         "FACTURAR (del concepto de la linea). Es la prueba de que Odoo y Shopify "
+                         "estaban alineados y de que el codigo se retiro despues")
     ap.add_argument("--desde", default=None,
                     help="fecha de inicio del listado de kits (por defecto, 1-ene del ano del mes)")
     ap.add_argument("--salida-shopify-kits", dest="salida_shopify_kits", default=None,
@@ -760,4 +836,4 @@ if __name__ == "__main__":
                          "cabecera: sin el, una consulta pesada puede parar el cron")
     a = ap.parse_args()
     main(a.csv, a.mes, a.salida, a.salida_kits, a.salida_kits_detalle,
-         a.salida_shopify_kits, a.salida_kits_sku, a.desde, a.timeout)
+         a.salida_shopify_kits, a.salida_kits_sku, a.desde, a.odoo, a.timeout)
