@@ -116,6 +116,27 @@ COMMENT ON COLUMN marts.bi_nielsen_market.tiene_detalle_item IS
 ALTER TABLE marts.bi_nielsen_market
     ADD COLUMN IF NOT EXISTS es_canal_base BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- ¿Este market trae `dist_num` (distribucion numerica por item)?
+--
+-- 🔴 Lo destapo el guardarrail de check_marts el 2026-09-08, no la lectura: con el derivado
+-- ya bajando a producto, el panel de distribucion devolvia CERO items **sin razon** — el
+-- cero mudo — porque su SQL filtra `dist_num IS NOT NULL` y en el derivado esa columna va
+-- NULL por construccion.
+--
+-- ⚠ `dist_num` es LO UNICO del derivado que de verdad no se puede calcular: es el % de
+-- tiendas DE SU UNIVERSO donde esta el producto, y restar dos porcentajes no significa
+-- nada. El valor y las unidades si se restan; esto no.
+--
+-- Es la tercera bandera de la misma familia (`tiene_valor`, `tiene_detalle_item`): el
+-- almacen declara que se le puede preguntar a cada universo, y la intranet corta con su
+-- razon en vez de devolver una tabla vacia que culpa al usuario.
+ALTER TABLE marts.bi_nielsen_market
+    ADD COLUMN IF NOT EXISTS tiene_distribucion BOOLEAN NOT NULL DEFAULT TRUE;
+
+COMMENT ON COLUMN marts.bi_nielsen_market.tiene_distribucion IS
+  'FALSE = este market no trae dist_num, asi que el panel de distribucion se niega con su '
+  'razon. Hoy solo SUPERMERCADOS (derivado): sale de una resta y un porcentaje no se resta.';
+
 COMMENT ON COLUMN marts.bi_nielsen_market.es_canal_base IS
   'TRUE = canal disjunto de los demas (Supermercados, Farmacias, E-commerce): un subconjunto '
   'cualquiera de estos SE PUEDE SUMAR. FALSE = roll-up o retirado, solo se elige solo. Sumar un '
@@ -158,14 +179,14 @@ COMMENT ON TABLE marts.bi_nielsen_market IS
 --   eso NO se debe fijar «4 markets» como invariante en ningun test.
 INSERT INTO marts.bi_nielsen_market
     (market, etiqueta, es_universo_total, tiene_valor, tiene_detalle_item, es_canal_base,
-     orden, nota) VALUES
+     tiene_distribucion, orden, nota) VALUES
     ('NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA', 'Supermercados + Farmacias', TRUE, TRUE, TRUE,
-     FALSE, 1,
+     FALSE, TRUE, 1,
      'Universo MAYOR de los cuatro (2.501.713.761.171). CONTIENE a Supermercados y a '
      'Farmacias: no sumarlo con ninguno de los dos. NO incluye e-commerce. ⚠ es_canal_base=FALSE: '
      'es un roll-up, asi que solo se puede elegir SOLO. Elegir Supermercados+Farmacias a la vez da '
      'exactamente esta misma cifra (medido, diferencia 0,00), pero MEDIDA en vez de derivada.'),
-    ('SUPERMERCADOS (derivado)', 'Supermercados', FALSE, TRUE, TRUE, TRUE, 2,
+    ('SUPERMERCADOS (derivado)', 'Supermercados', FALSE, TRUE, TRUE, TRUE, FALSE, 2,
      '⚠ CALCULADO AQUI, NO MEDIDO POR NIELSEN: combinado - farmacias. Existe porque el export del '
      '2026-09-07 dejo de traer NEW TOTAL COLOMBIA, que era este canal. La resta se validO contra '
      'el market real mientras los dos coexistian: coincidia al peso en 99,23 % de las celdas, con '
@@ -173,18 +194,18 @@ INSERT INTO marts.bi_nielsen_market
      'PRODUCTO A PRODUCTO (v_nielsen_item_derivado), asi que este market YA existe a grano de item '
      'y `items` ya no va NULL: 2.625 productos con venta, 0 celdas negativas, y el total no se '
      'movio. ⚠ Lo unico que sigue sin poder derivarse es `dist_num`: es un porcentaje.'),
-    ('NEW TOTAL COLOMBIA', 'Supermercados (retirado)', FALSE, FALSE, TRUE, FALSE, 8,
+    ('NEW TOTAL COLOMBIA', 'Supermercados (retirado)', FALSE, FALSE, TRUE, FALSE, TRUE, 8,
      '⚠ EL NOMBRE ENGANABA: no era el total del pais, era el canal de SUPERMERCADOS. **Ya no viene '
      'en el export desde el 2026-09-07**; lo reemplaza SUPERMERCADOS (derivado). Se conserva la '
      'fila como historia y para que nadie lo vuelva a leer como «total nacional».'),
-    ('TOTAL COLOMBIA FARMACIAS', 'Farmacias', FALSE, TRUE, TRUE, TRUE, 3,
+    ('TOTAL COLOMBIA FARMACIAS', 'Farmacias', FALSE, TRUE, TRUE, TRUE, TRUE, 3,
      'Subconjunto de Supermercados + Farmacias. Su valor no cambio con el export nuevo '
      '(484.179.801.326 antes y despues), asi que el share propio de farmacias es comparable.'),
-    ('TOTAL CO ECOMMERCE', 'E-commerce', FALSE, TRUE, TRUE, TRUE, 4,
+    ('TOTAL CO ECOMMERCE', 'E-commerce', FALSE, TRUE, TRUE, TRUE, TRUE, 4,
      'FUERA del combinado (no cuadra en su aritmetica). ⚠ El export del 2026-08-06 RE-MIDIO '
      'este universo: paso de 20.355 a 48.733 filas y de 77.582 M a 131.245 M de valor, asi '
      'que su share NO es comparable con medidas anteriores a esa fecha.'),
-    ('Total Colombia Supermercados', 'Supermercados (retirado)', FALSE, FALSE, TRUE, FALSE, 9,
+    ('Total Colombia Supermercados', 'Supermercados (retirado)', FALSE, FALSE, TRUE, FALSE, TRUE, 9,
      'YA NO VIENE en el export (lo reemplazo NEW TOTAL SUPERMERCADOS + FARMACIAS el '
      '2026-08-06). Se conserva la fila como historia: solo traia distribucion, sin valor.')
 -- ⚠ DO UPDATE, no DO NOTHING (y es deliberado, al contrario que en bi_nielsen_marca_propia).
@@ -199,6 +220,7 @@ ON CONFLICT (market) DO UPDATE SET
     tiene_valor        = EXCLUDED.tiene_valor,
     tiene_detalle_item = EXCLUDED.tiene_detalle_item,
     es_canal_base      = EXCLUDED.es_canal_base,
+    tiene_distribucion = EXCLUDED.tiene_distribucion,
     orden              = EXCLUDED.orden,
     nota               = EXCLUDED.nota;
 
