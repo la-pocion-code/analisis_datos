@@ -108,6 +108,11 @@ en Odoo. Para eso hay que releer el catálogo (ver la guía de operación).
 
 ## 5. Pendientes reales
 
+- ⏳ ⭐ **Producto comercial — el ajuste que recupera 390 M de 2026** (agosto de Shopify: 801,0 →
+  **817,2 M**). Bloqueado por **3 fichas en Odoo**; el SQL y la columna ya están listos. Secuencia,
+  cifras y handoff a la intranet: **[`docs/ajuste_producto_comercial.md`](docs/ajuste_producto_comercial.md)**.
+- ⏳ **Tool del MCP de devoluciones** (repo `intranet`): la MV `mv_ventas_devoluciones_mes` ya está
+  creada, concedida y refrescándose ([dashboards §10.10](docs/dashboards_intranet.md)).
 - **Marketing:** (a) **probar Shopify contra la API real** — hacen falta los 6 tokens y los
   3 códigos de país nuevos, y validar `venta_neta` contra un día cerrado tienda por tienda;
   (b) implementar **GA4 y Search Console**, que siguen siendo esqueletos.
@@ -134,6 +139,7 @@ están en [`CLAUDE.md`](CLAUDE.md), que se carga automáticamente en cada sesió
 | [`docs/MODELO_ESTRELLA.md`](docs/MODELO_ESTRELLA.md) | diseño del hecho y las dimensiones |
 | [`docs/GUIA_OPERACION.md`](docs/GUIA_OPERACION.md) | ⭐ qué comando correr y cuándo |
 | [`docs/dashboards_intranet.md`](docs/dashboards_intranet.md) | contrato de datos de las 7 hojas y sus trampas |
+| [`docs/ajuste_producto_comercial.md`](docs/ajuste_producto_comercial.md) | ⏳ **runbook del ajuste pendiente**: cómo agosto pasa de 801 a **817 M**, y el handoff a la intranet |
 | [`docs/guia_bi_ventas.md`](docs/guia_bi_ventas.md) · [`guia_bi_reporting.md`](docs/guia_bi_reporting.md) | medidas de ventas y del deck financiero |
 | [`docs/bi_conexiones_marts.md`](docs/bi_conexiones_marts.md) · [`bi_refresco_gateway.md`](docs/bi_refresco_gateway.md) | Power BI (transitorio): conexión ODBC y refresco |
 | [`docs/cuentas_clave_migracion.md`](docs/cuentas_clave_migracion.md) | hoja de cuentas clave |

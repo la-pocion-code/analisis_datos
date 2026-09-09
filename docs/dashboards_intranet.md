@@ -772,6 +772,13 @@ descuadre. Todos los canales juntos: residuo **+808.578 sobre 9.713 M = +0,008 %
 
 ### 10.9 ⭐ La definición NUEVA: Producto Terminado con línea + `Disponible en PdV`
 
+> ⭐ **RUNBOOK Y HANDOFF: [`ajuste_producto_comercial.md`](ajuste_producto_comercial.md)** — la
+> secuencia exacta para aplicar el ajuste (3 fichas en Odoo → SQL → recrear 6 MV → verificar), las
+> tres cifras medidas de agosto (801,0 → 807,7 sin arreglar Odoo → **817,2 arreglado**) y **lo que la
+> intranet y su Claude tienen que saber cuando las cifras suban**. Es el documento al que apuntar
+> desde el otro repo.
+
+
 **Decisión de William (2026-09-08), validada contra Odoo en vivo.** «Producto comercial» = **producto
 terminado, dentro de una LÍNEA, y marcado como disponible en el punto de venta**. Los `Add On's` y
 los `Sachet` son producto terminado pero **no** son comerciales.

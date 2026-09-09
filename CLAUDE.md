@@ -264,7 +264,11 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   tablero no cuenta los lanzamientos» es **infundada**: lo que se pierde es lo que no tiene código o
   lleva otro prefijo. (`PCN37 SERUM DE PUNTAS` existe pero aún no vende nada.)
 - ⭐ **LA DEFINICIÓN NUEVA (decidida 2026-09-08, validada, AÚN NO APLICADA): producto terminado
-  DENTRO DE UNA LÍNEA + `Disponible en PdV`.** Los `Add On's` y los `Sachet` son producto terminado
+  DENTRO DE UNA LÍNEA + `Disponible en PdV`.** ⭐ **Runbook y handoff completos:
+  [`docs/ajuste_producto_comercial.md`](docs/ajuste_producto_comercial.md)** — la secuencia exacta,
+  las tres cifras de agosto (801,0 hoy · 807,7 si se cambia el SQL **sin** arreglar Odoo ·
+  **817,2 con las 3 fichas**) y lo que la intranet debe saber cuando las cifras suban. **Los 817 M
+  NO salen solo de cambiar el SQL.** Los `Add On's` y los `Sachet` son producto terminado
   pero **no** son comerciales. El campo `available_in_pos` **ya está en el DW** como
   **`dim_producto.disponible_pos`** (`sql/marts/36_producto_comercial.sql`, aplicado y poblado).
   Efecto medido: **70 → 75 productos, +333.397.879 en 2026 (+0,51 %)**.
