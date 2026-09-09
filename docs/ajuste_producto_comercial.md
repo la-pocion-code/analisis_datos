@@ -6,6 +6,66 @@
 - **la intranet y su Claude** (repo `proyecto pocion/intranet`): qué va a cambiar en las cifras, por
   qué, y cómo explicarlo sin inventar nada.
 
+> ## ✅ APLICADO EL 2026-09-09, PERO **NO** COMO ESTE DOCUMENTO LO PRESCRIBÍA
+>
+> El objetivo se cumplió —SHOPIFY agosto da **817.218.949,40**, el ancla del §1 al peso— y
+> **sin tocar ni una ficha de Odoo**. Lo que se aplicó no es `categoría + disponible_pos`
+> sino **`categoría` O `prefijo`**, las dos vías unidas por un `OR`, por tres motivos
+> medidos que este documento no había considerado:
+>
+> 1. 🔴 **`disponible_pos` es TAN MUTABLE como el `default_code`.** Colgar la definición de
+>    él repite el fallo que el documento existe para arreglar: desmarcar «Disponible en
+>    PdV» mañana **borraría venta histórica** de informes ya publicados. Lo levantó William:
+>    *«puede que el producto hoy esté desmarcado pero en el pasado sí se haya vendido…
+>    esto no puede afectar los datos históricos»*.
+> 2. 🔴 **Y no protegía de nada.** Medido en 2026, lo ÚNICO que el flag dejaba fuera era
+>    `KIT MASCARILL SOS + BOOSTER` (48.070.864), que es producto de verdad. Lo demás que
+>    excluiría —`Add On's` y `Sachet`— ya lo excluyen los dos `NOT LIKE`. Y el
+>    `Descuento financiero en ventas` (−2.856 M) que el §3 dice que «hundiría las ventas»
+>    vive en la categoría **`All`**: **la categoría sola ya lo excluye**.
+> 3. 🔴 **La definición del §3 QUITABA venta que hoy se cuenta.** `PCNKIT16` (7.715.899) y
+>    `PCNKIT39` (901.261) están en `All`, así que salían del tablero — y de ahí venían dos
+>    de las tres fichas de Odoo: existían para no perder lo que ya estaba. Con el `OR` la
+>    definición es **estrictamente aditiva** (`nueva ⊇ vieja` por construcción), así que
+>    ningún producto puede perder su historia y el paso 1 **deja de ser necesario**.
+>
+> **La condición que corre hoy en `14_ventas.sql` (líneas 213 y 259):**
+>
+> ```sql
+> AND (
+>       (    p.categoria LIKE 'Inventario/Producto Terminado/%'
+>        AND p.categoria NOT LIKE 'Inventario/Producto Terminado/Add On''s%'
+>        AND p.categoria NOT LIKE 'Inventario/Producto Terminado/Sachet%')
+>    OR (    p.codigo IS NOT NULL
+>        AND (p.codigo LIKE 'PCN%' OR p.codigo LIKE 'KD%'
+>          OR p.codigo LIKE 'TNG%' OR p.codigo LIKE 'B8%'))
+> )
+> ```
+>
+> ⚠️⚠️ **Y ESTE DOCUMENTO SE EQUIVOCABA EN UNA COSA MÁS, que es la que alguien va a
+> reportar: «2025 no se mueve» (§4.4) ES FALSO.** El ajuste es retroactivo a **todo** el
+> histórico, y 2025 sube **más que 2026**:
+>
+> | año | antes | ahora | delta |
+> |---|---:|---:|---:|
+> | 2024 | 18.539.752.661 | 18.780.834.227 | **+241.081.566** (+1,30 %) |
+> | 2025 | 81.716.031.975 | 82.418.538.975 | **+702.507.000** (+0,86 %) |
+> | 2026 | 65.861.717.946 | 66.251.803.848 | +390.085.902 (+0,59 %) |
+>
+> ⭐ **Consecuencia contraintuitiva: la venta sube pero el CRECIMIENTO BAJA**, porque el año
+> base también subió. SHOPIFY agosto pasa de **+19,1 % a +12,3 %** interanual. Quien mire
+> el tablero va a ver *menos* crecimiento, no más.
+>
+> **Validado contra Odoo con el mismo criterio en los dos lados**
+> (`intranet: manage.py conciliar_odoo_ventas`): **2026 al +0,47 %** (mejora, venía del
+> +0,58 %) y **2025 al −0,32 %**, idéntico a lo que daba antes. Los dos años se movieron
+> **juntos**: lo que entró es venta que Odoo también cuenta.
+>
+> ⚠️ El paso 3 se aplicó en **UNA transacción** con los seis ficheros, así que no hubo
+> ventana sin `GRANT`. Y su §3 dice «6 MV»: son **7** — se le olvida
+> `mv_ventas_presupuesto_mes`. El conjunto exacto sale del cierre transitivo de `pg_depend`,
+> no de una lista escrita a mano.
+
 Medido el **2026-09-09** contra Odoo en vivo y el DW. ⚠ El ETL corre cada 15 min: las cifras de un
 mes en curso se mueven; agosto ya está cerrado y es estable.
 
@@ -157,6 +217,8 @@ Medido: **~85 s** en total. Después, refrescar: `python refrescar_mv_dashboards
 | Promediar la columna de tasa de devolución | una tasa no se promedia: agregar y luego dividir |
 | Sumar `mv_ventas_producto` y `mv_ventas_explotada` | es el mismo dinero visto de dos formas |
 | Volver a colgar el producto comercial del `default_code` | es un campo **mutable**: al vaciarlo se reescriben informes ya publicados. Es exactamente lo que causó esto |
+| 🔴 Colgar el producto comercial de **UN SOLO** campo, sea cual sea | la lección que este documento no había sacado de su propio diagnóstico: `disponible_pos` es igual de mutable que `default_code`. Con **dos vías unidas por OR** hay que romper las dos para perder historia |
+| Comparar el **total** de un año como ancla absoluta | septiembre está abierto y el ETL carga cada 15 min: el absoluto deriva solo. Ancló un falso rojo de +17.240.050 que eran ventas nuevas. Lo que no deriva es el **delta** entre definiciones |
 
 **Y una regla de catálogo que hay que respetar en Odoo, no en el código:**
 
@@ -173,6 +235,8 @@ Medido: **~85 s** en total. Después, refrescar: `python refrescar_mv_dashboards
 |---|---|
 | Columna `dim_producto.disponible_pos` | ✅ creada y poblada (`36_producto_comercial.sql`, `--backfill-productos`) |
 | MV de devoluciones | ✅ creada, concedida y refrescándose (`37_devoluciones_dashboards.sql`, §10.10) |
-| Paso 1 — las 3 fichas de Odoo | ⏳ **pendiente** (verificado el 2026-09-09: 0 de 3 listas) |
-| Paso 2 y 3 — el cambio de definición | ⏳ bloqueado por el paso 1 |
-| Tool del MCP de devoluciones | ⏳ pendiente, repo `intranet` |
+| MV de devoluciones — **refrescándose de verdad** | ✅ desde el 2026-09-09: su DDL no estaba en `main`, así que el cron (que corre `main`) no la refrescaba y llevaba **1.286 min** parada. Mergeado en `6d242e3` |
+| Paso 1 — las 3 fichas de Odoo | ✅ **YA NO HACE FALTA**: con `categoría OR prefijo` la definición es aditiva y no pierde `PCNKIT16`/`PCNKIT39`. Las 3 fichas siguen como estaban (0 de 3) **y da igual** |
+| Paso 2 y 3 — el cambio de definición | ✅ **APLICADO el 2026-09-09**, en una transacción, con las anclas verificadas dentro y `COMMIT` solo al cuadrar |
+| Tool del MCP de devoluciones | ✅ hecha (`intranet@fdae42d`), y en producción vía `14ab2a2` |
+| `bi_nielsen_market.tiene_distribucion` | ✅ commiteada: no estaba en **ningún** commit, solo en el árbol de trabajo |

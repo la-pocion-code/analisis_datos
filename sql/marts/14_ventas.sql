@@ -209,8 +209,48 @@ LEFT JOIN marts.v_impuestos_asiento iv ON iv.factura_id = f.factura_id
 WHERE f.es_venta IS TRUE
   AND c.clase_codigo = '4'
   AND f.es_reverso IS NOT TRUE
-  AND p.codigo IS NOT NULL
-  AND (p.codigo LIKE 'PCN%' OR p.codigo LIKE 'KD%' OR p.codigo LIKE 'TNG%' OR p.codigo LIKE 'B8%')
+  -- ============================================================================
+  -- QUÉ ES UN «PRODUCTO COMERCIAL»: la categoría de Odoo **O** el prefijo del código.
+  --
+  -- ⚠⚠ SON DOS VÍAS INDEPENDIENTES A PROPÓSITO, Y ESO ES TODO EL DISEÑO. Un producto
+  -- cuenta si está bien CATEGORIZADO o si tiene un CÓDIGO conocido, así que para perder
+  -- su venta histórica habría que romper LAS DOS. Con una sola vía, un campo que alguien
+  -- edita hoy **reescribe informes ya publicados** — y eso no es teórico: el 18-19 de
+  -- agosto de 2026 le quitaron el `default_code` a 9 kits y **2.726 facturas de enero a
+  -- agosto dejaron de contarse HACIA ATRÁS** (390.085.902 sin IVA). Nada se facturó ni se
+  -- despachó mal: se rompió el reporte.
+  --
+  -- ⛔ POR ESO NO SE SUSTITUYE UNA VÍA POR OTRA. La propuesta inicial era cambiar el
+  -- prefijo por `categoria + disponible_pos IS TRUE`, y tenía los dos defectos que esto
+  -- evita:
+  --   1. `disponible_pos` (la casilla «Disponible en PdV») es TAN MUTABLE como el código:
+  --      desmarcarla mañana borraría la venta histórica de ese producto. Medido, además,
+  --      **no protegía de nada**: lo único que dejaba fuera en 2026 era
+  --      `KIT MASCARILL SOS + BOOSTER` (48.070.864), que es producto de verdad.
+  --   2. QUITABA dos productos que hoy SÍ se cuentan — `PCNKIT16` (7.715.899) y
+  --      `PCNKIT39` (901.261) viven en la categoría `All`—, así que exigía tres ediciones
+  --      manuales en Odoo solo para no perder lo que ya estaba.
+  --   Con el `OR` la definición es ESTRICTAMENTE ADITIVA: nada de lo que hoy se cuenta
+  --   deja de contarse, y no hace falta tocar ni una ficha del ERP.
+  --
+  -- ⚠ Las dos exclusiones NO son adorno: `Add On's` (ADD01/12/14) y `Sachet` (SCHT) están
+  -- bajo Producto Terminado y no son venta de producto. Y el `Descuento financiero en
+  -- ventas` (−2.856.014.089 en 2026) queda fuera por las dos vías: vive en la categoría
+  -- `All` y no lleva ninguno de los cuatro prefijos. Comprobado, no supuesto.
+  --
+  -- Medido en 2026 (base antes de explotar kits): prefijo solo 65.885.295.867 · categoría
+  -- + PdV 66.218.693.746 · categoría sola 66.266.764.610 · **esta unión 66.275.381.769**,
+  -- que es exactamente el +390.085.902 que el runbook fija como objetivo.
+  -- Ver `docs/ajuste_producto_comercial.md`.
+  -- ============================================================================
+  AND (
+        (    p.categoria LIKE 'Inventario/Producto Terminado/%'
+         AND p.categoria NOT LIKE 'Inventario/Producto Terminado/Add On''s%'
+         AND p.categoria NOT LIKE 'Inventario/Producto Terminado/Sachet%')
+     OR (    p.codigo IS NOT NULL
+         AND (p.codigo LIKE 'PCN%' OR p.codigo LIKE 'KD%'
+           OR p.codigo LIKE 'TNG%' OR p.codigo LIKE 'B8%'))
+  )
   -- Excluir NC SIN factura asignada en el puente: no sabemos a qué venta pertenecen, así que no
   -- restan de ventas (se revisan aparte en v_nc_sin_asignar). Las facturas y las NC enlazadas se
   -- conservan. Una NC que corrige varias facturas mantiene m.nc_factura_id NOT NULL → se conserva.
@@ -255,8 +295,48 @@ LEFT JOIN marts.map_nc_factura m ON m.nc_factura_id = f.factura_id
 WHERE f.es_venta IS TRUE
   AND c.clase_codigo = '4'
   AND f.es_reverso IS NOT TRUE
-  AND p.codigo IS NOT NULL
-  AND (p.codigo LIKE 'PCN%' OR p.codigo LIKE 'KD%' OR p.codigo LIKE 'TNG%' OR p.codigo LIKE 'B8%')
+  -- ============================================================================
+  -- QUÉ ES UN «PRODUCTO COMERCIAL»: la categoría de Odoo **O** el prefijo del código.
+  --
+  -- ⚠⚠ SON DOS VÍAS INDEPENDIENTES A PROPÓSITO, Y ESO ES TODO EL DISEÑO. Un producto
+  -- cuenta si está bien CATEGORIZADO o si tiene un CÓDIGO conocido, así que para perder
+  -- su venta histórica habría que romper LAS DOS. Con una sola vía, un campo que alguien
+  -- edita hoy **reescribe informes ya publicados** — y eso no es teórico: el 18-19 de
+  -- agosto de 2026 le quitaron el `default_code` a 9 kits y **2.726 facturas de enero a
+  -- agosto dejaron de contarse HACIA ATRÁS** (390.085.902 sin IVA). Nada se facturó ni se
+  -- despachó mal: se rompió el reporte.
+  --
+  -- ⛔ POR ESO NO SE SUSTITUYE UNA VÍA POR OTRA. La propuesta inicial era cambiar el
+  -- prefijo por `categoria + disponible_pos IS TRUE`, y tenía los dos defectos que esto
+  -- evita:
+  --   1. `disponible_pos` (la casilla «Disponible en PdV») es TAN MUTABLE como el código:
+  --      desmarcarla mañana borraría la venta histórica de ese producto. Medido, además,
+  --      **no protegía de nada**: lo único que dejaba fuera en 2026 era
+  --      `KIT MASCARILL SOS + BOOSTER` (48.070.864), que es producto de verdad.
+  --   2. QUITABA dos productos que hoy SÍ se cuentan — `PCNKIT16` (7.715.899) y
+  --      `PCNKIT39` (901.261) viven en la categoría `All`—, así que exigía tres ediciones
+  --      manuales en Odoo solo para no perder lo que ya estaba.
+  --   Con el `OR` la definición es ESTRICTAMENTE ADITIVA: nada de lo que hoy se cuenta
+  --   deja de contarse, y no hace falta tocar ni una ficha del ERP.
+  --
+  -- ⚠ Las dos exclusiones NO son adorno: `Add On's` (ADD01/12/14) y `Sachet` (SCHT) están
+  -- bajo Producto Terminado y no son venta de producto. Y el `Descuento financiero en
+  -- ventas` (−2.856.014.089 en 2026) queda fuera por las dos vías: vive en la categoría
+  -- `All` y no lleva ninguno de los cuatro prefijos. Comprobado, no supuesto.
+  --
+  -- Medido en 2026 (base antes de explotar kits): prefijo solo 65.885.295.867 · categoría
+  -- + PdV 66.218.693.746 · categoría sola 66.266.764.610 · **esta unión 66.275.381.769**,
+  -- que es exactamente el +390.085.902 que el runbook fija como objetivo.
+  -- Ver `docs/ajuste_producto_comercial.md`.
+  -- ============================================================================
+  AND (
+        (    p.categoria LIKE 'Inventario/Producto Terminado/%'
+         AND p.categoria NOT LIKE 'Inventario/Producto Terminado/Add On''s%'
+         AND p.categoria NOT LIKE 'Inventario/Producto Terminado/Sachet%')
+     OR (    p.codigo IS NOT NULL
+         AND (p.codigo LIKE 'PCN%' OR p.codigo LIKE 'KD%'
+           OR p.codigo LIKE 'TNG%' OR p.codigo LIKE 'B8%'))
+  )
   AND f.tipo_movimiento = 'out_refund'
   AND m.nc_factura_id IS NULL;
 
