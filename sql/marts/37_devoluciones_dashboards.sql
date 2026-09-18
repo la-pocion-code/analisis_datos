@@ -54,7 +54,18 @@ WITH
 doc AS (
     SELECT f.factura_id,
            max(f.tipo_movimiento)                                            AS tipo,
-           max(f.es_reverso::int)                                            AS es_reverso,
+           -- ⚠⚠ El `coalesce` NO es cosmético: sin él, un documento cuyas líneas tengan TODAS
+           -- `es_reverso` nulo sale con `max() = NULL`, y un NULL **no casa ni con `= 1` ni con
+           -- `= 0`**, así que contaba en `documentos` y en NINGUNA de las dos categorías. Medido
+           -- el 2026-09-18: **544 de 1.223 notas crédito de 2026 (44 %)** caían ahí, y el panel
+           -- de la intranet tenía que publicar una razón explicando que le faltaba el reparto.
+           -- ⚠ Y el 0 no es una elección libre: `v_ventas_producto` ya trata el NULL como
+           -- **no-reverso** (`f.es_reverso IS NOT TRUE`), o sea que esas notas crédito YA están
+           -- dentro de ventas restando. Llamarlas «parcial» aquí es decir lo mismo que el
+           -- pipeline ya hace; darles el 1 contradiría a la vista que calcula la venta.
+           -- Medido además: de los 715 documentos afectados, **655 tienen puente `map_nc_factura`**
+           -- a su factura original, que es la definición operativa de parcial.
+           coalesce(max(f.es_reverso::int), 0)                               AS es_reverso,
            max(f.empresa_id)                                                 AS empresa_id,
            max(f.categoria)                                                  AS categoria,
            max(f.fecha_factura)                                              AS fecha_factura,
@@ -151,7 +162,11 @@ COMMENT ON COLUMN marts.mv_ventas_devoluciones_mes.documentos_anulacion IS
   'factura Y la nota crédito, así que la venta nunca existió: no hay nada que restar.';
 COMMENT ON COLUMN marts.mv_ventas_devoluciones_mes.documentos_parcial IS
   'Los que NO son anulación completa. Estos sí restan dentro de `venta`, en el mes de su factura '
-  'original (fecha_venta) vía el puente map_nc_factura.';
+  'original (fecha_venta) vía el puente map_nc_factura. '
+  '⚠ Incluye los documentos cuyo `es_reverso` viene NULL en el hecho (2.335 líneas, todas '
+  'out_refund): se cuentan aquí porque `v_ventas_producto` ya los trata como no-reverso '
+  '(es_reverso IS NOT TRUE), así que su venta YA está restada. Antes del 2026-09-18 caían fuera '
+  'de las dos categorías y `anulacion + parcial` no sumaba `documentos`.';
 COMMENT ON COLUMN marts.mv_ventas_devoluciones_mes.base IS
   'Valor devuelto sin IVA, EN POSITIVO (en el hecho es negativo). Se guarda positivo a propósito: '
   'una columna negativa invita a sumarla a `venta` «para restar», que es justo el doble conteo.';
