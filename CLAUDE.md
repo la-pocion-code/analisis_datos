@@ -364,10 +364,36 @@ con **DAX** (no se duplican tablas). Docs: `docs/MODELO_ESTRELLA.md` y `docs/GUI
   (`DriveLoader` + `DRIVE_IDS`) → `marts.map_*`: ZONA por depto+categoría (+ Cundinamarca por
   depto+ciudad), CLIENTE PADRE, y CATEGORÍA normalizada. Correr cuando cambie un Excel.
   `map_zona_bogota` quedó **DEPRECADA** (`Base_bogota.xlsx` ya no se usa; tabla creada pero vacía).
+  ⚠⚠ **Y por eso `BOGOTÁ, D.C.` puesto en `Cundinamarca (CO)` NO se corrige** (medido el
+  2026-09-24: **636 terceros con venta, 125,3 MM**). Parece un error de captura y contra el
+  catálogo DANE lo es, pero **`map_zona` no tiene fila para Bogotá D.C.**: «corregirlo» los dejaría
+  **sin zona**. El error les está dando la zona CENTRO **por accidente**, y es la buena. Si algún
+  día se toca, primero la fila de Bogotá en el Excel de zonas de Drive. Los errores de departamento
+  que **sí** hay que corregir son otros **253 terceros (47,1 MM**, de los que 138 cambian de zona);
+  y hay **490 más (172,3 MM)** con ciudad **homónima** —Armenia, Barbosa, La Unión, San Martín
+  existen en varios departamentos—, donde el catálogo **no puede decidir** y hace falta mirar a
+  mano. ⚠ Ahí cayó **VIOLETA MAGICA S.A.S**: Armenia/Antioquia siendo sus hermanas Armenia/Quindío.
 - **CATEGORÍA (tipo de cliente) consolidada — `fact.categoria`** (`17_categoria.sql` +
   `consolidar_categoria`, paso de cierre post-carga). Sirve igual a **ventas y contabilidad**. Se arma
-  de **2 fuentes de Odoo, ninguna basta sola**:
-  1. `partner_type_id` (cabecera del asiento) → `dim_tercero.tipo_cliente`. **Manda** cuando existe.
+  de **3 fuentes de Odoo, ninguna basta sola**:
+  0. ⭐ **`category_id` del CONTACTO** (`res.partner`) → `dim_tercero.etiqueta`. **MANDA sobre las
+     otras dos desde el 2026-09-24.** Es la única que describe al **CLIENTE**; las otras dos
+     describen al **DOCUMENTO** y por eso se equivocan cuando se factura mal. Recupera la regla de
+     `ReportClassNew.transformar_base()` que el DW no portó. ⚠⚠ `etiqueta` es un **cajón de sastre**
+     (marketing de Shopify, proveedores, régimen fiscal), así que **solo vota lo que resuelve a una
+     categoría COMERCIAL** de `map_categoria`; el resto se ignora solo, sin lista negra. `CALL
+     CENTER` y `EXPORTACION` quedan fuera del vocabulario que vota (la primera es el `ELSE`, la
+     segunda se decide antes). El m2m llega como `'A; B'`: si dos trozos resuelven a categorías
+     distintas el voto **declina** y manda (1) — hoy pasa con **1 tercero** (`COOPIDROGAS; FARMACIA`).
+     **Medido antes de aplicarlo**: mueve **201,4 MM de 172.410,8 (0,12 %)** en 4 pares de canal, y
+     la venta total **no se mueve**. El caso que lo destapó: **VIOLETA MAGICA S.A.S** (tercero
+     395933), etiquetado `DISTRIBUIDOR` como sus dos razones sociales hermanas, facturado con
+     `partner_type_id = MAYORISTA NV` → salía en el canal equivocado en **todos** los tableros y
+     **sin ningún error**.
+  1. `partner_type_id` (cabecera del asiento) → `dim_tercero.tipo_cliente`. Sigue a (0).
+     ⚠⚠ Se escribe con `COALESCE` y **nunca se borra**, así que corregir el contacto en Odoo **no
+     propaga nada**: el valor malo se queda pegado hasta que se emita una factura nueva. La
+     etiqueta sí se refresca — otro motivo para que mande ella.
   2. Analítico **plan 21 "Canal"** (`analytic_line_ids/x_plan21_id`) → **ya está como `fact.canal`**
      (el rol se deriva del nombre del plan). **Rellena** cuando falta (1). Existe porque la utilidad
      por cliente se mira por nombre del cliente pero **hay gastos de esos clientes cargados a

@@ -260,9 +260,11 @@ se edita el grupo en la intranet; no hay nada que correr aquí.
   descompuesto en sus componentes: `marts.v_ventas_explotada` (`venta_componente`/`cantidad_componente`,
   `origen` INDIVIDUAL/KIT). Enriquecimiento de cliente/producto ya en `dim_tercero`/`dim_producto`.
 - **Categoría (tipo de cliente):** usar **`fact.categoria`** (ya viene en `v_ventas_producto`). Es el
-  campo **único y consolidado** que sirve a ventas y a contabilidad: sale de `tipo_cliente`
-  (`partner_type_id`, manda) + analítico plan 21 (`fact.canal`, rellena), con las reglas de respaldo
-  del Excel y normalizado por `map_categoria`. No tiene nulos (default CALL CENTER). Para agrupar
+  campo **único y consolidado** que sirve a ventas y a contabilidad: sale de la **etiqueta del
+  contacto** (`dim_tercero.etiqueta`, **manda desde el 2026-09-24**, y solo si resuelve a una
+  categoría comercial) + `tipo_cliente` (`partner_type_id`, la sigue) + analítico plan 21
+  (`fact.canal`, rellena), con las reglas de respaldo del Excel y normalizado por `map_categoria`.
+  No tiene nulos (default CALL CENTER). Para agrupar
   gastos/costos por cliente usar también `categoria` (el analítico rescata las líneas cargadas a
   terceros). ⚠ No confundir con `producto_categoria` (categoría de producto).
 - **Zona / cliente padre (no-Odoo):** unir con `marts.map_*` (ver §2.6). Orden de zona: `map_zona`
