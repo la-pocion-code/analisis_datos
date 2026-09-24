@@ -1695,8 +1695,18 @@ def aplicar_correcciones(loader):
 
 
 # ══ CATEGORÍA (tipo de cliente) consolidada en fact.categoria ══
-# Dos fuentes de Odoo, ninguna basta sola (ver sql/marts/17_categoria.sql):
-#   · dim_tercero.tipo_cliente (partner_type_id de la cabecera) → MANDA cuando existe.
+# TRES fuentes de Odoo, ninguna basta sola (ver sql/marts/17_categoria.sql):
+#   · dim_tercero.etiqueta (res.partner.category_id, la del CONTACTO) → MANDA (2026-09-24).
+#     ⚠ Es la única de las tres que describe al CLIENTE; las otras dos describen al
+#     DOCUMENTO, y por eso se equivocan cuando se factura mal. El caso que lo destapó:
+#     VIOLETA MAGICA S.A.S (tercero 395933) tenía etiqueta DISTRIBUIDOR como sus dos
+#     razones sociales hermanas, pero se le facturó con partner_type_id = MAYORISTA NV,
+#     así que salía en el canal equivocado en TODOS los tableros — y sin ningún error.
+#     ⚠⚠ Y no se arreglaba solo al corregir el contacto en Odoo: tipo_cliente se escribe
+#     con COALESCE y nunca se borra (ver cargar_terceros), así que el valor malo se queda
+#     pegado hasta que se emita una factura nueva. La etiqueta sí se refresca.
+#     Esta regla RECUPERA la de ReportClassNew.transformar_base(), que el DW no portó.
+#   · dim_tercero.tipo_cliente (partner_type_id de la cabecera) → sigue a la etiqueta.
 #   · fact.canal (plan analítico 21 "Canal" = x_plan21_id)      → RELLENA cuando falta.
 #     El analítico existe porque hay gastos de un cliente cargados a TERCEROS: sin él, esas líneas
 #     (clases 5/6) se quedarían sin categoría y desaparecerían del análisis por cliente.
@@ -1722,9 +1732,55 @@ cpais_a AS (                 -- cliente_analitico → país (por el nombre dentr
     JOIN marts.map_cliente_pais m ON d.cliente_analitico ILIKE m.cliente_patron
     GROUP BY d.cliente_analitico
 ),
+-- ⭐ EL VOTO DE LA ETIQUETA de Odoo (res.partner.category_id → dim_tercero.etiqueta).
+-- Es la clasificación que el comercial pone en el CONTACTO, y manda sobre lo que se haya
+-- tecleado en la cabecera de la factura, que es lo que se equivoca (ver el comentario de
+-- arriba). Tres cautelas, porque `etiqueta` es un cajón de sastre y NO un campo comercial:
+--   · sólo vota lo que resuelve a una categoría COMERCIAL conocida. Las etiquetas de
+--     marketing de Shopify ('newsletter', 'Foxkit', 'Pedido Abandonado Mensaje 2'…), las de
+--     proveedor ('Proveedores: Bienes') y las fiscales ('Regimen Simple') no están en
+--     map_categoria y por tanto no votan: se ignoran solas, sin lista negra que mantener.
+--   · CALL CENTER y EXPORTACION quedan FUERA del vocabulario que vota. La primera es el
+--     `ELSE` del CASE (un default, no una clasificación) y la segunda se decide antes, por
+--     país y por centro de costo, con reglas más fuertes que una etiqueta.
+--   · el m2m viene serializado 'A; B'. Si dos trozos resuelven a categorías comerciales
+--     DISTINTAS (hoy: 1 tercero, 'COOPIDROGAS; FARMACIA') el voto es NULL y manda
+--     tipo_cliente como siempre. ⚠ Declinar es deliberado: elegir por orden alfabético o
+--     por MIN() daría una respuesta estable y arbitraria, que es la peor de las dos.
+etq_comerciales AS (
+    SELECT DISTINCT categoria_bi AS cat
+    FROM marts.map_categoria
+    WHERE categoria_bi NOT IN ('CALL CENTER', 'EXPORTACION')
+),
+etq_troceada AS (
+    SELECT t.tercero_id, btrim(x.tok) AS tok
+    FROM marts.dim_tercero t,
+         LATERAL unnest(string_to_array(t.etiqueta, ';')) AS x(tok)
+    WHERE t.etiqueta IS NOT NULL
+),
+etq_resueltas AS (
+    -- Un trozo vale si casa como ORIGEN en map_categoria o si ya ES un categoria_bi.
+    -- Lo segundo hace falta porque Odoo escribe la etiqueta en mayúsculas ('DISTRIBUIDOR')
+    -- y map_categoria sólo tiene el vocabulario de tipo_cliente ('Distribuidor').
+    SELECT d.tercero_id, COALESCE(m.categoria_bi, c.cat) AS cat
+    FROM etq_troceada d
+    LEFT JOIN marts.map_categoria m ON upper(btrim(m.categoria_origen)) = upper(d.tok)
+    LEFT JOIN etq_comerciales    c ON upper(c.cat)                     = upper(d.tok)
+    WHERE COALESCE(m.categoria_bi, c.cat) IS NOT NULL
+),
+etq_voto AS (
+    SELECT r.tercero_id,
+           CASE WHEN COUNT(DISTINCT r.cat) = 1 THEN MIN(r.cat) END AS etq_cat
+    FROM etq_resueltas r
+    JOIN etq_comerciales c ON c.cat = r.cat
+    GROUP BY r.tercero_id
+),
 base AS (
     SELECT f.linea_id, f.es_venta,
-           COALESCE(t.tipo_cliente, f.canal) AS cat0,   -- tipo_cliente manda; el analítico rellena
+           -- La etiqueta del contacto manda; tipo_cliente (cabecera de la factura) la sigue;
+           -- el analítico rellena. Medido antes de cambiarlo: mueve 201,4 MM de 172.410,8
+           -- (0,12 % del histórico) en 4 pares de canal, y el total de venta NO se mueve.
+           COALESCE(v.etq_cat, t.tipo_cliente, f.canal) AS cat0,
            t.tipo_cliente, t.etiqueta, t.pais, f.equipo,
            cc.codigo AS centro_codigo, f.cliente_analitico,
            -- País del CLIENTE de la línea: el NOMBRE manda sobre el código del plan 22, así un código
@@ -1744,6 +1800,7 @@ base AS (
     LEFT JOIN marts.dim_centro_costo cc ON cc.centro_costo_id = f.centro_costo_id
     LEFT JOIN cpais_t ct ON ct.tercero_id        = f.tercero_id
     LEFT JOIN cpais_a ca ON ca.cliente_analitico = f.cliente_analitico
+    LEFT JOIN etq_voto v ON v.tercero_id         = f.tercero_id
 ),
 resuelta AS (
     SELECT linea_id, pais,
