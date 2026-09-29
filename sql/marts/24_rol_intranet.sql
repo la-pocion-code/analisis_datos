@@ -311,6 +311,21 @@ GRANT SELECT ON
     marts.v_lk_cuenta        -- PUC + clasificación derivada (26_*.sql)
 TO intranet_ro;
 
+-- ⚠⚠ CONTACTO — EL PRIMER OBJETO CON DATO PERSONAL AL ALCANCE DE ESTE ROL.
+-- Antes de esta línea `intranet_ro` no llegaba a NI UNA columna de PII: ni cédula, ni teléfono, ni
+-- correo (medido 2026-09-28 sobre los 44 GRANT). Va aparte de los lookups de arriba, y no dentro,
+-- justo para que se vea.
+-- El caso: el cargador de conversaciones de WhatsApp de la intranet necesita saber quién de los que
+-- escribe ya es cliente. La alternativa que pedían era **credenciales de Odoo** —el ERP entero, con
+-- escritura—, así que esta vista de DOS columnas es estrictamente menos de lo que se iba a dar.
+-- ⛔ NO lleva la cédula (`identificacion`): con el `tercero_id` ya se une a `v_lk_tercero`, que trae
+-- nombre, ciudad y tipo de cliente. Exponerla sería otra decisión, con otro dueño.
+-- ⚠ `dim_tercero` sigue NEGADA: la vista accede a ella con los privilegios de su DUEÑO (ver la nota
+-- de abajo), así que el rol no alcanza el correo ni el NIT que la tabla sí tiene.
+-- ⛔ Si el consumidor deja de ser el cron y pasa a ser un bot conversacional, esto se revisa: el
+-- patrón para eso es el de `20_agente.sql` (rol propio + whitelist + log de auditoría).
+GRANT SELECT ON marts.v_lk_tercero_contacto TO intranet_ro;  -- 38_tercero_contacto.sql
+
 -- En PostgreSQL una VISTA accede a sus tablas base con los privilegios de su
 -- DUEÑO, no de quien consulta (salvo que se cree con `security_invoker = true`,
 -- PG15+). Por eso basta el GRANT sobre la vista: NO hace falta —ni se debe—

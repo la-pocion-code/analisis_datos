@@ -1615,3 +1615,93 @@ que se paga, **no** lo que se compra.
 `v_compras_producto`, `v_compras_bi` y `dim_orden_compra` **siguen negadas** a `intranet_ro`.
 **Refresco: en CADA tick** (7,8 s medidos, +8 % sobre el tick ligero) — el origen es el hecho, que
 cambia cada 15 minutos.
+
+---
+
+## 15. `v_lk_tercero_contacto` — el puente TELÉFONO → TERCERO (2026-09-29)
+
+⚠ **No es una hoja de tableros.** Es el único objeto de esta lista que no alimenta un gráfico: lo
+consume el **cargador de conversaciones de WhatsApp** de la intranet, para saber cuál de los que
+escriben ya es cliente.
+
+⭐ **Por qué existe, y por qué así.** La intranet pidió acceso para ese cruce. La alternativa que se
+barajaba era darle **credenciales de Odoo**: el ERP entero y con capacidad de escritura. Una vista de
+solo lectura sobre `marts` que expone **dos columnas** es estrictamente menos superficie. La decisión
+fue conceder esto y **no** las credenciales.
+
+⚠⚠ **ES EL PRIMER OBJETO CON DATO PERSONAL AL ALCANCE DE `intranet_ro`.** Hasta este cambio el rol no
+llegaba a **ni una** columna de PII — ni cédula, ni teléfono, ni correo (medido sobre los 44 `GRANT`
+del `24_rol_intranet.sql`). `v_lk_tercero` excluye NIT/teléfono/email a propósito y `v_cartera` está
+negada justamente porque expone el NIT. Que esta vista vaya en un `GRANT` aparte, y no dentro del
+bloque de lookups, es para que la próxima ampliación se piense con eso delante.
+
+### 15.1 Contrato
+
+| Columna | Tipo | Qué es |
+|---|---|---|
+| `tercero_id` | bigint | el id de Odoo; une con `v_lk_tercero` para nombre, ciudad y tipo de cliente |
+| `telefono_clave` | text | **últimos 10 dígitos** del teléfono, sin separadores |
+| `terceros_con_este_telefono` | int | cuántos terceros comparten esa llave |
+
+**213.067 filas · 196.549 llaves distintas** (medido 2026-09-29; se mueve con el ETL).
+
+⛔ **NO lleva la cédula (`identificacion`)**, por decisión de William. Con el `tercero_id` ya se une a
+`v_lk_tercero`, así que para «quién es cliente» no hace falta. Exponerla sería otra decisión.
+
+### 15.2 Reglas de uso
+
+1. ⛔ **`terceros_con_este_telefono = 1` es el cruce seguro.** El **7,57 % de las llaves** (14.883 de
+   196.549) apunta a **más de un tercero**, y hay una con **15**. «Tomar el primero» atribuye la
+   identidad equivocada **en silencio**, que es el peor modo de fallar: nada lo delata. Los `> 1` se
+   tratan explícitamente (mostrar los candidatos, o no resolver).
+   ⚠ **Ese 7,57 % es de LLAVES, no de filas.** En filas son 31.401 de 213.067 = **14,74 %**, porque
+   una llave ambigua aporta tantas filas como terceros tenga. Las dos cifras son correctas y miden
+   cosas distintas.
+2. ⚠ **La normalización vive en la vista y en un solo sitio.** Odoo guarda tanto `3124950102` como
+   `+573017321181`; los últimos 10 dígitos son la parte estable. Si cada consumidor normalizara por
+   su cuenta, dos que se separen darían un cruce que baja sin que nadie sepa por qué.
+3. ⚠⚠ **El cruce va a dar POR DEBAJO del 29 % que la intranet midió contra Odoo, y es lo esperado.**
+   El ETL guarda **un solo** teléfono: `_fila_tercero` hace `r.get("phone") or r.get("mobile")`, así
+   que con los dos poblados se queda con `phone` y descarta el celular. Medido en Odoo: `mobile` solo
+   está en 5.591 de 215.382 (**2,6 %**) y el celular real vive en `phone` ⇒ pérdida ≈ **3.340
+   terceros (1,5 %)**. Más el 0,5 % del filtro estricto. ⛔ Si diera **mucho** menos, hay que
+   investigar antes de dar la cifra por buena — no aceptarla porque «ya cruza».
+
+### 15.3 El filtro, que no es un detalle
+
+La petición original proponía `length(digitos) >= 10`. Ese filtro **fabrica llaves**: sobre
+`'3218200 EXT 8530'`, `right(...,10)` devuelve `2182008530`, que tiene forma de celular y no es
+ningún teléfono. Medido el 2026-09-29, el laxo se queda con 214.136 y el estricto con **213.067**:
+
+| largo | registros | qué son |
+|---:|---:|---|
+| 10 | 188.085 | ✔ celular nacional (187.461 empiezan por 3) |
+| 12 con `57` | 24.979 | ✔ el mismo, con indicativo |
+| **11** | **480** | ⛔ extensiones (`3218200 EXT 8530`), EE.UU. (`+1 860-574-7812`), un dígito de más |
+| **20** | **411** | ⛔ **dos números concatenados** en un campo |
+| 12 sin `57` | 62 | ⛔ extranjeros |
+| 13-30 | 116 | ⛔ variantes de lo mismo |
+
+⇒ el filtro estricto evita **1.069 llaves fabricadas (0,50 %)**.
+⚠ **No confundirlos con los 997 terceros de menos de 10 dígitos**: esos los descarta cualquier
+filtro, el laxo también, y no son mérito de este. La vista deja fuera 2.072 = 1.069 + 997.
+
+### 15.4 Lo que se decidió NO hacer
+
+- **No se hashea el teléfono.** Se consideró para que la intranet no reciba un directorio de ~196 k
+  números. **No sirve**: el espacio de un móvil de 10 dígitos se enumera en segundos, así que un hash
+  sin secreto compartido es complejidad sin protección. La mitigación real es el alcance del `GRANT`.
+- **No se despliega `agente_ro`.** `sql/marts/20_agente.sql` diseña el patrón correcto para
+  consumidores tipo agente (rol propio + whitelist de identidades + log de auditoría de cada
+  consulta), pero ⚠ **ese rol NO existe en la base**: el archivo nunca se aplicó. Aquí `intranet_ro`
+  es el rol correcto porque el consumidor es **el cron de la propia intranet** — por lotes, sin LLM.
+  ⛔ **Si el consumidor pasa a ser un bot conversacional** —que lee texto escrito por desconocidos y
+  responde a desconocidos— **esta decisión se revisa**: ahí sí entran la inyección de prompt y la
+  exfiltración, y el patrón del `20_agente.sql` es el que corresponde.
+
+### 15.5 Operación
+
+`sql/marts/38_tercero_contacto.sql`, idempotente (`CREATE OR REPLACE VIEW`).
+⚠ **Re-ejecutar `24_rol_intranet.sql` DESPUÉS** (allí vive el `GRANT`).
+⚠ **No materializa nada**: no entra en `refrescar_mv_dashboards.py` ni toca `bi_mv_refresh`. Se
+mantiene al día sola, porque lee `dim_tercero`, que el ETL refresca en cada tick.

@@ -900,6 +900,38 @@ definidos por el admin). **Contrato de datos completo:
   - **Poblar:** `python etl_dw_marts.py --dims` (trae las OC en cada corrida, son 1.066) y
     `python etl_dw_marts.py --backfill-compras` para enlazar las líneas ya cargadas (74.275 líneas,
     **45 s**, una sola vez; no lo corre el cron).
+- **`sql/marts/38_tercero_contacto.sql`** (2026-09-29): **`v_lk_tercero_contacto`**, el puente
+  **teléfono → tercero** (213.067 filas). ⚠ **Re-ejecutar `24_rol_intranet.sql` DESPUÉS.** No es una
+  hoja de tableros: lo consume el **cargador de conversaciones de WhatsApp** de la intranet para
+  saber quién de los que escribe ya es cliente. Se concedió **en vez de darle credenciales de Odoo**
+  (el ERP entero y con escritura), que era lo que pedían.
+  ⚠⚠ **ES EL PRIMER OBJETO CON DATO PERSONAL AL ALCANCE DE `intranet_ro`**: hasta este cambio el rol
+  no llegaba a **ni una** columna de PII (`v_lk_tercero` excluye NIT/teléfono/email a propósito y
+  `v_cartera` está negada por exponer el NIT). Su `GRANT` va en un bloque **aparte** del de lookups
+  para que la próxima ampliación se piense con eso delante.
+  ⛔ **No lleva la cédula** (decisión de William): con el `tercero_id` ya se une a `v_lk_tercero`, que
+  trae nombre, ciudad y tipo de cliente. `dim_tercero` sigue negada.
+  ⛔ **El cruce seguro es `terceros_con_este_telefono = 1`.** El **7,57 % de las LLAVES** (14.883 de
+  196.549) apunta a más de un tercero, con un máximo de **15**: «tomar el primero» atribuye la
+  identidad equivocada **en silencio**. Por eso la ambigüedad es una COLUMNA y no un comentario.
+  ⚠ Ese 7,57 % es de llaves; **en filas son 31.401 de 213.067 = 14,74 %** (una llave ambigua aporta
+  varias filas). Confundir las dos unidades es el error fácil.
+  ⛔ **El filtro NO es `length >= 10`** —así lo pedía la solicitud— sino 10 dígitos exactos, o 12
+  empezando por `57`. El laxo **fabrica llaves**: `right('3218200 EXT 8530', 10)` = `2182008530`,
+  que parece un celular y no es ningún teléfono. Evita **1.069 (0,50 %)**: 480 de 11 dígitos
+  (extensiones, `+1` de EE.UU.), 411 de 20 (**dos números concatenados**), 62 de 12 sin `57`, 116 de
+  13-30. ⚠ Distintos de los **997 de menos de 10 dígitos**, que descarta cualquier filtro.
+  ⚠⚠ **El cruce dará POR DEBAJO del 29 % que la intranet midió contra Odoo, y es lo esperado:** el
+  ETL guarda **un solo** teléfono (`_fila_tercero` hace `phone or mobile`), y aunque `mobile` solo
+  está en el 2,6 % de Odoo, se pierden ≈**3.340 terceros (1,5 %)**. Si diera mucho menos, investigar
+  antes de dar la cifra por buena.
+  ⚠ **No se hashea el teléfono**: el espacio de 10 dígitos se enumera en segundos, así que un hash
+  sin secreto compartido es complejidad sin protección. La mitigación real es el alcance del `GRANT`.
+  ⛔ **`agente_ro` del `20_agente.sql` NO EXISTE en la base** (el archivo nunca se aplicó; los únicos
+  roles son `intranet_ro` y `postgres`). Aquí `intranet_ro` es correcto porque el consumidor es el
+  **cron** de la intranet, por lotes y sin LLM. **Si pasa a ser un bot conversacional, se revisa**:
+  ahí entran la inyección de prompt y la exfiltración, y toca el patrón del 20 (rol propio +
+  whitelist + log de auditoría). Contrato en `docs/dashboards_intranet.md` §15.
 - **Fases siguientes** (cada hoja añade sus MV aquí + su `GRANT`): cuentas clave/KAM → cartera
   (portar los buckets de mora que hoy calcula Power Query). Contabilidad, Ventas y Nielsen ya están.
   ⚠ **El margen bruto NO se puede hacer por la vía de ventas**: `dim_producto` no tiene
