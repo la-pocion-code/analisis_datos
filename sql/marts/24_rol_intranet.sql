@@ -326,6 +326,23 @@ TO intranet_ro;
 -- patrón para eso es el de `20_agente.sql` (rol propio + whitelist + log de auditoría).
 GRANT SELECT ON marts.v_lk_tercero_contacto TO intranet_ro;  -- 38_tercero_contacto.sql
 
+-- ⚠⚠ DIRECCIÓN — EL SEGUNDO OBJETO CON DATO PERSONAL AL ALCANCE DE ESTE ROL (2026-10-10).
+-- Para los mapas de clientes de la intranet: la dirección de los clientes LISTABLES (NIT o canal
+-- mayorista/distribuidor). La regla vive en `39_tercero_geo.sql` (`v_tercero_geo_base`, que NO se
+-- concede): a las personas naturales la vista les deja nombre y calle en NULL, así que por aquí
+-- solo sale la ciudad y el departamento de un consumidor, que `v_lk_tercero` ya publicaba.
+-- ⛔ Ni NIT, ni teléfono, ni correo.
+-- ⚠ El consumidor SÍ es conversacional (el conector MCP de la intranet), que es justo el caso que
+-- el aviso de arriba pide revisar. Lo que lo cubre está en la intranet y no en un rol propio: cada
+-- consulta va con la identidad de un EMPLEADO autenticado, la hoja `clientes-geo` nace inactiva y
+-- se concede por persona o por rol (whitelist), y el conector deja auditoría de cada llamada. Y lo
+-- que se expone son negocios, no consumidores. Si algún día lo consume un bot que hable con
+-- desconocidos, esto se revisa.
+-- ⚠ Re-ejecutar este archivo DESPUÉS del 39: si no, falla al conceder sobre objetos que no existen.
+GRANT SELECT ON marts.v_lk_tercero_geo TO intranet_ro;        -- 39_tercero_geo.sql
+-- La MV del mapa: agregable por zona, sin nombre ni calle (ver la cabecera del 39).
+GRANT SELECT ON marts.mv_clientes_geo_mes TO intranet_ro;     -- 39_tercero_geo.sql
+
 -- En PostgreSQL una VISTA accede a sus tablas base con los privilegios de su
 -- DUEÑO, no de quien consulta (salvo que se cree con `security_invoker = true`,
 -- PG15+). Por eso basta el GRANT sobre la vista: NO hace falta —ni se debe—

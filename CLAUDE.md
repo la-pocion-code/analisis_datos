@@ -1007,6 +1007,16 @@ definidos por el admin). **Contrato de datos completo:
   genera `dim_fecha`), reutilizando los mismos row-builders de `cargar_catalogos_pequenos`. Corre
   siempre (incremental y full/rebuild); el hueco normal es 0 → sin lecturas extra. La red de
   aislamiento fila-a-fila del `upsert` queda como último recurso.
+- **Geografía del cliente (2026-10-10, `39_tercero_geo.sql`) →
+  [docs/georreferenciacion_clientes.md](docs/georreferenciacion_clientes.md).** Tres trampas:
+  (1) el DANE va en `res.city.zipcode` y **no** en `codigo_municipio`, que pierde el cero inicial
+  ('5001'); (2) `is_company` **no** separa negocio de consumidor (83 % de los mayoristas en False):
+  la regla `es_listable` (NIT o canal mayorista/distribuidor) vive en `v_tercero_geo_base` y en
+  ningún otro sitio; (3) `_fila_tercero` **no emite** las llaves geográficas si no recibe `geo`,
+  porque `upsert` escribe todas las columnas y un llamador que lo olvidara las borraría.
+  ⛔ Las coordenadas de Google Geocoding **no se pueden guardar más de 30 días** (sus términos).
+- **La receta de aplicar DDL de `GUIA_OPERACION.md §2.3` falla**: `DBLoader().get_connection()` es
+  un **context manager**, así que es `with DBLoader().get_connection() as c:` (medido 2026-10-10).
 
 ## PENDIENTES del DW (retomar aquí)
 - Carga inicial `--full` (TRUNCATE + todos los años) — al terminar, **validar**:

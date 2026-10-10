@@ -40,7 +40,9 @@ PAGINA = 5000  # líneas por lote
 # al añadir campos. Al sumar `city_id` se consume parte de ese margen, así que se restaura aquí:
 # el tiempo por página lo domina la consulta de Odoo, no el tamaño, de modo que duplicar el número
 # de páginas cuesta poco y devuelve el doble de holgura para el siguiente campo que se añada.
-PAGINA_DIM = {"res.partner": 2500}
+# ⚠ 2026-10-10: baja a 2.000 al sumar `street`/`street2` (texto libre, ~40 caracteres de media) y
+# tres escalares: mismo razonamiento, se paga con páginas y no con un IncompleteRead.
+PAGINA_DIM = {"res.partner": 2000}
 CTX_ALL = {"active_test": False}  # incluir registros ARCHIVADOS (active=False) en dimensiones
 
 # Rol de cada plan analítico en el hecho. NO se hardcodean IDs: se derivan del NOMBRE del plan
@@ -603,6 +605,37 @@ def ciudades_odoo(od):
     return _CIUDADES_ODOO
 
 
+# ══ Geografía del tercero: código DANE del municipio e ISO del país (2026-10-10) ══
+# Para pintar mapas por municipio/departamento/país hace falta una LLAVE estable, no un nombre: el
+# nombre cambia de grafía y los polígonos oficiales (DANE, MGN) van por código DIVIPOLA.
+#
+# ⚠ El código sale de `res.city.zipcode`, NO de `codigo_municipio` ni del display name. Medido el
+# 2026-10-10 con `diagnosticar_direcciones_terceros.py` sobre los 1.185 municipios del catálogo:
+#     zipcode            → 1.133 con forma DIVIPOLA de 5 dígitos ('05001' = MEDELLÍN)
+#     codigo_municipio   →   974, y SIN el cero inicial ('5001'): Antioquia (05) y Atlántico (08)
+#                            saldrían con 4 dígitos y no casarían con ningún polígono
+#     display_name '(NNNNN)' → 1.135, pero parsear display names es atarse al name_get de Odoo
+# Lo que no tenga forma de 5 dígitos queda en NULL: un código inventado pintaría el municipio de
+# otro, y un hueco se ve.
+# ⚠ El ISO del país sale de `res.country.code` ('CO', 'EC', 'PE'…): el nombre del país (`pais`)
+# se queda como está porque otras vistas lo leen.
+_GEO_ODOO = None
+
+
+def catalogo_geo_odoo(od):
+    """{'dane': {city_id: 'NNNNN'}, 'iso': {country_id: 'CO'}}; cacheado por proceso."""
+    global _GEO_ODOO
+    if _GEO_ODOO is None:
+        ciudades = od.search_read("res.city", [], ["id", "zipcode"], context=CTX_ALL)
+        paises = od.search_read("res.country", [], ["id", "code"], context=CTX_ALL)
+        _GEO_ODOO = {
+            "dane": {c["id"]: str(c["zipcode"]).strip() for c in ciudades
+                     if re.fullmatch(r"\d{5}", str(c.get("zipcode") or "").strip())},
+            "iso": {p["id"]: str(p["code"]).strip().upper() for p in paises if p.get("code")},
+        }
+    return _GEO_ODOO
+
+
 def _texto_ciudad(v):
     """Limpia un candidato a ciudad (char, o el nombre de un many2one) → str o None.
 
@@ -649,17 +682,29 @@ def _ciudad_tercero(r, ciudades=None):
 #
 # ⚠ Sin team_id: el equipo de ventas va en el hecho (fact.equipo), no en el tercero
 # (res.partner.team_id está VACÍO en este Odoo). Ver sql/marts/15_dims_ventas.sql.
+#
+# ⚠ Los cinco del final (2026-10-10) son la GEOGRAFÍA y la naturaleza del tercero, para los mapas
+# de clientes (sql/marts/39_tercero_geo.sql). Todos almacenados y escalares, o sea seguros en
+# lectura masiva. `is_company` NO decide si un cliente es empresa: medido, el 83 % de los
+# MAYORISTA NV está en False. Lo que sí separa es la localización colombiana: `person_type`
+# ('1' jurídica / '2' natural) y `vat_type` (código DIAN: '31' NIT, '13' cédula, '50' NIT de otro
+# país…). El criterio de «listable con dirección» vive en el SQL, no aquí.
 PARTNER_FIELDS = ["id", "name", "vat", "city", "city_id", "state_id", "country_id",
-                  "phone", "mobile", "email", "category_id", "commercial_partner_id"]
+                  "phone", "mobile", "email", "category_id", "commercial_partner_id",
+                  "street", "street2", "is_company", "person_type", "vat_type"]
 
 
-def _fila_tercero(r, cmap, ciudades=None):
+def _fila_tercero(r, cmap, ciudades=None, geo=None):
     """res.partner de Odoo → fila de dim_tercero (las columnas COMUNES a las dos rutas).
 
     ⚠ `tipo_cliente` NO va aquí: viene de la cabecera del asiento (partner_type_id) y lo añade
     cargar_terceros; refrescar_dimensiones no debe tocarlo.
+
+    `geo` = `catalogo_geo_odoo(od)`. ⚠ Sin él, las dos llaves geográficas NO se emiten (en vez de
+    emitirlas en NULL): `upsert` escribe todas las columnas del DataFrame, así que un llamador que
+    olvidara pasarlo borraría el código DANE de cada tercero que tocara, sin ningún error.
     """
-    return {"tercero_id": as_int(r["id"]),
+    fila = {"tercero_id": as_int(r["id"]),
             "nombre": r.get("name"),
             "identificacion": r.get("vat"),
             "ciudad": _ciudad_tercero(r, ciudades),
@@ -669,7 +714,25 @@ def _fila_tercero(r, cmap, ciudades=None):
             "email": r.get("email"),
             "etiqueta": etiquetas_nombres(r.get("category_id"), cmap),
             "cliente_padre_id": m2o_id(r.get("commercial_partner_id")),
-            "cliente_padre": m2o_nombre(r.get("commercial_partner_id"))}
+            "cliente_padre": m2o_nombre(r.get("commercial_partner_id")),
+            "direccion": _texto_libre(r.get("street")),
+            "direccion2": _texto_libre(r.get("street2")),
+            # ⚠ `Odoo._limpiar` convierte el False de Odoo en None: sin el bool() un False
+            # llegaría como NULL y no se distinguiría de «no se leyó».
+            "es_compania": bool(r.get("is_company")),
+            "tipo_persona": r.get("person_type"),
+            "tipo_documento": r.get("vat_type")}
+    if geo is not None:
+        fila["codigo_dane_municipio"] = geo["dane"].get(m2o_id(r.get("city_id")))
+        fila["pais_codigo"] = geo["iso"].get(m2o_id(r.get("country_id")))
+    return fila
+
+
+def _texto_libre(v):
+    """Texto digitado a mano → str limpio o None. Solo espacios: no cambia mayúsculas ni tildes,
+    porque es el dato tal como lo escribió quien vende (y lo que se mandaría a un geocodificador)."""
+    s = " ".join(str(v).split()) if v not in (None, False) else ""
+    return s or None
 
 
 # ══ Terceros (dim_tercero) — usado por el hecho y por cartera ══
@@ -679,8 +742,9 @@ def cargar_terceros(od, loader, part_ids, tipo_tercero):
         return
     cmap = cat_map_tercero(od)
     ciudades = ciudades_odoo(od)
+    geo = catalogo_geo_odoo(od)
     partners = od.read("res.partner", part_ids, PARTNER_FIELDS, context=CTX_ALL)
-    dt = pd.DataFrame([{**_fila_tercero(p, cmap, ciudades),
+    dt = pd.DataFrame([{**_fila_tercero(p, cmap, ciudades, geo),
                         "tipo_cliente": tipo_tercero.get(p["id"])} for p in partners])
     # tipo_cliente vía COALESCE: no borrar el existente si esta fuente no lo trae.
     upsert(loader, dt, "dim_tercero", "tercero_id", coalesce=["tipo_cliente"])
@@ -788,12 +852,13 @@ def refrescar_dimensiones(od, loader, full=False, modelos=None):
     solo trae lo que cambió en Odoo. Ver `--backfill-terceros`."""
     cmap = cat_map_tercero(od)  # etiquetas de terceros (m2m id→nombre), cargado una vez
     ciudades = ciudades_odoo(od)  # catálogo res.city id→name, para la cascada de ciudad
+    geo = catalogo_geo_odoo(od)   # res.city id→DANE y res.country id→ISO (mapas de clientes)
     pos = plantillas_pos(od)  # template→available_in_pos: el marcador de comercialización
     specs = [
         # Campos y builder compartidos con cargar_terceros (PARTNER_FIELDS/_fila_tercero) para
         # que las dos rutas que leen res.partner no se desincronicen.
         ("res.partner", PARTNER_FIELDS, "dim_tercero", "tercero_id",
-         lambda r: _fila_tercero(r, cmap, ciudades)),
+         lambda r: _fila_tercero(r, cmap, ciudades, geo)),
         # tipo_cliente no se toca (viene del asiento)
         # es_kit NO se setea aquí: lo fija cargar_kits desde dim_kit_componente (BOM phantom).
         # `bom_count > 0` marcaría también los productos FABRICADOS, que no son kits.

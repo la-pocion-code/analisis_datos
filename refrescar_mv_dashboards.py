@@ -156,11 +156,21 @@ MVS_COMPRAS = (
     "mv_compras_recompra",
 )
 
+# ── MAPA DE CLIENTES (sql/marts/39_tercero_geo.sql) — tick :00 ─────────────────
+# Para los mapas de calor: venta por mes × tercero × canal con la geografía del tercero. Un mapa
+# no gana nada con 15 minutos de frescura, y la geografía del tercero cambia por días.
+# ⚠⚠ DERIVA de `mv_ventas_mes`, así que va AL FINAL de `MVS` y NO en los ticks ligeros: refrescarla
+# antes que su origen publicaría el mapa del tick anterior con un `refreshed_at` nuevo, y la
+# intranet lo mostraría como fresco (la misma trampa que contabilidad y presupuesto, arriba).
+MVS_GEO = (
+    "mv_clientes_geo_mes",
+)
+
 # Las que corren en TODOS los ticks (ligeros y completo): su origen cambia cada 15 minutos.
 MVS_LIGERAS = MVS_VENTAS + MVS_COMPRAS
 
 MVS = (MVS_LIGERAS + MVS_CONTAB + MVS_NIELSEN + MVS_CCLAVE + MVS_CARTERA
-       + MVS_MARKETING)
+       + MVS_MARKETING + MVS_GEO)
 
 
 # ── QUE MV DEPENDE DE CADA TABLA DE ATERRIZAJE `bi_*` ──────────────────────────

@@ -50,12 +50,16 @@ Los archivos `sql/marts/01..12_*.sql` son **idempotentes** (se pueden re-ejecuta
 correrlos cuando **cambia el esquema** (columnas/vistas nuevas). Población de datos = vía el ETL.
 ```bash
 # aplicar un archivo DDL (ejemplo)
-python -c "import sys; sys.path.insert(0,'.'); from classes.db_loader import DBLoader; \
-c=DBLoader().get_connection(); cur=c.cursor(); \
-cur.execute(open('sql/marts/12_estados_financieros.sql',encoding='utf-8').read()); c.commit(); \
+# ⚠ get_connection() es un CONTEXT MANAGER (la receta anterior, `c=DBLoader().get_connection();
+#   c.cursor()`, falla con AttributeError — medido 2026-10-10).
+python -c "import sys; sys.path.insert(0,'.'); from classes.db_loader import DBLoader
+with DBLoader().get_connection() as c:
+    cur=c.cursor(); cur.execute(\"SET lock_timeout = '15s'\")
+    cur.execute(open('sql/marts/12_estados_financieros.sql',encoding='utf-8').read()); c.commit()
 print('aplicado')"
 ```
-Tras un DDL que agrega columnas de dimensión, correr `python etl_dw_marts.py --dims` para poblarlas.
+Tras un DDL que agrega columnas de dimensión, poblarlas con `python etl_dw_marts.py --backfill-terceros`
+(o el backfill de su modelo): ⚠ `--dims` va por `write_date` y **no** puebla un campo nuevo.
 
 ### 2.4 El cron automático (no hay que correrlo a mano)
 `run_dw.py` es el entrypoint del cron de Railway (`railway.toml` → **`*/15 * * * *`**). No todos los

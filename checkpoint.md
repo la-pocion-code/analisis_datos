@@ -44,6 +44,7 @@ Todas las hojas alimentan la **intranet** (`proyecto pocion/intranet`, otro repo
 | **Cartera** | ✅ completa | `30` | 1 | `:00` | [dashboards](docs/dashboards_intranet.md) |
 | **Marketing** | 🟡 parcial | `31` | 3 | `:00` | [dashboards](docs/dashboards_intranet.md) |
 | **Compras** | ✅ **nueva (2026-08-12)** | `34`,`35` | 4 | cada tick | [dashboards §12](docs/dashboards_intranet.md) |
+| **Mapa de clientes** | 🟡 **país/depto/municipio ✅ (2026-10-10); comuna y coordenada ⏳ esperan OK al coste** | `39` | 1 | `:00` | [georreferenciacion_clientes](docs/georreferenciacion_clientes.md) |
 
 **30 MV en total.** DDL en `sql/marts/NN_*.sql` (todos idempotentes).
 ⚠ **`24_rol_intranet.sql` se re-ejecuta DESPUÉS de cualquier DDL que recree una MV**: los `GRANT` a
@@ -144,3 +145,4 @@ están en [`CLAUDE.md`](CLAUDE.md), que se carga automáticamente en cada sesió
 | [`docs/bi_conexiones_marts.md`](docs/bi_conexiones_marts.md) · [`bi_refresco_gateway.md`](docs/bi_refresco_gateway.md) | Power BI (transitorio): conexión ODBC y refresco |
 | [`docs/cuentas_clave_migracion.md`](docs/cuentas_clave_migracion.md) | hoja de cuentas clave |
 | [`docs/agente_runbook.md`](docs/agente_runbook.md) | runbook del rol de agente |
+| [`docs/georreferenciacion_clientes.md`](docs/georreferenciacion_clientes.md) | mapas de clientes: lo medido, quién se lista con dirección (Ley 1581), el coste de geocodificar y por qué **no** Google |
