@@ -66,7 +66,30 @@ Refresco: `MVS_GEO` en el tick `:00`, **al final** de `MVS` porque deriva de `mv
 ⚠ La receta de `GUIA_OPERACION.md §2.3` (`c=DBLoader().get_connection(); c.cursor()`) **ya no
 funciona**: `get_connection()` es un context manager → `with DBLoader().get_connection() as c:`.
 
-## Fase 3 — comuna y coordenada (NO construida; espera el OK al coste)
+## Fase 3 — EN MARCHA con Geoapify (gratis), actualizado 2026-10-10
+
+**Decisión:** Geoapify, plan gratis (3.000 créditos/día; lotes a 0,5 por dirección). Su dato es
+OpenStreetMap y lo dice por escrito en su página de la Geocoding API: *«Our services are based on
+Open Data. So we do not restrict you from storing results»* — hay que conservar la atribución
+(«© OpenStreetMap contributors») junto al dato. William pidió acumular gratis; con Google eso no es
+legal ni en un CSV local (ver abajo).
+
+**Construido y APLICADO** (`39_tercero_geo.sql`): `bi_geo_direccion` (caché por dirección) y
+`bi_geo_tercero` (tercero → llave + barrio escrito), sin conceder a `intranet_ro`; la base, la vista
+y la MV ya los leen (vacíos = mismo resultado que antes). La MV trae `comuna`, `barrio`,
+`fuente_barrio` y la celda de ~1 km (`celda_lat`/`celda_lng`).
+
+**`geocodificar_terceros.py`** — `--seco`, `--piloto N`, `--sin-llamadas`, `--informe`; tope diario
+en `etl_control`; rechaza lo que cae fuera del municipio. **En seco** (2026-10-10), segmento
+recompradores Shopify 2026: **7.217 clientes, 4.847 con placa reconocible → 4.657 llamadas**
+(~2 días de cupo) y 459 con barrio escrito. ⚠ Unos 2.000 escriben la dirección fuera de la
+cuadrícula («Mz 3 casa 5», veredas): no se mandan, porque devolverían el centro del municipio
+con apariencia de precisión; se quedan a nivel de municipio.
+
+**Falta:** la clave `GEOAPIFY_API_KEY` (cuenta gratis, la crea William) → piloto de 300 → informe →
+acumulación diaria (recompradores, luego Shopify 2026, luego todos).
+
+## Fase 3 — el análisis de proveedores y coste (2026-10-10, antes de decidir)
 
 **Proveedor.** ⛔ **Google Geocoding no sirve para guardar**: sus términos solo permiten conservar
 la latitud/longitud **30 días** y luego hay que borrarla (Service Specific Terms, Geocoding API).
