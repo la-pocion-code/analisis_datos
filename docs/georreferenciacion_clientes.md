@@ -66,7 +66,7 @@ Refresco: `MVS_GEO` en el tick `:00`, **al final** de `MVS` porque deriva de `mv
 ⚠ La receta de `GUIA_OPERACION.md §2.3` (`c=DBLoader().get_connection(); c.cursor()`) **ya no
 funciona**: `get_connection()` es un context manager → `with DBLoader().get_connection() as c:`.
 
-## Fase 3 — EN MARCHA con Geoapify (gratis), actualizado 2026-10-10
+## Fase 3 — EN MARCHA con Geoapify (gratis), actualizado 2026-10-13
 
 **Decisión:** Geoapify, plan gratis (3.000 créditos/día; lotes a 0,5 por dirección). Su dato es
 OpenStreetMap y lo dice por escrito en su página de la Geocoding API: *«Our services are based on
@@ -86,8 +86,65 @@ recompradores Shopify 2026: **7.217 clientes, 4.847 con placa reconocible → 4.
 cuadrícula («Mz 3 casa 5», veredas): no se mandan, porque devolverían el centro del municipio
 con apariencia de precisión; se quedan a nivel de municipio.
 
-**Falta:** la clave `GEOAPIFY_API_KEY` (cuenta gratis, la crea William) → piloto de 300 → informe →
-acumulación diaria (recompradores, luego Shopify 2026, luego todos).
+### El piloto (2026-10-13, 300 direcciones de recompradores, gratis)
+
+| | |
+|---|---|
+| Coincidencia | **78 % por CALLE** (`match_by_street`, la placa «# 28-66» casi nunca está en OSM), 15 % por edificio |
+| Incertidumbre (mitad de la diagonal del `bbox`) | 38 % ≤ 100 m · 25 % 101-250 m · 12 % 251-500 m · 10 % > 500 m |
+| Ubicadas con la regla final | **82,3 %** (63 % con confianza ≥ 0,5; +58 calles a 0,41 y ≤ 250 m, decisión de William) |
+| Barrio de OSM | 13,8 % de las ubicadas, **vacío** en Bogotá, Medellín y Cali → **no sirve** |
+| «Comuna» de OSM | nombres sueltos («El Hormiguero», «Zipaquirá ciudad») → **no se usa** |
+| Velocidad | ~4,5 s por consulta en serie desde la oficina (cortes de red) → **4 hilos en paralelo** |
+
+**Regla de estado** (`clasificar` y su espejo SQL `RECLASIFICAR`, `--reclasificar` sin llamadas):
+`impreciso` si el resultado es solo barrio/ciudad o la incertidumbre pasa de 500 m; `ok` si la
+confianza es ≥ 0,5, o si es una CALLE con confianza ≥ 0,4 a ≤ 250 m; si no, `baja_confianza`.
+
+**Día 1** (2026-10-13): 2.500 consultas en 38,5 min, 78 % ubicadas.
+
+### El cron diario — servicio «cron geocodificar» (keen-wonder)
+
+- `python run_dw.py` con **`TAREA=geocodificar`**, `0 6 * * *` (01:00 Colombia), restart `NEVER`.
+  Variables como **referencias** a las del servicio `analisis_datos` (`${{analisis_datos.DB_*}}`,
+  `GEOAPIFY_API_KEY`): nadie copia un secreto.
+- ⚠⚠ **Por qué `TAREA` y no un fichero de configuración propio**: Railway ya no deja asignar
+  `railwayConfigFile` (Config as Code deprecado) y el servicio, del mismo repo, podría heredar
+  `railway.toml` (ETL cada 15 min). `run_dw.py` despacha por `TAREA` **antes** del advisory lock,
+  así que ese servicio nunca corre el ETL. Medido: a las 15:45 y 16:00 UTC no corrió → manda el
+  `0 6 * * *` del servicio.
+- `--segmento auto`: asigna gratis a TODOS (barrio escrito incluido) y gasta el cupo por
+  prioridad — recompradores → Shopify del año → el resto. 70.716 direcciones distintas ≈ 3,5
+  semanas de cupo; después solo los clientes nuevos (~180/día medidos).
+- Al final de cada corrida asigna los polígonos oficiales (`poligonos_geo.asignar`).
+- Coste estimado: ~US$0,02/mes (casi todo el tiempo espera la red).
+
+### Barrio y comuna OFICIALES — `poligonos_geo.py` (31 fuentes, verificadas 2026-10-13)
+
+Punto-en-polígono (`shapely`, WGS84). Una coordenada de CALLE cae sobre el eje de la vía, entre
+barrios: primero «dentro» y, si no, el polígono más cercano a < 60 m (`fuente_poligono = cercano`).
+
+| Ciudad | Barrios | Comunas / localidades | Licencia |
+|---|---|---|---|
+| Bogotá | UAECD, sector catastral (1.230) | SDP, localidades (20) | CC BY 4.0 |
+| Medellín | Catastro, barrio/vereda (349) | Catastro (21) | no declarada |
+| Cali | IDESC/DAPM (342) | IDESC/DAPM (22) | CC BY |
+| Barranquilla · Bello | datos.gov.co (189 · 132) | DANE 2018 | CC BY-SA 4.0 |
+| Bucaramanga, Floridablanca, Girón, Piedecuesta | AMB (247, 209, 101, 84) | DANE (Bucaramanga) | no declarada |
+| Pereira · Manizales · Itagüí | Planeación / Alcaldía (486 · 116 · 85) | propias (21 · 12 · 6) | no declarada |
+| Soacha | IDE Cundinamarca (696) | propias (6) | CC BY 4.0 |
+| Cartagena, Ibagué, Cúcuta, Neiva, Palmira, Villavicencio, Santa Marta, Envigado | — | DANE 2018 | términos DANE |
+
+⛔ Fuera, a propósito: barrios de Cartagena y Santa Marta (no oficiales o sin licencia) y el
+«barrio legalizado» de Bogotá (cobertura parcial, sin editar desde 2019). ⚠ Manizales cuelga de
+`/wadmzl/rest/services/20_WEB/` e Itagüí de `/waserver/rest/services/`: con `/arcgis/` dan 404.
+⚠ El AMB rechaza `resultOffset` (400): `paginar=False`.
+
+**Resultado del día 1:** 1.507 direcciones con barrio/comuna oficial en 21 ciudades (Bogotá
+504/504, Medellín 217/218, Cali 285/325, Itagüí 30/30, Manizales 20/20). En la intranet, clientes
+2026 con barrio: **11 %** (oficial 1.969 · OSM 330 · escrito 3.660).
+
+**Vista:** barrio = oficial > OSM > escrito (`fuente_barrio`); **comuna solo oficial**.
 
 ## Fase 3 — el análisis de proveedores y coste (2026-10-10, antes de decidir)
 

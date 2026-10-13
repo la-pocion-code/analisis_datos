@@ -44,7 +44,7 @@ Todas las hojas alimentan la **intranet** (`proyecto pocion/intranet`, otro repo
 | **Cartera** | ✅ completa | `30` | 1 | `:00` | [dashboards](docs/dashboards_intranet.md) |
 | **Marketing** | 🟡 parcial | `31` | 3 | `:00` | [dashboards](docs/dashboards_intranet.md) |
 | **Compras** | ✅ **nueva (2026-08-12)** | `34`,`35` | 4 | cada tick | [dashboards §12](docs/dashboards_intranet.md) |
-| **Mapa de clientes** | 🟡 **país/depto/municipio ✅ (2026-10-10); comuna y coordenada ⏳ esperan OK al coste** | `39` | 1 | `:00` | [georreferenciacion_clientes](docs/georreferenciacion_clientes.md) |
+| **Mapa de clientes** | ✅ **país/depto/municipio; coordenada, barrio y comuna oficiales ACUMULANDO a diario (cron geocodificar, 2026-10-13)** | `39` | 1 | `:00` | [georreferenciacion_clientes](docs/georreferenciacion_clientes.md) |
 
 **30 MV en total.** DDL en `sql/marts/NN_*.sql` (todos idempotentes).
 ⚠ **`24_rol_intranet.sql` se re-ejecuta DESPUÉS de cualquier DDL que recree una MV**: los `GRANT` a
