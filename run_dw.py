@@ -41,6 +41,7 @@ Variables de entorno requeridas (las mismas del proyecto): url, db, username_odo
 DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD.
 """
 import logging
+import os
 from datetime import datetime
 
 import etl_dw_marts as etl
@@ -161,4 +162,16 @@ def _con_lock():
 
 
 if __name__ == "__main__":
-    _con_lock()
+    # ⚠⚠ El servicio «cron geocodificar» (keen-wonder) es del MISMO repo, y Railway ya no deja
+    # asignarle un fichero de configuración propio (Config as Code deprecado, 2026-10-13): si lee
+    # este `railway.toml`, arrancaría ESTE script cada 15 min y duplicaría el ETL. Por eso ese
+    # servicio lleva `TAREA=geocodificar`, y aquí se despacha ANTES de tocar el advisory lock: lea
+    # la configuración que lea, ese servicio nunca corre el ETL. El geocodificador se limita solo
+    # por el cupo diario, así que correrlo de más no gasta nada.
+    if os.getenv("TAREA") == "geocodificar":
+        import geocodificar_terceros
+        geocodificar_terceros.main(seco=False, segmento="auto",
+                                   limite=geocodificar_terceros.TOPE_POR_DEFECTO, piloto=0,
+                                   muestra=0, solo_informe=False, sin_llamadas=False)
+    else:
+        _con_lock()

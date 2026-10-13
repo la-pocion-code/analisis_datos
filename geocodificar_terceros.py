@@ -472,6 +472,12 @@ def main(seco, segmento, limite, piloto, muestra, solo_informe, sin_llamadas, re
     if solo_informe:
         informe(lo)
         return
+    # Salida temprana: con el cupo del día gastado no hay nada que hacer, y así una corrida de más
+    # (el servicio del cron puede acabar llamándose cada 15 min, ver run_dw.py) no carga los
+    # 130 mil candidatos para nada. La asignación gratis de clientes nuevos la hará la de mañana.
+    if not seco and not sin_llamadas and usado_hoy(lo) >= min(CUPO_DIARIO, limite):
+        print(f"Cupo de hoy agotado ({usado_hoy(lo)} de {CUPO_DIARIO}): nada que hacer.")
+        return
 
     # `auto` (lo que corre el cron): asigna a TODOS los clientes —gratis— y llama por prioridad.
     df = preparar(candidatos(lo, "todos" if segmento == "auto" else segmento))
