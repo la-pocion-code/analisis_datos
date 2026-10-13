@@ -81,6 +81,26 @@ SEGMENTOS = {
     "todos": "SELECT DISTINCT tercero_id FROM marts.mv_clientes_geo_mes",
 }
 
+# El orden en que se gasta el cupo con `--segmento auto`: primero lo que más importa. Cuando los
+# tres estén geocodificados, lo único pendiente de «todos» serán los clientes NUEVOS (~100-200 al
+# día), así que el mismo cron pasa solo a mantenimiento sin tocar nada.
+PRIORIDAD = ("recompradores", "shopify2026", "todos")
+
+
+def por_prioridad(lo, geo, llaves):
+    """Ordena las llaves pendientes: las de los recompradores, luego Shopify del año, luego el resto."""
+    rango_tercero = {}
+    for i, seg in enumerate(PRIORIDAD[:-1]):
+        df = lo.consultar(SEGMENTOS[seg])
+        for t in (df.tercero_id if df is not None and not df.empty else []):
+            rango_tercero.setdefault(int(t), i)
+    rango_llave = {}
+    for r in geo.itertuples():
+        rango = rango_tercero.get(int(r.tercero_id), len(PRIORIDAD) - 1)
+        rango_llave[r.llave] = min(rango, rango_llave.get(r.llave, rango))
+    return sorted(llaves, key=lambda k: (rango_llave.get(k, len(PRIORIDAD) - 1), k))
+
+
 # ── Normalización de la dirección colombiana ──────────────────────────────────
 
 _TIPOS = [
@@ -453,7 +473,8 @@ def main(seco, segmento, limite, piloto, muestra, solo_informe, sin_llamadas, re
         informe(lo)
         return
 
-    df = preparar(candidatos(lo, segmento))
+    # `auto` (lo que corre el cron): asigna a TODOS los clientes —gratis— y llama por prioridad.
+    df = preparar(candidatos(lo, "todos" if segmento == "auto" else segmento))
     geo = df[df.consulta.notna()]
     # ⚠ Dos cosas distintas, y mezclarlas fue el primer diseño: ASIGNAR (tercero → llave + barrio
     # escrito, gratis) y LLAMAR (llave que no está en la caché, se paga). Lo pendiente de llamar se
@@ -463,6 +484,8 @@ def main(seco, segmento, limite, piloto, muestra, solo_informe, sin_llamadas, re
     llaves_seg = set(geo.llave)
     en_cache = llaves_en_cache(lo, llaves_seg)
     a_llamar = sorted(llaves_seg - en_cache)
+    if segmento == "auto":
+        a_llamar = por_prioridad(lo, geo, a_llamar)
 
     print(f"Segmento «{segmento}»: {len(df)} clientes · {len(geo)} con dirección geocodificable "
           f"({len(llaves_seg)} direcciones distintas) · {df.barrio_escrito.notna().sum()} con "
@@ -559,7 +582,8 @@ def geocodificar_en_paralelo(lo, llaves, consulta_de, ciudad_de, clave):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--seco", action="store_true", help="cuenta y enseña, sin red ni escritura")
-    ap.add_argument("--segmento", choices=list(SEGMENTOS), default="recompradores")
+    ap.add_argument("--segmento", choices=list(SEGMENTOS) + ["auto"], default="recompradores",
+                    help="auto = lo que corre el cron: asigna a todos y llama por PRIORIDAD")
     ap.add_argument("--limite", type=int, default=TOPE_POR_DEFECTO)
     ap.add_argument("--piloto", type=int, default=0, help="N direcciones al azar (reproducible)")
     ap.add_argument("--muestra", type=int, default=0, help="enseña N consultas normalizadas")
