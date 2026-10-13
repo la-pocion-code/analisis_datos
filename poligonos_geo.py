@@ -56,17 +56,143 @@ M_POR_GRADO = 111_000
 # pedida, no un barrio.
 CAJA_COLOMBIA = (-82.5, -4.5, -66.5, 13.6)   # lon_min, lat_min, lon_max, lat_max
 
-# Las fuentes. Se rellenan con la investigación verificada (URL que responde, licencia, campos).
-# Cada una: ciudad (DANE), nivel (barrio|comuna), url (que devuelva GeoJSON en 4326), campo del
-# nombre, campo del código, y para un barrio el campo de su comuna si lo trae.
-FUENTES = []
+# ── Las fuentes, verificadas el 2026-10-13 (que responden, conteo, campos, licencia) ──────────
+# Cada una: ciudad (DANE), nivel (barrio|comuna), url (GeoJSON en 4326), campo del nombre, del
+# código y, para un barrio, el de su comuna si lo trae (respaldo: la comuna sale primero del
+# polígono de comunas). `paginar=False` donde el servidor rechaza `resultOffset` (AMB → 400).
+# ⛔ NO entran, a propósito: Cartagena y Santa Marta (sus barrios publicados no son oficiales o no
+#    tienen licencia), y Bogotá «barrio legalizado» (solo cubre asentamientos legalizados y su
+#    servicio se editó por última vez en 2019): se usa el SECTOR CATASTRAL, que cubre la ciudad.
+# ⚠ «Licencia no declarada» = dato público de la alcaldía o del catastro, sin licencia explícita
+#    en el servicio. Se usa para análisis interno con su atribución; no se republica.
+_ARC = "where=1%3D1&outFields={campos}&outSR=4326&f=geojson"
+_DANE = ("https://geoportal.dane.gov.co/mparcgis/rest/services/Comuna_Localidad/"
+         "Serv_Comuna_Localidad_2018/FeatureServer/0/query?where=COD_MPIO%3D%27{dane}%27"
+         "&outFields=COD_MPIO,COD_LOC_COM,NOM_LOC_COM&outSR=4326&f=geojson")
+_LIC_DANE = "Términos de uso del DANE — Fuente: Departamento Administrativo Nacional de Estadística"
+_SIN_LIC = "no declarada (dato público oficial)"
 
 
-def _paginas(url):
+def _dane(dane, ciudad):
+    return {"ciudad": dane, "nivel": "comuna", "url": _DANE.format(dane=dane),
+            "campo_nombre": "NOM_LOC_COM", "campo_codigo": "COD_LOC_COM",
+            "fuente": f"DANE, comunas y localidades 2018 ({ciudad})", "licencia": _LIC_DANE}
+
+
+FUENTES = [
+    # ── Bogotá: sector catastral (UAECD) + localidad (SDP). CC BY 4.0 ──
+    {"ciudad": "11001", "nivel": "barrio",
+     "url": "https://serviciosgis.catastrobogota.gov.co/arcgis/rest/services/catastro/"
+            "sectorcatastral/MapServer/0/query?" + _ARC.format(campos="SCACODIGO,SCANOMBRE"),
+     "campo_nombre": "SCANOMBRE", "campo_codigo": "SCACODIGO",
+     "fuente": "UAECD Bogotá, sector catastral", "licencia": "CC BY 4.0"},
+    {"ciudad": "11001", "nivel": "comuna",
+     "url": "https://serviciosgis.catastrobogota.gov.co/arcgis/rest/services/"
+            "ordenamientoterritorial/localidad/MapServer/0/query?"
+            + _ARC.format(campos="LOCCODIGO,LOCNOMBRE"),
+     "campo_nombre": "LOCNOMBRE", "campo_codigo": "LOCCODIGO",
+     "fuente": "SDP Bogotá, localidades", "licencia": "CC BY 4.0"},
+    # ── Medellín: catastro (barrio/vereda con su comuna; comuna/corregimiento) ──
+    {"ciudad": "05001", "nivel": "barrio",
+     "url": "https://www.medellin.gov.co/servidormapas/rest/services/ServiciosCatastro/"
+            "Base_Catastral/MapServer/1/query?"
+            + _ARC.format(campos="codigo,nombre_barrio,nombre_comuna"),
+     "campo_nombre": "nombre_barrio", "campo_codigo": "codigo", "campo_comuna": "nombre_comuna",
+     "fuente": "Subsecretaría de Catastro de Medellín", "licencia": _SIN_LIC},
+    {"ciudad": "05001", "nivel": "comuna",
+     "url": "https://www.medellin.gov.co/servidormapas/rest/services/ServiciosCatastro/"
+            "Base_Catastral/MapServer/0/query?" + _ARC.format(campos="comuna,nombre"),
+     "campo_nombre": "nombre", "campo_codigo": "comuna",
+     "fuente": "Subsecretaría de Catastro de Medellín", "licencia": _SIN_LIC},
+    # ── Cali: IDESC / DAPM, WFS ──
+    {"ciudad": "76001", "nivel": "barrio",
+     "url": "https://ws-idesc.cali.gov.co/geoserver/dapm/ows?service=WFS&version=1.0.0"
+            "&request=GetFeature&typeName=dapm:pdt_dpa_barrios_sectores"
+            "&outputFormat=application/json&srsName=EPSG:4326",
+     "campo_nombre": "barnombre", "campo_codigo": "barcodigo", "campo_comuna": "barcomuna",
+     "fuente": "IDESC Cali (DAPM), barrios", "licencia": "CC BY"},
+    {"ciudad": "76001", "nivel": "comuna",
+     "url": "https://ws-idesc.cali.gov.co/geoserver/dapm/ows?service=WFS&version=1.0.0"
+            "&request=GetFeature&typeName=dapm:pdt_dpa_comunas"
+            "&outputFormat=application/json&srsName=EPSG:4326",
+     "campo_nombre": "comnombre", "campo_codigo": "comcodigo",
+     "fuente": "IDESC Cali (DAPM), comunas", "licencia": "CC BY"},
+    # ── Barranquilla y Bello: datos.gov.co (SODA) ──
+    {"ciudad": "08001", "nivel": "barrio",
+     "url": "https://www.datos.gov.co/resource/qui6-qeux.geojson?$limit=5000",
+     "campo_nombre": "nombre", "campo_comuna": "localidad",
+     "fuente": "Alcaldía de Barranquilla (datos.gov.co qui6-qeux)", "licencia": "CC BY-SA 4.0"},
+    {"ciudad": "05088", "nivel": "barrio",
+     "url": "https://www.datos.gov.co/resource/pnhh-ccwd.geojson?$limit=5000",
+     "campo_nombre": "nombre",
+     "fuente": "Alcaldía de Bello (datos.gov.co pnhh-ccwd)", "licencia": "CC BY-SA 4.0"},
+    # ── Área Metropolitana de Bucaramanga (AMB): una capa, cuatro municipios ──
+    *[{"ciudad": dane, "nivel": "barrio", "paginar": False,
+       "url": "https://mapa.amb.gov.co/server/rest/services/VISOR/"
+              "MAPA_BASE_VECTORIAL_105_Definitivo/MapServer/2/query?where=MUNICIPIO%3D%27"
+              f"{mpio}%27&outFields=NOMBRE,MUNICIPIO&f=geojson",
+       "campo_nombre": "NOMBRE",
+       "fuente": f"Área Metropolitana de Bucaramanga, barrios ({mpio.title()})",
+       "licencia": _SIN_LIC}
+      for dane, mpio in (("68001", "BUCARAMANGA"), ("68276", "FLORIDABLANCA"),
+                         ("68307", "GIRON"), ("68547", "PIEDECUESTA"))],
+    # ── Pereira, Manizales, Itagüí y Soacha: barrios y comunas propios ──
+    {"ciudad": "66001", "nivel": "barrio",
+     "url": "https://services3.arcgis.com/Zdpg0E6lri7EggIc/arcgis/rest/services/"
+            "Barrios_del_municipio_de_Pereira/FeatureServer/0/query?"
+            + _ARC.format(campos="NOMBRE,CODBAR,COMUNA"),
+     "campo_nombre": "NOMBRE", "campo_codigo": "CODBAR", "campo_comuna": "COMUNA",
+     "fuente": "Portal Geográfico de Pereira, barrios", "licencia": _SIN_LIC},
+    {"ciudad": "66001", "nivel": "comuna",
+     "url": "https://services3.arcgis.com/Zdpg0E6lri7EggIc/arcgis/rest/services/"
+            "Comunas_Actual/FeatureServer/0/query?" + _ARC.format(campos="*"),
+     "campo_nombre": "NOMBRE",
+     "fuente": "Portal Geográfico de Pereira, comunas", "licencia": _SIN_LIC},
+    {"ciudad": "17001", "nivel": "barrio",
+     "url": "https://sig.manizales.gov.co/wadmzl/rest/services/20_WEB/2021_consulta_catas_urbano_web/"
+            "FeatureServer/1/query?" + _ARC.format(campos="*"),
+     "campo_nombre": "BARRIOS",
+     "fuente": "Alcaldía de Manizales, barrios", "licencia": _SIN_LIC},
+    {"ciudad": "17001", "nivel": "comuna",
+     "url": "https://sig.manizales.gov.co/wadmzl/rest/services/20_WEB/2021_consulta_catas_urbano_web/"
+            "FeatureServer/0/query?" + _ARC.format(campos="*"),
+     "campo_nombre": "NOMBRES_CO", "campo_codigo": "nro",
+     "fuente": "Alcaldía de Manizales, comunas", "licencia": _SIN_LIC},
+    {"ciudad": "05360", "nivel": "barrio",
+     "url": "https://arcgis.itagui.gov.co/waserver/rest/services/Catastro/VC_Catastro_2024/"
+            "MapServer/7/query?" + _ARC.format(campos="nom_barrio,barrio,comuna"),
+     "campo_nombre": "nom_barrio", "campo_codigo": "barrio", "campo_comuna": "comuna",
+     "fuente": "Alcaldía de Itagüí, catastro 2024", "licencia": _SIN_LIC},
+    {"ciudad": "05360", "nivel": "comuna",
+     "url": "https://arcgis.itagui.gov.co/waserver/rest/services/Cartografia_Base/"
+            "01_Division_Politico_Administrativa/MapServer/3/query?" + _ARC.format(campos="*"),
+     "campo_nombre": "comuna",
+     "fuente": "Alcaldía de Itagüí, comunas", "licencia": _SIN_LIC},
+    {"ciudad": "25754", "nivel": "barrio",
+     "url": "https://services7.arcgis.com/lsxbLWF2l19Rmhqj/arcgis/rest/services/"
+            "Barrios_Soacha_Magna/FeatureServer/0/query?"
+            + _ARC.format(campos="NOM_BARRIO,COM_MAPA"),
+     "campo_nombre": "NOM_BARRIO", "campo_comuna": "COM_MAPA",
+     "fuente": "IDE Cundinamarca / Alcaldía de Soacha, barrios", "licencia": "CC BY 4.0"},
+    {"ciudad": "25754", "nivel": "comuna",
+     "url": "https://services7.arcgis.com/lsxbLWF2l19Rmhqj/arcgis/rest/services/"
+            "Comunas_Soacha_Magna/FeatureServer/0/query?" + _ARC.format(campos="*"),
+     "campo_nombre": "COMUNA",
+     "fuente": "IDE Cundinamarca / Alcaldía de Soacha, comunas", "licencia": "CC BY 4.0"},
+    # ── Comunas del DANE donde la ciudad no publica las suyas ──
+    *[_dane(d, c) for d, c in (
+        ("08001", "Barranquilla"), ("13001", "Cartagena"), ("05088", "Bello"),
+        ("73001", "Ibagué"), ("68001", "Bucaramanga"), ("54001", "Cúcuta"), ("41001", "Neiva"),
+        ("76520", "Palmira"), ("50001", "Villavicencio"), ("47001", "Santa Marta"),
+        ("05266", "Envigado"))],
+]
+
+
+def _paginas(url, paginar=True):
     """Descarga un GeoJSON. Si es un FeatureServer de ArcGIS, pagina con `resultOffset` (los
     servidores cortan en 1.000-2.000 entidades por respuesta y un barrio de más se perdería en
     silencio)."""
-    if "FeatureServer" not in url and "MapServer" not in url:
+    if not paginar or ("FeatureServer" not in url and "MapServer" not in url):
         r = requests.get(url, timeout=TIMEOUT_S)
         r.raise_for_status()
         return r.json().get("features", [])
@@ -90,7 +216,7 @@ def _en_colombia(geom):
 
 
 def cargar(lo, fuente):
-    feats = _paginas(fuente["url"])
+    feats = _paginas(fuente["url"], fuente.get("paginar", True))
     filas, malas = [], 0
     for f in feats:
         props = f.get("properties") or {}
@@ -191,17 +317,23 @@ def asignar(lo, todo=False):
 
 
 def informe(lo):
+    # ⚠ UNA ciudad por dirección (la misma regla que `asignar`, `min()` de las que no son nulas): una
+    # dirección compartida por dos clientes, uno sin código DANE, salía contada dos veces.
     df = lo.consultar("""
-        SELECT t.codigo_dane_municipio AS dane, max(t.ciudad) AS ciudad,
-               COUNT(DISTINCT d.llave) AS ubicadas,
-               COUNT(DISTINCT d.llave) FILTER (WHERE d.barrio_oficial IS NOT NULL) AS con_barrio,
-               COUNT(DISTINCT d.llave) FILTER (WHERE d.comuna_oficial IS NOT NULL) AS con_comuna,
-               COUNT(DISTINCT d.llave) FILTER (WHERE d.fuente_poligono = 'cercano') AS por_cercania
-        FROM marts.bi_geo_direccion d
-        JOIN marts.bi_geo_tercero g ON g.llave = d.llave
-        JOIN marts.dim_tercero t ON t.tercero_id = g.tercero_id
-        WHERE d.estado = 'ok' AND d.fuente_poligono IS NOT NULL
-        GROUP BY 1 ORDER BY ubicadas DESC
+        WITH d AS (
+            SELECT d.llave, d.barrio_oficial, d.comuna_oficial, d.fuente_poligono,
+                   min(t.codigo_dane_municipio) AS dane, max(t.ciudad) AS ciudad
+            FROM marts.bi_geo_direccion d
+            JOIN marts.bi_geo_tercero g ON g.llave = d.llave
+            JOIN marts.dim_tercero t ON t.tercero_id = g.tercero_id
+            WHERE d.estado = 'ok' AND d.fuente_poligono IS NOT NULL
+            GROUP BY 1, 2, 3, 4
+        )
+        SELECT dane, max(ciudad) AS ciudad, COUNT(*) AS ubicadas,
+               COUNT(*) FILTER (WHERE barrio_oficial IS NOT NULL) AS con_barrio,
+               COUNT(*) FILTER (WHERE comuna_oficial IS NOT NULL) AS con_comuna,
+               COUNT(*) FILTER (WHERE fuente_poligono = 'cercano') AS por_cercania
+        FROM d GROUP BY 1 ORDER BY ubicadas DESC
     """)
     print(df.to_string(index=False) if df is not None and not df.empty else "(nada asignado)")
 
@@ -216,10 +348,21 @@ if __name__ == "__main__":
     a = ap.parse_args()
     lo = DBLoader()
     if a.cargar:
+        # Cada fuente por su lado: un servidor municipal caído no debe dejar sin polígonos a las
+        # demás ciudades. Se informa todo al final.
+        resumen = []
         for f in FUENTES:
             if a.solo and a.solo != f"{f['ciudad']}-{f['nivel']}":
                 continue
-            cargar(lo, f)
+            try:
+                resumen.append((f["ciudad"], f["nivel"], cargar(lo, f), f["fuente"]))
+            except Exception as e:
+                resumen.append((f["ciudad"], f["nivel"], f"ERROR {type(e).__name__}: {str(e)[:90]}",
+                                f["fuente"]))
+        print()
+        print("  -- carga de polígonos --")
+        for ciudad, nivel, n, fuente in resumen:
+            print(f"     {ciudad} {nivel:7s} {str(n):>6}  {fuente}")
     if a.asignar:
         asignar(lo, todo=a.todo)
     if a.informe:
