@@ -19,3 +19,7 @@ google-api-python-client>=2.120 # classes/drive_loader.py (Drive v3)
 # Marketing: la TRM de datos.gov.co, y los conectores de Supermetrics y Shopify
 # cuando existan sus credenciales. GA4 y Search Console van por las de Google.
 requests>=2.31
+
+# Mapas de clientes (2026-10-13): punto-en-polígono de barrios y comunas oficiales
+# (`poligonos_geo.py`). Ruedas binarias, sin GEOS del sistema.
+shapely>=2.0

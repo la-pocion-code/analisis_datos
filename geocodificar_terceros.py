@@ -539,6 +539,13 @@ def main(seco, segmento, limite, piloto, muestra, solo_informe, sin_llamadas, re
     hechas = geocodificar_en_paralelo(lo, a_llamar, consulta_de, ciudad_de, clave)
     minutos = (time.perf_counter() - t_ini) / 60
     print(f"Hechas {hechas} llamadas en {minutos:.1f} min.")
+    # Barrio y comuna OFICIALES de las coordenadas nuevas (punto-en-polígono). Un fallo aquí no
+    # deshace lo geocodificado: se reintenta solo en la corrida siguiente (va por lo no asignado).
+    try:
+        import poligonos_geo
+        poligonos_geo.asignar(lo)
+    except Exception:
+        logging.exception("No se pudieron asignar los polígonos; se reintenta en la próxima corrida")
     informe(lo, a_llamar if piloto else None)
 
 

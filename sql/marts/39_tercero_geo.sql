@@ -98,6 +98,28 @@ CREATE TABLE IF NOT EXISTS marts.bi_geo_tercero (
 );
 CREATE INDEX IF NOT EXISTS ix_bi_geo_tercero_llave ON marts.bi_geo_tercero (llave);
 
+-- ── Polígonos OFICIALES de barrios y comunas (2026-10-13, tras el piloto) ────
+-- El piloto midió que el barrio de OSM llega en el 13,8 % y vacío en Bogotá/Medellín/Cali, y que su
+-- «comuna» son nombres sueltos. La coordenada sí es buena: el barrio y la comuna salen de cruzarla
+-- con estos polígonos (`poligonos_geo.py`, punto-en-polígono con shapely, en WGS84). Cada polígono
+-- lleva su fuente y su licencia. NO se concede: la intranet lee el resultado, no la geometría.
+CREATE TABLE IF NOT EXISTS marts.bi_geo_poligono (
+    ciudad_dane TEXT NOT NULL,                    -- DIVIPOLA de 5 dígitos
+    nivel       TEXT NOT NULL CHECK (nivel IN ('barrio', 'comuna')),
+    codigo      TEXT NOT NULL,
+    nombre      TEXT NOT NULL,
+    comuna      TEXT,                             -- para un barrio: su comuna, si la fuente la trae
+    geojson     TEXT NOT NULL,                    -- geometría en EPSG:4326
+    fuente      TEXT NOT NULL,
+    licencia    TEXT,
+    cargado_en  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (ciudad_dane, nivel, codigo)
+);
+ALTER TABLE marts.bi_geo_direccion ADD COLUMN IF NOT EXISTS barrio_oficial  TEXT;
+ALTER TABLE marts.bi_geo_direccion ADD COLUMN IF NOT EXISTS comuna_oficial  TEXT;
+-- dentro | cercano (punto sobre una vía, a < 60 m del polígono) | sin_poligono
+ALTER TABLE marts.bi_geo_direccion ADD COLUMN IF NOT EXISTS fuente_poligono TEXT;
+
 
 -- ── v_tercero_geo_base: la regla, en UN sitio (NO se concede a nadie) ───────
 -- La leen la vista de lookup y la MV. Si la regla de `es_listable` viviera en las dos, divergirían.
@@ -124,9 +146,13 @@ SELECT t.tercero_id,
        d.latitud,
        d.longitud,
        d.tipo_resultado                                                   AS precision_geo,
-       d.comuna_localidad                                                 AS comuna,
-       COALESCE(d.barrio, g.barrio_escrito)                               AS barrio,
-       CASE WHEN d.barrio IS NOT NULL THEN 'osm'
+       -- ⚠ La comuna SOLO del polígono oficial: la «comuna» de OSM (`comuna_localidad`) son nombres
+       --   sueltos que no son comunas (medido en el piloto), y publicarla sería inventar el dato.
+       d.comuna_oficial                                                   AS comuna,
+       -- El barrio, por calidad: polígono oficial > OSM > lo que escribió el cliente.
+       COALESCE(d.barrio_oficial, d.barrio, g.barrio_escrito)             AS barrio,
+       CASE WHEN d.barrio_oficial IS NOT NULL THEN 'oficial'
+            WHEN d.barrio IS NOT NULL THEN 'osm'
             WHEN g.barrio_escrito IS NOT NULL THEN 'escrito' END          AS fuente_barrio,
        CASE WHEN d.llave IS NOT NULL THEN d.proveedor END                 AS fuente_geo
 FROM marts.dim_tercero t
