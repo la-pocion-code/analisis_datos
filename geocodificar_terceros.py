@@ -8,6 +8,7 @@ una caché propia sin pasar del cupo gratis. Fase 3 de `docs/georreferenciacion_
     python geocodificar_terceros.py                        # lo pendiente, hasta el tope del día
     python geocodificar_terceros.py --segmento shopify2026 # amplía el universo (ver SEGMENTOS)
     python geocodificar_terceros.py --informe              # calidad de lo ya geocodificado, SIN red
+    python geocodificar_terceros.py --reclasificar         # regla de estado nueva sobre lo guardado
     python geocodificar_terceros.py --segmento todos --sin-llamadas  # barrio ESCRITO para todos, gratis
 
 ⛔ POR QUÉ NO GOOGLE (2026-10-10). Sus términos solo dejan conservar la latitud/longitud de la
@@ -33,6 +34,7 @@ import os
 import re
 import sys
 import time
+import math
 import hashlib
 import logging
 import argparse
@@ -264,6 +266,26 @@ def _llamar(sesion, texto, clave):
     return None
 
 
+def _diagonal_m(bbox):
+    """Diagonal del rectángulo de lo que coincidió, en metros (haversine). None si no viene."""
+    try:
+        lat1, lon1 = math.radians(float(bbox["lat1"])), math.radians(float(bbox["lon1"]))
+        lat2, lon2 = math.radians(float(bbox["lat2"])), math.radians(float(bbox["lon2"]))
+    except (TypeError, KeyError, ValueError):
+        return None
+    a = (math.sin((lat2 - lat1) / 2) ** 2
+         + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2)
+    return int(round(2 * 6_371_000 * math.asin(math.sqrt(a))))
+
+
+# ⚠ La placa colombiana («# 28-66») casi nunca está en OpenStreetMap: lo normal es que coincida la
+# CALLE y la coordenada sea su punto medio (medido en la consulta de prueba del 2026-10-13:
+# `match_by_street`, confianza 0,5). En una calle corta eso ubica bien el barrio; en una que cruza
+# media ciudad, no. La incertidumbre es la mitad de la diagonal del `bbox` de lo que coincidió.
+INCERTIDUMBRE_MAX_M = 500
+TIPOS_UBICABLES = ("building", "amenity", "street")
+
+
 def interpretar(respuesta, ciudad_cliente):
     """La fila de `bi_geo_direccion` (sin llave/consulta) a partir de la respuesta."""
     res = (respuesta or {}).get("results") or []
@@ -272,6 +294,7 @@ def interpretar(respuesta, ciudad_cliente):
     x = res[0]
     rank = x.get("rank") or {}
     ciudad = x.get("city") or x.get("county") or x.get("municipality")
+    diagonal = _diagonal_m(x.get("bbox"))
     fila = {
         "latitud": round(float(x["lat"]), 6) if x.get("lat") is not None else None,
         "longitud": round(float(x["lon"]), 6) if x.get("lon") is not None else None,
@@ -284,14 +307,49 @@ def interpretar(respuesta, ciudad_cliente):
         "departamento": x.get("state"),
         "codigo_postal": x.get("postcode"),
         "place_id": x.get("place_id"),
+        "incertidumbre_m": diagonal // 2 if diagonal is not None else None,
     }
-    if ciudad and ciudad_cliente and not misma_ciudad(ciudad, ciudad_cliente):
-        fila["estado"] = "fuera_de_municipio"
-    elif (fila["confianza"] or 0) < CONFIANZA_MINIMA:
-        fila["estado"] = "baja_confianza"
-    else:
-        fila["estado"] = "ok"
+    fila["estado"] = clasificar(fila, ciudad, ciudad_cliente)
     return fila
+
+
+def clasificar(fila, ciudad=None, ciudad_cliente=None):
+    """El estado de un resultado. ⚠ La MISMA regla está en SQL en `RECLASIFICAR` (para aplicarla a
+    lo ya guardado sin volver a pagar llamadas): si cambia una, cambia la otra."""
+    tipo, conf, inc = fila.get("tipo_resultado"), fila.get("confianza") or 0, fila.get("incertidumbre_m")
+    if ciudad and ciudad_cliente and not misma_ciudad(ciudad, ciudad_cliente):
+        return "fuera_de_municipio"
+    if tipo not in TIPOS_UBICABLES or (inc or 0) > INCERTIDUMBRE_MAX_M:
+        # Coincidió solo el barrio o la ciudad, o una calle larga: se guarda (no se vuelve a pagar)
+        # pero no ubica a nadie.
+        return "impreciso"
+    if conf >= CONFIANZA_MINIMA:
+        return "ok"
+    # ⭐ Decisión de William tras el piloto (2026-10-13): una CALLE con confianza ≥ 0,4 y ≤ 250 m de
+    # incertidumbre también ubica. Medido: 58 de 300 eran exactamente eso — idénticas a las buenas
+    # salvo la confianza (0,41 frente a 0,50), casi siempre la calle paralela («Carrera 85» por
+    # «Carrera 85C», ~100 m). Para barrio y comuna sobra precisión. Sube de 63 % a ~82 %.
+    if tipo == "street" and conf >= CONFIANZA_CALLE_CERCANA and inc is not None \
+            and inc <= INCERTIDUMBRE_CALLE_CERCANA_M:
+        return "ok"
+    return "baja_confianza"
+
+
+CONFIANZA_CALLE_CERCANA = 0.4
+INCERTIDUMBRE_CALLE_CERCANA_M = 250
+
+# La misma regla de `clasificar`, en SQL, para reclasificar lo ya guardado (sin la parte de
+# municipio, que ya quedó decidida al guardar: no se toca lo que está en `fuera_de_municipio`).
+RECLASIFICAR = f"""
+    UPDATE marts.bi_geo_direccion SET estado = CASE
+        WHEN tipo_resultado IS NULL OR tipo_resultado NOT IN {TIPOS_UBICABLES}
+             OR COALESCE(incertidumbre_m, 0) > {INCERTIDUMBRE_MAX_M} THEN 'impreciso'
+        WHEN COALESCE(confianza, 0) >= {CONFIANZA_MINIMA} THEN 'ok'
+        WHEN tipo_resultado = 'street' AND confianza >= {CONFIANZA_CALLE_CERCANA}
+             AND incertidumbre_m <= {INCERTIDUMBRE_CALLE_CERCANA_M} THEN 'ok'
+        ELSE 'baja_confianza' END
+    WHERE estado NOT IN ('fuera_de_municipio', 'sin_resultado')
+"""
 
 
 def guardar_direcciones(lo, filas):
@@ -299,7 +357,7 @@ def guardar_direcciones(lo, filas):
         return
     cols = ["llave", "consulta", "proveedor", "estado", "latitud", "longitud", "tipo_resultado",
             "confianza", "tipo_coincidencia", "barrio", "comuna_localidad", "ciudad",
-            "departamento", "codigo_postal", "place_id"]
+            "departamento", "codigo_postal", "place_id", "incertidumbre_m"]
     with lo.get_connection() as c:
         cur = c.cursor()
         from psycopg2.extras import execute_values
@@ -337,7 +395,7 @@ def informe(lo, llaves=None):
     df = lo.consultar(f"""
         SELECT d.llave, d.estado, d.tipo_resultado, d.tipo_coincidencia, d.confianza,
                d.barrio IS NOT NULL AS con_barrio, d.comuna_localidad IS NOT NULL AS con_comuna,
-               d.barrio, g.barrio_escrito
+               d.barrio, d.comuna_localidad, d.ciudad, d.incertidumbre_m, g.barrio_escrito
         FROM marts.bi_geo_direccion d
         LEFT JOIN marts.bi_geo_tercero g ON g.llave = d.llave
         {filtro}
@@ -352,10 +410,26 @@ def informe(lo, llaves=None):
         print(f"\n  -- {col} --")
         for k, v in Counter(df[col].fillna("(vacío)")).most_common():
             print(f"     {v:6d}  {100*v/len(df):5.1f} %  {k}")
+    print("\n  -- incertidumbre (mitad de la diagonal de lo que coincidió) --")
+    tramos = [(0, 100, "<= 100 m"), (101, 250, "101-250 m"), (251, 500, "251-500 m"),
+              (501, 1000, "501 m-1 km"), (1001, 10**9, "> 1 km")]
+    inc = df.incertidumbre_m.dropna()
+    for lo_m, hi_m, rotulo in tramos:
+        n = int(((inc >= lo_m) & (inc <= hi_m)).sum())
+        print(f"     {n:6d}  {100*n/len(df):5.1f} %  {rotulo}")
+    print(f"     {int(df.incertidumbre_m.isna().sum()):6d}  sin bbox")
     ok = df[df.estado == "ok"]
     if len(ok):
         print(f"\n  De las {len(ok)} OK: con barrio OSM {ok.con_barrio.mean()*100:.1f} % · "
               f"con comuna/localidad {ok.con_comuna.mean()*100:.1f} %")
+        print("\n  -- comuna/localidad de OSM más frecuentes (¿son comunas de verdad?) --")
+        for (c, ciu), v in Counter(zip(ok.comuna_localidad.fillna("(vacío)"),
+                                       ok.ciudad.fillna("?"))).most_common(15):
+            print(f"     {v:5d}  {c}  [{ciu}]")
+        print("\n  -- barrio de OSM más frecuentes --")
+        for (b, ciu), v in Counter(zip(ok.barrio.fillna("(vacío)"),
+                                       ok.ciudad.fillna("?"))).most_common(10):
+            print(f"     {v:5d}  {b}  [{ciu}]")
         ambos = ok[ok.barrio.notna() & ok.barrio_escrito.notna()]
         if len(ambos):
             coinc = sum(misma_ciudad(a, b) for a, b in zip(ambos.barrio, ambos.barrio_escrito))
@@ -364,8 +438,17 @@ def informe(lo, llaves=None):
 
 # ── Principal ─────────────────────────────────────────────────────────────────
 
-def main(seco, segmento, limite, piloto, muestra, solo_informe, sin_llamadas):
+def main(seco, segmento, limite, piloto, muestra, solo_informe, sin_llamadas, reclasificar=False):
     lo = DBLoader()
+    if reclasificar:
+        # Aplica la regla vigente de `clasificar` a lo YA guardado: cero llamadas.
+        with lo.get_connection() as c:
+            cur = c.cursor()
+            cur.execute(RECLASIFICAR)
+            print(f"Reclasificadas {cur.rowcount} direcciones con la regla vigente.")
+            c.commit()
+        informe(lo)
+        return
     if solo_informe:
         informe(lo)
         return
@@ -423,22 +506,54 @@ def main(seco, segmento, limite, piloto, muestra, solo_informe, sin_llamadas):
 
     consulta_de = dict(zip(geo.llave, geo.consulta))
     ciudad_de = dict(zip(geo.llave, geo.ciudad))
-    sesion = requests.Session()
-    lote, hechas, pausa = [], 0, 1.0 / POR_SEGUNDO
-    for llave in a_llamar:
-        t0 = time.perf_counter()
-        fila = interpretar(_llamar(sesion, consulta_de[llave], clave), ciudad_de.get(llave))
-        fila.update({"llave": llave, "consulta": consulta_de[llave], "proveedor": PROVEEDOR})
-        lote.append(fila)
-        hechas += 1
-        if len(lote) >= 200:
-            guardar_direcciones(lo, lote)
-            lote = []
-            logging.info("geocodificadas %s de %s", hechas, len(a_llamar))
-        time.sleep(max(0.0, pausa - (time.perf_counter() - t0)))
-    guardar_direcciones(lo, lote)
-    print(f"Hechas {hechas} llamadas.")
+    t_ini = time.perf_counter()
+    hechas = geocodificar_en_paralelo(lo, a_llamar, consulta_de, ciudad_de, clave)
+    minutos = (time.perf_counter() - t_ini) / 60
+    print(f"Hechas {hechas} llamadas en {minutos:.1f} min.")
     informe(lo, a_llamar if piloto else None)
+
+
+# ⚠ EN PARALELO (2026-10-13): el piloto en serie tardó ~4,5 s por consulta (latencia + cortes de red
+# con reintento), o sea ~3,5 h para el cupo de un día. Con HILOS concurrentes el tiempo es el de la
+# red dividido entre ellos; el LIMITADOR mantiene el ritmo de arranque por debajo de las 5/s del plan
+# gratis aunque los hilos terminen a la vez. Cada hilo tiene su propia `Session` (no es thread-safe).
+HILOS = 4
+
+
+def geocodificar_en_paralelo(lo, llaves, consulta_de, ciudad_de, clave):
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    candado, ultimo = threading.Lock(), [0.0]
+    local = threading.local()
+
+    def turno():
+        """Espera su turno para no arrancar más de POR_SEGUNDO consultas por segundo."""
+        with candado:
+            espera = ultimo[0] + 1.0 / POR_SEGUNDO - time.perf_counter()
+            if espera > 0:
+                time.sleep(espera)
+            ultimo[0] = time.perf_counter()
+
+    def una(llave):
+        if not hasattr(local, "sesion"):
+            local.sesion = requests.Session()
+        turno()
+        fila = interpretar(_llamar(local.sesion, consulta_de[llave], clave), ciudad_de.get(llave))
+        fila.update({"llave": llave, "consulta": consulta_de[llave], "proveedor": PROVEEDOR})
+        return fila
+
+    lote, hechas = [], 0
+    with ThreadPoolExecutor(max_workers=HILOS) as ex:
+        for fut in as_completed([ex.submit(una, k) for k in llaves]):
+            lote.append(fut.result())
+            hechas += 1
+            if len(lote) >= 200:
+                guardar_direcciones(lo, lote)     # se guarda por tandas: un corte no lo pierde todo
+                lote = []
+                logging.info("geocodificadas %s de %s", hechas, len(llaves))
+    guardar_direcciones(lo, lote)
+    return hechas
 
 
 if __name__ == "__main__":
@@ -451,5 +566,8 @@ if __name__ == "__main__":
     ap.add_argument("--informe", action="store_true", help="calidad de lo ya geocodificado")
     ap.add_argument("--sin-llamadas", action="store_true",
                     help="solo asigna (barrio escrito incluido), sin llamar al geocodificador")
+    ap.add_argument("--reclasificar", action="store_true",
+                    help="aplica la regla vigente de estado a lo ya guardado (sin llamadas)")
     a = ap.parse_args()
-    main(a.seco, a.segmento, a.limite, a.piloto, a.muestra, a.informe, a.sin_llamadas)
+    main(a.seco, a.segmento, a.limite, a.piloto, a.muestra, a.informe, a.sin_llamadas,
+         a.reclasificar)

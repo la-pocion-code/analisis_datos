@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS marts.bi_geo_direccion (
     llave             TEXT PRIMARY KEY,          -- md5 de la consulta normalizada
     consulta          TEXT NOT NULL,             -- 'Calle 14 # 7-85, IPIALES, Nariño, Colombia'
     proveedor         TEXT NOT NULL,             -- 'geoapify'
-    estado            TEXT NOT NULL,             -- ok | fuera_de_municipio | baja_confianza | sin_resultado
+    estado            TEXT NOT NULL,             -- ok | impreciso | fuera_de_municipio | baja_confianza | sin_resultado
     latitud           NUMERIC(9, 6),
     longitud          NUMERIC(9, 6),
     tipo_resultado    TEXT,                      -- building | street | suburb | city …
@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS marts.bi_geo_direccion (
     place_id          TEXT,
     consultado_en     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- La incertidumbre en metros (mitad de la diagonal del `bbox` de lo que coincidió). Entra el
+-- 2026-10-13 tras la consulta de prueba: la placa colombiana casi nunca está en OSM y lo normal
+-- es que coincida la CALLE, cuyo punto medio no ubica el barrio si la calle es larga.
+ALTER TABLE marts.bi_geo_direccion ADD COLUMN IF NOT EXISTS incertidumbre_m INTEGER;
+
 COMMENT ON TABLE marts.bi_geo_direccion IS
   'Cache de geocodificacion por direccion (Geoapify, datos (c) OpenStreetMap, ODbL). Solo '
   'estado=ok se usa. NO se concede: la coordenada de un consumidor es dato personal.';
