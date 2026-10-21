@@ -106,6 +106,25 @@ def _config(loader) -> tuple[pd.DataFrame, pd.DataFrame]:
             cuentas if cuentas is not None else pd.DataFrame())
 
 
+def _dato(valor):
+    """El valor de una celda opcional de la semilla, o None si viene vacia.
+
+    ⚠⚠ Un NULL NO llega siempre como None. Con pandas 2.x (el de local) una columna de
+    texto con huecos queda `object` y el hueco es None; con pandas 3 (el que instala
+    Railway, porque requirements.txt pide `pandas>=2.0.0` sin tope) se infiere `str` y el
+    hueco es NaN — que es VERDADERO. El 2026-10-21 eso tumbaba 7 de 8 cuentas sin que el
+    cron fallara: a TikTok se le mandaba `filter="nan"` (HTTP 400 FILTER_STRING_INVALID) y
+    `json.loads(NaN)` saltaba la cuenta por «ajustes no es JSON valido». En local no se
+    reproducia. Por eso se comprueba con `pd.isna` y no con la verdad del valor."""
+    if valor is None or isinstance(valor, (dict, list)):
+        return valor
+    if pd.isna(valor):
+        return None
+    if isinstance(valor, str) and not valor.strip():
+        return None
+    return valor
+
+
 def _falta(*variables) -> list:
     """Cuales de estas variables de entorno no estan puestas."""
     return [v for v in variables if not os.getenv(v)]
@@ -404,14 +423,14 @@ def gasto_publicidad(cuentas: pd.DataFrame, desde: date, hasta: date) -> pd.Data
         }
         if team_id:
             params["team_id"] = team_id
-        if c.get("filtro"):
-            params["filter"] = c["filtro"]
-        if c.get("ajustes"):
+        filtro, ajustes = _dato(c.get("filtro")), _dato(c.get("ajustes"))
+        if filtro is not None:
+            params["filter"] = filtro
+        if ajustes is not None:
             # `ajustes` es JSON en la semilla (`asset_level`, `report_type`) y sus
             # claves son parametros de la API: se expanden, no se mandan como blob.
             try:
-                extra = c["ajustes"] if isinstance(c["ajustes"], dict) \
-                    else json.loads(c["ajustes"])
+                extra = ajustes if isinstance(ajustes, dict) else json.loads(ajustes)
                 params.update(extra)
             except (TypeError, ValueError):
                 errores.append(f"{etiqueta}: `ajustes` no es JSON valido")
@@ -584,7 +603,7 @@ def _shopify_cotejar(datos_tienda: dict, pais: dict, etiqueta: str) -> None:
     guarda el GID verificado de cada tienda (`bi_marketing_pais.shopify_shop`), asi
     que la comprobacion es gratis: se compara con el `shop.id` que responde la API.
     """
-    esperado = (pais.get("shopify_shop") or "").strip()
+    esperado = (_dato(pais.get("shopify_shop")) or "").strip()   # NaN: ver _dato
     real = ((datos_tienda.get("shop") or {}).get("id") or "").strip()
     if esperado and real and esperado != real:
         raise ErrorShopify(
