@@ -203,6 +203,9 @@ INSERT INTO marts.bi_cartera_tipo_credito (tipo_cliente, es_credito, categoria, 
      'Grafia actual de Odoo, en mayusculas (antes «Surticosmeticos»).'),
     ('DISTRIBUIDOR',    TRUE,  'DISTRIBUIDOR',
      'Grafia actual de Odoo, en mayusculas (antes «Distribuidor»).'),
+    -- Canal nuevo de Odoo (oct-2026). En ventas se llama igual, y esa es la `categoria`.
+    ('AUTOSERVICIOS REGIONALES', TRUE, 'AUTOSERVICIOS REGIONALES',
+     'Canal nuevo de Odoo (oct-2026). Credito por decision de William el 2026-11-04.'),
     -- Los de abajo se registran para poder EXPLICARLOS en la hoja, no para
     -- incluirlos. Sin fila tambien quedarian fuera, pero sin motivo a la vista.
     -- ⚠ Sin `categoria`: no son canales de venta, y darles una permitiria que un
