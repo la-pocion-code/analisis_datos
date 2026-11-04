@@ -129,9 +129,21 @@
 -- tenia que editar y volver a ejecutar a mano. Va en una tabla para que se pueda
 -- cambiar sin desplegar codigo.
 --
--- ⚠ La CAJA importa: son los valores crudos de Odoo, y ahi conviven
--- `Surticosmeticos`, `Catalogo` y `Distribuidor` en CamelCase con el resto en
--- mayusculas. Normalizarlos aqui romperia el empalme.
+-- ⚠ La CAJA importa: son los valores crudos de Odoo, y el cruce de la MV (y el de
+-- la intranet, `cartera.definicion_responsables`) es por igualdad EXACTA.
+--
+-- ⚠⚠ Y LA CAJA CAMBIO SIN AVISAR (medido el 2026-11-04). Esto decia que en Odoo
+-- conviven `Surticosmeticos`, `Catalogo` y `Distribuidor` en CamelCase con el
+-- resto en mayusculas. Ya no: Odoo los entrega en MAYUSCULAS (`CATALOGO`,
+-- `SURTICOSMETICOS`, `DISTRIBUIDOR`, `PROVEEDORES`, `EMPLEADO`), y desde que una
+-- recarga los reescribio, esas tres cayeron a «fuera de credito» SIN NINGUN
+-- ERROR: ~6.800 MM de por cobrar —Novaventa entera— desaparecieron del aging, de
+-- la mora, de la cola de cobro y del correo de los cobradores. El agente de
+-- finanzas lo vio el 28-oct («4.034,6 MM salieron de la base de credito sin
+-- cambiar el conteo de facturas») y nadie lo leyo como un cruce roto.
+-- Por eso van las DOS grafias: la vieja por si queda alguna linea antigua con
+-- ella, la nueva porque es la que llega hoy. ⚠ NO hacer el cruce sin distinguir
+-- caja con las dos filas dentro: casarian dos veces y el UNIQUE de la MV fallaria.
 -- ════════════════════════════════════════════════════════════════════════════
 CREATE TABLE IF NOT EXISTS marts.bi_cartera_tipo_credito (
     tipo_cliente TEXT    PRIMARY KEY,
@@ -183,6 +195,14 @@ INSERT INTO marts.bi_cartera_tipo_credito (tipo_cliente, es_credito, categoria, 
     ('Distribuidor',    TRUE,  'DISTRIBUIDOR',       NULL),
     ('KRIKA',           TRUE,  'KRIKA',              'Lucego. Hoy en saldo negativo (−30.922.933).'),
     ('HOLE COSMETICS',  TRUE,  'HOLE COSMETICS SAS', NULL),
+    -- ⚠⚠ La grafia ACTUAL de Odoo (2026-11-04, ver arriba). Sin estas tres filas
+    -- Novaventa, Surticosmeticos y los distribuidores salen de la cartera de credito.
+    ('CATALOGO',        TRUE,  'CATÁLOGO',
+     'Novaventa. Grafia actual de Odoo, en mayusculas (antes «Catalogo»). En ventas se normaliza a CATÁLOGO (con tilde).'),
+    ('SURTICOSMETICOS', TRUE,  'SURTICOSMETICOS',
+     'Grafia actual de Odoo, en mayusculas (antes «Surticosmeticos»).'),
+    ('DISTRIBUIDOR',    TRUE,  'DISTRIBUIDOR',
+     'Grafia actual de Odoo, en mayusculas (antes «Distribuidor»).'),
     -- Los de abajo se registran para poder EXPLICARLOS en la hoja, no para
     -- incluirlos. Sin fila tambien quedarian fuera, pero sin motivo a la vista.
     -- ⚠ Sin `categoria`: no son canales de venta, y darles una permitiria que un
@@ -190,6 +210,8 @@ INSERT INTO marts.bi_cartera_tipo_credito (tipo_cliente, es_credito, categoria, 
     ('CLIENTE',         FALSE, NULL, 'Venta de contado. 2.260 MM, el mayor bloque fuera de credito.'),
     ('Proveedores',     FALSE, NULL, 'No es venta: son saldos con proveedores.'),
     ('Empleado',        FALSE, NULL, 'Ventas a empleados.'),
+    ('PROVEEDORES',     FALSE, NULL, 'No es venta: son saldos con proveedores.'),
+    ('EMPLEADO',        FALSE, NULL, 'Ventas a empleados.'),
     ('Wrote Judge.me web review', FALSE, NULL,
      'Basura literal de Odoo: una opinion de la web quedo grabada como tipo de cliente.'),
     -- Centinela que pone la MV cuando el tercero no tiene `partner_type_id`. Se
