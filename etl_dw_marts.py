@@ -1512,12 +1512,24 @@ MOVE_FIELDS = ["id", "name", "move_type", "invoice_user_id", "partner_type_id", 
 
 
 # ══ Bucle principal por lotes ══
+# ⚠⚠ (2026-11-17) SE PAGINA POR CLAVE (`id > el último leído`), NUNCA POR `offset`.
+# Con `offset` sobre un conjunto que CAMBIA mientras se lee (un asiento que sale de `posted`
+# entre una página y la siguiente) todo se corre hacia atrás y las filas de la frontera NO SE
+# LEEN NUNCA, sin ningún error. Pasó en el rebuild del 2-nov: faltaban pares de líneas con ids
+# consecutivos (14909858-59, 15037073-74, 15363243-44) y cinco asientos de la empresa 8 quedaron
+# con UNA sola línea → el balance descuadró. El rebuild de los días 3/24 paginaba igual, así que
+# no lo arreglaba. Con la clave, lo que entra o sale del conjunto no mueve a lo que falta por leer.
+#
+# `reconciliar=True` (incremental y resincronización) borra del hecho las líneas que Odoo ya NO
+# tiene en esos asientos: al editar un asiento publicado, Odoo borra líneas y crea otras, y el
+# watermark por `write_date` solo ve las nuevas → las viejas se quedaban para siempre (FACTU4062:
+# 10 líneas en el hecho, 5 en Odoo, +52,5 MM de descuadre en octubre).
 def cargar_hecho(od, loader, domain, an_plan, an_nombre, plan_rol, clasificar, nombre_puc,
-                 catalogos_completos=False, oc_map=None):
-    offset, total, max_write = 0, 0, None
+                 catalogos_completos=False, oc_map=None, reconciliar=False):
+    ultimo_id, total, max_write, quitadas = 0, 0, None, 0
     while True:
-        lineas = od.search_read("account.move.line", domain, LINE_FIELDS,
-                                limit=PAGINA, offset=offset, order="id asc")
+        lineas = od.search_read("account.move.line", list(domain) + [["id", ">", ultimo_id]],
+                                LINE_FIELDS, limit=PAGINA, order="id asc")
         if not lineas:
             break
         move_ids = [m2o_id(l.get("move_id")) for l in lineas]
@@ -1533,17 +1545,132 @@ def cargar_hecho(od, loader, domain, an_plan, an_nombre, plan_rol, clasificar, n
         # Auto-sanar TODA dim referenciada por el hecho pero aún ausente (evita FK; normalmente 0).
         asegurar_dims_hecho(od, loader, dfh, moves, clasificar, nombre_puc, plan_rol)
         upsert(loader, dfh, "fact_movimiento_contable", "linea_id")
+        if reconciliar:
+            quitadas += reconciliar_asientos(od, loader, move_ids)
 
         for l in lineas:
             wd = l.get("write_date")
             if wd and (max_write is None or str(wd) > max_write):
                 max_write = str(wd)
         total += len(lineas)
-        offset += len(lineas)
+        # `order="id asc"` garantiza que el último es el mayor; `max` por si acaso.
+        ultimo_id = max(l["id"] for l in lineas)
         logging.info(f"  lote hecho: +{len(lineas)} (acumulado {total})")
         if len(lineas) < PAGINA:
             break
+    if quitadas:
+        logging.info(f"  hecho: {quitadas} líneas quitadas que Odoo ya no tiene en sus asientos")
     return total, max_write
+
+
+def reconciliar_asientos(od, loader, move_ids):
+    """Deja en el hecho EXACTAMENTE las líneas publicadas que Odoo tiene hoy en esos asientos.
+
+    Borra las que sobran (líneas que Odoo borró al editar el asiento, o el asiento entero si ya no
+    está publicado: pasado a borrador, cancelado o borrado). NO añade: las que faltan las trae
+    `cargar_hecho`. Devuelve cuántas filas borró.
+
+    ⚠ Un asiento sin ninguna línea publicada en Odoo se queda SIN líneas en el hecho — es lo
+    correcto: un borrador no es contabilidad. Si se vuelve a publicar, su `write_date` cambia y el
+    incremental lo trae de nuevo.
+    """
+    ids = sorted({int(m) for m in move_ids if m})
+    quitadas = 0
+    for i in range(0, len(ids), 1000):
+        bloque = ids[i:i + 1000]
+        vigentes = od.search_read("account.move.line",
+                                  [["move_id", "in", bloque], ["parent_state", "=", "posted"]],
+                                  ["id"])
+        # `-1` para que el array nunca vaya vacío: psycopg2 manda `[]` como `'{}'` SIN tipo y
+        # Postgres no puede compararlo con un bigint. Con [-1] el resultado es el mismo que con
+        # «ninguna viva» (se borra todo lo del bloque), que es lo correcto.
+        lineas_vivas = [l["id"] for l in vigentes] or [-1]
+        with loader.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM marts.fact_movimiento_contable "
+                        "WHERE factura_id = ANY(%s) AND NOT (linea_id = ANY(%s))",
+                        (bloque, lineas_vivas))
+            quitadas += cur.rowcount
+            conn.commit()
+    return quitadas
+
+
+def quitar_asientos_no_publicados(od, loader, desde_write):
+    """Asientos que DEJARON de estar publicados desde `desde_write` → fuera del hecho.
+
+    El incremental pide líneas con `parent_state = posted`: un asiento pasado a borrador o
+    cancelado ya no sale en esa consulta, así que sus líneas se quedaban en el hecho como si
+    siguieran publicadas. Aquí se miran por la CABECERA (`account.move.write_date` sí cambia al
+    pasar a borrador). Barato: solo ids, y casi siempre son unos pocos borradores del día.
+    """
+    asientos = od.search_read("account.move",
+                              [["write_date", ">", desde_write], ["state", "!=", "posted"]],
+                              ["id"], context=CTX_ALL)
+    ids = [a["id"] for a in asientos]
+    if not ids:
+        return 0
+    return reconciliar_asientos(od, loader, ids)
+
+
+# ⚠ La partida doble cuadra POR ASIENTO: si las líneas de un asiento no suman cero en el hecho, al
+# hecho le falta o le sobra algo respecto a Odoo (Odoo no deja publicar un asiento descuadrado).
+_SQL_DESCUADRADOS = """
+SELECT f.factura_id, SUM(f.debito - f.credito) AS dif
+  FROM marts.fact_movimiento_contable f
+ WHERE f.fecha_key >= %s AND f.factura_id IS NOT NULL
+ GROUP BY f.factura_id
+HAVING ABS(SUM(f.debito - f.credito)) > 1
+"""
+
+
+def resincronizar_descuadrados(od, loader, desde_key, an_plan, an_nombre, plan_rol, clasificar,
+                               nombre_puc, oc_map=None):
+    """RED DE SEGURIDAD del cierre: asientos del hecho que no suman cero → se rehacen desde Odoo.
+
+    Cubre lo que el incremental no puede ver (un asiento borrado entre dos corridas, líneas que se
+    saltó una carga) sin esperar al rebuild de los días 3/24. Es barato porque casi siempre son 0.
+    ⚠ Solo detecta lo que DESCUADRA: un asiento borrado entero en Odoo sigue cuadrado en el hecho
+    y eso lo sigue limpiando el rebuild.
+    """
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SET LOCAL statement_timeout = 120000")
+        cur.execute(_SQL_DESCUADRADOS, (desde_key,))
+        filas = cur.fetchall()
+        conn.rollback()
+    if not filas:
+        logging.info("Asientos descuadrados en el hecho: 0")
+        return 0
+    ids = [int(f[0]) for f in filas]
+    dif = sum(float(f[1]) for f in filas)
+    logging.warning(f"Asientos descuadrados en el hecho: {len(ids)} (neto {dif:,.2f}); "
+                    "se rehacen desde Odoo")
+    for i in range(0, len(ids), 500):
+        bloque = ids[i:i + 500]
+        cargar_hecho(od, loader, [["move_id", "in", bloque], ["parent_state", "=", "posted"]],
+                     an_plan, an_nombre, plan_rol, clasificar, nombre_puc,
+                     oc_map=oc_map, reconciliar=False)
+        reconciliar_asientos(od, loader, bloque)
+    with loader.get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SET LOCAL statement_timeout = 120000")
+        cur.execute(_SQL_DESCUADRADOS, (desde_key,))
+        siguen = cur.fetchall()
+        conn.rollback()
+    if siguen:
+        logging.error(f"Siguen descuadrados tras rehacerlos desde Odoo: {len(siguen)} asientos "
+                      f"(ej. {[int(f[0]) for f in siguen[:5]]}). Ya no es la carga: mirar Odoo.")
+    else:
+        logging.info(f"Asientos rehechos: {len(ids)}; ahora cuadran todos.")
+    return len(ids)
+
+
+def _un_dia_antes(marca):
+    """La marca de agua (texto, quizá con zona) menos un día, en el formato UTC que Odoo espera."""
+    t = pd.Timestamp(marca)
+    if t.tzinfo is not None:
+        t = t.tz_convert("UTC").tz_localize(None)
+    return (t - pd.Timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _desde_key(desde):
@@ -2338,7 +2465,13 @@ def main(modo, desde, hasta=None, cierre=True):
             dom.append(["write_date", ">", marca_l])
         logging.info(f"INCREMENTAL (líneas > {marca_l})")
         total_h, mw_h = cargar_hecho(od, loader, dom, an_plan, an_nombre, plan_rol,
-                                     clasificar, nombre_puc, oc_map=oc_map)
+                                     clasificar, nombre_puc, oc_map=oc_map, reconciliar=True)
+        if marca_l:
+            # Un día de margen: es idempotente (borrar lo de un borrador ya borrado no hace nada)
+            # y absorbe el desfase de zona horaria entre la marca y el `write_date` de Odoo (UTC).
+            n = quitar_asientos_no_publicados(od, loader, _un_dia_antes(marca_l))
+            if n:
+                logging.info(f"  hecho: {n} líneas de asientos que dejaron de estar publicados")
     else:
         # full / rebuild: cargar por AÑO, más reciente primero (2026 se completa antes).
         if modo == "rebuild":
@@ -2372,6 +2505,13 @@ def main(modo, desde, hasta=None, cierre=True):
 
     # ── Pasos de CIERRE. Coste FIJO (no dependen del delta) → solo en la corrida completa. ──
     if cierre:
+        # PRIMERO: los pasos de abajo marcan banderas sobre el hecho y tienen que verlo limpio.
+        # El año en curso (~4 s medidos); en enero también diciembre, que se sigue cerrando.
+        hoy = date.today()
+        desde_resync = date(hoy.year - 1, 12, 1) if hoy.month == 1 else date(hoy.year, 1, 1)
+        resincronizar_descuadrados(od, loader, int(desde_resync.strftime("%Y%m%d")),
+                                   an_plan, an_nombre, plan_rol, clasificar, nombre_puc,
+                                   oc_map=oc_map)
         marcar_reversos(loader)      # ventas: excluir reversos totales
         aplicar_correcciones(loader)  # limpieza de datos mal registrados en Odoo
         canonicalizar_puc(loader)     # unifica códigos 8 vs 9 díg de la misma cuenta (no destructivo)

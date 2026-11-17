@@ -988,6 +988,24 @@ definidos por el admin). **Contrato de datos completo:
 - El ETL del DW (`etl_dw_marts.py`) tiene reintentos (502 Odoo + reconexión BD); el sync raw
   archivado no los tenía.
 - El watermark `write_date` no detecta hard-deletes; por eso el DW se **recrea** (`--rebuild`) ~2×/mes.
+  ⚠⚠ **(2026-11-17) y no bastaba: el balance de la empresa 8 descuadró 123 MM** (lo cazó el vigía del
+  almacén de la intranet, `check_marts` §4). El libro del hecho tenía **17 asientos cuyas líneas no
+  sumaban cero** (Odoo no deja publicar uno así: el fallo es siempre de la carga). Dos causas:
+  1. **`cargar_hecho` paginaba por `offset`** sobre un conjunto que cambia mientras se lee: un asiento
+     que sale de `posted` entre dos páginas corre todo hacia atrás y las filas de la frontera **no se
+     leen nunca**, sin error. Faltaban pares de líneas con ids consecutivos, cargadas en el rebuild del
+     2-nov — o sea que **el rebuild también se las saltaba**. Ahora pagina **por clave**
+     (`id > el último leído`). ⚠ Cualquier bucle nuevo sobre un modelo vivo de Odoo, igual.
+  2. **El incremental nunca borraba**: al editar un asiento publicado Odoo borra líneas y crea otras, y
+     el watermark solo ve las nuevas (FACTU4062: 10 líneas en el hecho, 5 en Odoo). Ahora
+     `cargar_hecho(..., reconciliar=True)` deja en el hecho **exactamente** las líneas publicadas de
+     cada asiento del lote (`reconciliar_asientos`), y `quitar_asientos_no_publicados` saca los que
+     pasaron a borrador o se cancelaron (por la cabecera: el incremental pide `parent_state=posted` y
+     ya no los veía).
+  Red de seguridad en el **cierre**: `resincronizar_descuadrados` rehace desde Odoo cualquier asiento
+  del año que no sume cero (~4 s; casi siempre 0) y avisa con `ERROR` si sigue descuadrado después,
+  que ya no sería la carga. Lo que **sigue** necesitando el rebuild: un asiento borrado ENTERO entre
+  dos corridas (en el hecho sigue cuadrado). Pruebas en memoria: `python -m unittest tests.test_cargar_hecho`.
 - `virtual-env/` está commiteado por error (está en `.gitignore`); no editarlo.
 - DW: cargar **por año** (el `id` de Odoo NO sigue el orden de fecha; `id asc` deja años parciales).
 - DW: las empresas 1 y 8 pueden tener **PUC distinto** (al crear PCN cambiaron cuentas) → validar y
