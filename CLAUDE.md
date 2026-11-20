@@ -972,9 +972,19 @@ definidos por el admin). **Contrato de datos completo:
 - Correo: `SENDER_EMAIL`, `SENDER_PASSWORD`. · API de reportes: `REPORTES_API_KEY`.
 - Google Drive: `GOOGLE_CREDENTIALS_PATH` (ruta al JSON de service account).
 - Marketing: `SUPERMETRICS_API_KEY` y `SUPERMETRICS_TEAM_ID` **ya estan puestas**;
-  `SHOPIFY_SHOP_{PAIS}` / `SHOPIFY_TOKEN_{PAIS}` (**un par por tienda, 6**) y
-  `GA4_CREDENTIALS_JSON` / `GSC_CREDENTIALS_JSON` **no**. Sin ellas `cargar_marketing.py`
-  carga la TRM y el gasto, y deja la venta web vacia.
+  `SHOPIFY_SHOP_{PAIS}` + `SHOPIFY_CLIENT_ID_{PAIS}` / `SHOPIFY_CLIENT_SECRET_{PAIS}` (**una
+  tienda por pais**) y `GA4_CREDENTIALS_JSON` / `GSC_CREDENTIALS_JSON` **no** (medido en el log
+  del 2026-11-20: «ninguna tienda tiene credenciales»). Sin ellas `cargar_marketing.py` carga
+  la TRM y el gasto, y deja la venta web vacia.
+  ⚠⚠ **Desde el 1-ene-2026 Shopify NO deja crear apps desde el admin de la tienda** (las de
+  «Desarrollar apps», con token fijo). Las nuevas son del **Dev Dashboard** y dan client ID +
+  secret: el loader los canjea en **cada corrida** por un token de **24 h**
+  (`_shopify_token`, `POST /admin/oauth/access_token`, `grant_type=client_credentials`). Un
+  token sacado a mano de esa app y pegado en `SHOPIFY_TOKEN_*` funcionaria un dia y fallaria
+  al siguiente **en silencio**. `SHOPIFY_TOKEN_{PAIS}` se sigue aceptando solo para una app de
+  antes de 2026; si estan las dos, manda el par. ⚠ La app y la tienda tienen que estar en la
+  **misma organizacion** (`shop_not_permitted` si no): se crea desde el admin de CADA tienda.
+  Pruebas en memoria: `python -m unittest tests.test_shopify_credenciales`.
   ⚠⚠ El sufijo de las de Shopify es el codigo de `marts.bi_marketing_pais`, que **no es
   ISO** (`RD`, no `DO`), y **faltar UNA aborta la fuente entera** a proposito: cargar 5 de 6
   tiendas y publicarlo como el total es un numero creible y falso.

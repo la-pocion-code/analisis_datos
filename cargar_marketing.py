@@ -22,7 +22,8 @@ filas desde 2026-01-01.
 Admin API GraphQL, y SIN PROBAR contra la API real**: no habia tokens el dia que se
 escribieron. ⚠⚠ No confundir «implementado» con «probado»: la distincion es
 exactamente la que costo una sesion cuando «escrito» se leyo como «implementado».
-Lo que falta para probarlo es un token por tienda — el runbook esta en
+Lo que falta para probarlo es una credencial por tienda (desde 2026, client ID +
+secret de una app del Dev Dashboard; ver `_shopify_token`) — el runbook esta en
 `marketing-contrato.md` §0 Fase A, paso A5.
 
 GA4 y Search Console **siguen siendo esqueletos**: tienen su firma, comprueban su
@@ -508,10 +509,123 @@ class ErrorShopify(RuntimeError):
     """
 
 
+def _shopify_host(dominio: str) -> str:
+    """El `*.myshopify.com` de una tienda, venga con o sin esquema y barra final."""
+    return dominio.strip().replace("https://", "").replace("http://", "").strip("/")
+
+
 def _shopify_url(dominio: str) -> str:
     """El endpoint GraphQL de una tienda. Acepta el dominio con o sin esquema."""
-    d = dominio.strip().replace("https://", "").replace("http://", "").strip("/")
-    return f"https://{d}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
+    return f"https://{_shopify_host(dominio)}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
+
+
+# ── Credenciales: token fijo (app vieja) o client credentials (Dev Dashboard) ──
+#
+# ⚠⚠ Desde el 1-ene-2026 Shopify NO deja crear apps propias desde el admin de la
+# tienda («Desarrollar apps» → token fijo). Las que existian siguen valiendo, y por
+# eso `SHOPIFY_TOKEN_{PAIS}` se sigue aceptando. Las nuevas se crean en el Dev
+# Dashboard y NO dan un token: dan un client ID y un secret que se canjean por un
+# token que CADUCA A LAS 24 H (`expires_in` = 86399, fijo). Pegar ese token en
+# `SHOPIFY_TOKEN_*` funcionaria un dia y al siguiente daria 401 — y este cargador
+# va envuelto en un try/except que solo escribe en el log, asi que NADIE se
+# enteraria. Por eso aqui se canjea en CADA corrida y el token nunca se guarda en
+# ningun sitio fuera de la memoria del proceso.
+# Docs: shopify.dev/docs/apps/build/dev-dashboard/get-api-access-tokens
+
+#: Un token canjeado se reutiliza dentro de la corrida (`web_shopify` y
+#: `atribucion` recorren las mismas tiendas) y se renueva con este margen antes de
+#: caducar. El proceso muere en cada tick, asi que en la practica es uno por tienda.
+SHOPIFY_TOKEN_MARGEN_S = 300
+_SHOPIFY_TOKENS: dict = {}
+
+
+class CredencialShopify:
+    """Lo que hay en el entorno para una tienda. Nunca se imprime entera."""
+
+    def __init__(self, token=None, client_id=None, client_secret=None):
+        self.token = token or None
+        self.client_id = client_id or None
+        self.client_secret = client_secret or None
+
+    @property
+    def canjeable(self) -> bool:
+        return bool(self.client_id and self.client_secret)
+
+    @property
+    def completa(self) -> bool:
+        return bool(self.token) or self.canjeable
+
+    def __repr__(self):   # que un log o un traceback nunca vuelque el secreto
+        return ("CredencialShopify(client_credentials)" if self.canjeable
+                else "CredencialShopify(token_fijo)" if self.token
+                else "CredencialShopify(vacia)")
+
+
+def _shopify_token(sesion, dominio: str, cred: CredencialShopify, etiqueta: str) -> str:
+    """
+    El token con el que se llama a la Admin API.
+
+    Con client ID + secret se canjea (y manda sobre un token fijo, si estan los dos:
+    el canjeado no caduca a medias). Con solo el token fijo se usa tal cual.
+
+    ⚠⚠ Un canje fallido LEVANTA `ErrorShopify`, no devuelve vacio: es el mismo
+    criterio de toda esta fuente (un cron en verde con cero filas es el fallo que
+    hay que hacer imposible). Y el mensaje nunca lleva el secreto.
+    """
+    import time as _time
+
+    if not cred.canjeable:
+        return cred.token
+
+    host = _shopify_host(dominio)
+    clave = (host, cred.client_id)
+    guardado = _SHOPIFY_TOKENS.get(clave)
+    if guardado and guardado[1] - SHOPIFY_TOKEN_MARGEN_S > _time.monotonic():
+        return guardado[0]
+
+    r = sesion.post(f"https://{host}/admin/oauth/access_token",
+                    data={"grant_type": "client_credentials",
+                          "client_id": cred.client_id,
+                          "client_secret": cred.client_secret},
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=SHOPIFY_TIMEOUT)
+    # Primero se tapa y luego se recorta: al reves, un secreto partido por el
+    # corte dejaria su mitad en el log.
+    texto = (r.text or "").replace(cred.client_secret, "***")[:300]
+    if r.status_code >= 400:
+        if "shop_not_permitted" in texto:
+            raise ErrorShopify(
+                f"{etiqueta}: shop_not_permitted. La app del Dev Dashboard y la tienda "
+                f"{host} no estan en la MISMA organizacion de Shopify: hay que crear la "
+                f"app desde el admin de esa tienda (Configuracion > Apps > Desarrollar "
+                f"apps > Build apps in Dev Dashboard).")
+        raise ErrorShopify(
+            f"{etiqueta}: el canje del client ID por un token dio HTTP "
+            f"{r.status_code} - {texto}")
+
+    try:
+        datos = r.json()
+    except ValueError:
+        raise ErrorShopify(f"{etiqueta}: el canje no devolvio JSON: {texto}") from None
+    token = datos.get("access_token")
+    if not token:
+        raise ErrorShopify(f"{etiqueta}: el canje respondio sin `access_token`: {texto}")
+
+    # El `scope` es lo que la TIENDA concedio, no lo que la app pidio: si falta
+    # `read_orders` la consulta de pedidos fallaria mas tarde con un mensaje que
+    # parece de atribucion. Mejor decirlo aqui, con su nombre.
+    concedidos = {s.strip() for s in (datos.get("scope") or "").split(",") if s.strip()}
+    if concedidos and "read_orders" not in concedidos:
+        raise ErrorShopify(
+            f"{etiqueta}: la app no tiene `read_orders` (concedidos: "
+            f"{', '.join(sorted(concedidos))}). Anadelo en una version nueva de la app "
+            f"y vuelve a instalarla en la tienda.")
+
+    vida = datos.get("expires_in") or 86399
+    _SHOPIFY_TOKENS[clave] = (token, _time.monotonic() + float(vida))
+    logging.info("  %s: token canjeado (client credentials, %s s de vida).",
+                 etiqueta, int(float(vida)))
+    return token
 
 
 def _shopify_pedir(sesion, dominio: str, token: str, consulta: str,
@@ -623,13 +737,22 @@ def _shopify_credenciales(paises: pd.DataFrame) -> tuple[list, list]:
     ⚠ No devuelve solo los configurados: quien llama TIENE que ver los que faltan,
     porque cargar 5 de 6 tiendas y presentarlo como el total es el fallo silencioso
     que esta integracion tiene que hacer imposible.
+
+    Una tienda tiene credencial con su `SHOPIFY_SHOP_{PAIS}` y, ademas, O BIEN el
+    par `SHOPIFY_CLIENT_ID_{PAIS}` + `SHOPIFY_CLIENT_SECRET_{PAIS}` (app del Dev
+    Dashboard) O BIEN `SHOPIFY_TOKEN_{PAIS}` (app creada en el admin antes de 2026).
+    ⚠ Medio par (el ID sin el secreto) NO cuenta: se da por «sin credencial» y la
+    regla de todas-o-ninguna lo hace visible en vez de fallar mas tarde.
     """
     con, sin = [], []
     for _, p in paises.iterrows():
         dominio = os.getenv(f"SHOPIFY_SHOP_{p['pais']}")
-        token = os.getenv(f"SHOPIFY_TOKEN_{p['pais']}")
-        if dominio and token:
-            con.append((p, dominio, token))
+        cred = CredencialShopify(
+            token=os.getenv(f"SHOPIFY_TOKEN_{p['pais']}"),
+            client_id=os.getenv(f"SHOPIFY_CLIENT_ID_{p['pais']}"),
+            client_secret=os.getenv(f"SHOPIFY_CLIENT_SECRET_{p['pais']}"))
+        if dominio and cred.completa:
+            con.append((p, dominio, cred))
         else:
             sin.append(p["pais"])
     return con, sin
@@ -779,8 +902,9 @@ def _shopify_traer(paises: pd.DataFrame, desde: date, hasta: date) -> list:
         # Nada configurado todavia. La hoja ya sabe decir «sin dato», y
         # `check_marts §7m` lo delata aparte.
         logging.warning("  [aviso] Shopify: ninguna tienda tiene credenciales "
-                        "(faltan SHOPIFY_SHOP_/SHOPIFY_TOKEN_ de %s). Sin venta ni "
-                        "pedidos.", ", ".join(sin))
+                        "(faltan SHOPIFY_SHOP_ y SHOPIFY_CLIENT_ID_/SHOPIFY_CLIENT_"
+                        "SECRET_ -o SHOPIFY_TOKEN_- de %s). Sin venta ni pedidos.",
+                        ", ".join(sin))
         _SHOPIFY_MEMO[clave] = []
         return []
     if sin:
@@ -788,17 +912,21 @@ def _shopify_traer(paises: pd.DataFrame, desde: date, hasta: date) -> list:
             f"{len(con)} de {len(con) + len(sin)} tiendas tienen credencial y "
             f"faltan las de {', '.join(sin)}. Se aborta a proposito: cargar solo "
             f"las que hay dejaria un total incompleto con pinta de completo. Pon "
-            f"sus SHOPIFY_SHOP_/SHOPIFY_TOKEN_, o marca esos paises "
-            f"`activo = FALSE` en marts.bi_marketing_pais.")
+            f"su SHOPIFY_SHOP_ y su SHOPIFY_CLIENT_ID_/SHOPIFY_CLIENT_SECRET_ (o "
+            f"SHOPIFY_TOKEN_), o marca esos paises `activo = FALSE` en "
+            f"marts.bi_marketing_pais.")
 
     import requests
 
     sesion = requests.Session()
     traidas, errores = [], []
 
-    for pais, dominio, token in con:
+    for pais, dominio, cred in con:
         etiqueta = f"{pais['pais']}/Shopify"
         try:
+            # Va DENTRO del try: un canje fallido de una tienda es un error de esa
+            # tienda, y la politica de abajo aborta la fuente entera.
+            token = _shopify_token(sesion, dominio, cred, etiqueta)
             _shopify_cotejar(
                 _shopify_pedir(sesion, dominio, token, Q_SHOPIFY_TIENDA, {},
                                etiqueta),
@@ -831,8 +959,9 @@ def web_shopify(paises: pd.DataFrame, desde: date, hasta: date) -> pd.DataFrame:
     """
     Venta neta, impuestos y pedidos por dia y pais, via la Admin API de Shopify.
 
-    Una tienda por pais, con su propio par `SHOPIFY_SHOP_{PAIS}` /
-    `SHOPIFY_TOKEN_{PAIS}`: Shopify no emite un token que sirva para varias
+    Una tienda por pais, con su propio `SHOPIFY_SHOP_{PAIS}` y su credencial
+    (client ID + secret del Dev Dashboard, o el token fijo de una app de antes de
+    2026; ver `_shopify_token`): Shopify no emite un token que sirva para varias
     tiendas, ni siquiera dentro de la misma organizacion. La traida y su politica
     de errores viven en `_shopify_traer`, que comparte con `atribucion`.
 
