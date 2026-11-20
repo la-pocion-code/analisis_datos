@@ -177,34 +177,75 @@ COMMENT ON TABLE marts.bi_nielsen_market IS
 --   (primero se retiro `Total Colombia Supermercados`, ahora `NEW TOTAL COLOMBIA`). Por eso esta
 --   semilla conserva las filas de los markets retirados con su motivo, en vez de borrarlas, y por
 --   eso NO se debe fijar «4 markets» como invariante en ningun test.
+--
+-- ⚠⚠ ACTUALIZADO 2026-11-20 — TERCER CAMBIO: NIELSEN SEPARA FARMACIAS DE SUPERMERCADOS ⚠⚠
+-- El export (ventana 2023-09-10 → 2026-10-25) trae 3 categorias x 3 markets, cada uno en su
+-- archivo: `SUPERMERCADOS COLOMBIA`, `FARMACIAS Areas Colombia` y `TOTAL CO ECOMMERCE`.
+-- **Ya no viene el combinado** ⇒ no queda ningun roll-up medido ni nada de donde derivar.
+-- Medido contra lo que habia cargado, en las 160 semanas comunes (2023-09-10 → 2026-09-27):
+--
+--   FARMACIAS Areas Colombia  vs TOTAL COLOMBIA FARMACIAS   495.737.583.506 / 495.736.372.771
+--       ⇒ razon 1,0000 (136 de 160 semanas al peso; el resto, re-expresiones de <0,01 %).
+--         ES EL MISMO UNIVERSO CON OTRO NOMBRE: el share de farmacias sigue siendo comparable.
+--   TOTAL CO ECOMMERCE        vs si mismo                   132.203.474.723, identico al peso.
+--   SUPERMERCADOS COLOMBIA    vs SUPERMERCADOS (derivado)   1.284.954.123.343 / 2.000.792.748.750
+--       ⇒ razon **0,6422** (semanal entre 0,55 y 0,76; por año 0,68 / 0,66 / 0,63 / 0,61).
+--
+-- 🔴 `SUPERMERCADOS COLOMBIA` **NO es el «supermercados» que se publicaba**: es un universo
+--    un 36 % mas pequeño. El anterior (`NEW TOTAL COLOMBIA`, luego la resta combinado − farmacias)
+--    llevaba dentro algo mas que supermercados —Nielsen no lo documenta en el export; la razon no
+--    es constante, asi que es otro canal con su propia tendencia y no un factor—. Por eso el
+--    market nuevo entra con SU nombre y NO se le pone el alias del derivado: las cifras de
+--    supermercados anteriores al 2026-11-20 **no son comparables** con las de ahora. La serie
+--    actual si es coherente consigo misma: la recarga trae las 164 semanas en el universo nuevo.
+--
+-- ⚠ Sin combinado, `es_universo_total` queda en FALSE para TODOS los markets con dato. El total
+--   se obtiene eligiendo varios canales base a la vez (`es_canal_base`), que es una SUMA de
+--   canales y ya no una cifra medida por Nielsen.
+-- ⚠ La maquinaria del derivado (`v_nielsen_item_derivado`, la rama `derivado` de la MV y
+--   `v_nielsen_derivado_negativo`) **se deja DORMIDA, no se borra**: sin el combinado en
+--   `bi_nielsen` devuelve 0 filas por construccion. El conjunto de markets ya cambio tres veces;
+--   si el combinado vuelve, revive sola (y habra que revisar esta semilla).
+-- ⚠ Novedad: la marca propia aparece por PRIMERA VEZ en supermercados, en la ultima semana
+--   (2026-10-25): 3 productos, 204.400 pesos. Antes de esa semana un 0 % ahi sigue siendo
+--   «no nos median», no «no vendiamos».
+-- ⚠ `SUPERMERCADOS COLOMBIA` no trae columna UPC (como le pasaba al combinado): en las MV sale
+--   con el centinela '(sin upc)'. Si trae `dist_num`.
 INSERT INTO marts.bi_nielsen_market
     (market, etiqueta, es_universo_total, tiene_valor, tiene_detalle_item, es_canal_base,
      tiene_distribucion, orden, nota) VALUES
-    ('NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA', 'Supermercados + Farmacias', TRUE, TRUE, TRUE,
-     FALSE, TRUE, 1,
-     'Universo MAYOR de los cuatro (2.501.713.761.171). CONTIENE a Supermercados y a '
-     'Farmacias: no sumarlo con ninguno de los dos. NO incluye e-commerce. ⚠ es_canal_base=FALSE: '
-     'es un roll-up, asi que solo se puede elegir SOLO. Elegir Supermercados+Farmacias a la vez da '
-     'exactamente esta misma cifra (medido, diferencia 0,00), pero MEDIDA en vez de derivada.'),
-    ('SUPERMERCADOS (derivado)', 'Supermercados', FALSE, TRUE, TRUE, TRUE, FALSE, 2,
-     '⚠ CALCULADO AQUI, NO MEDIDO POR NIELSEN: combinado - farmacias. Existe porque el export del '
-     '2026-09-07 dejo de traer NEW TOTAL COLOMBIA, que era este canal. La resta se validO contra '
-     'el market real mientras los dos coexistian: coincidia al peso en 99,23 % de las celdas, con '
-     '0,00043 % de diferencia agregada y 0 negativos. 🔴 Desde el 2026-09-08 la resta se hace '
-     'PRODUCTO A PRODUCTO (v_nielsen_item_derivado), asi que este market YA existe a grano de item '
-     'y `items` ya no va NULL: 2.625 productos con venta, 0 celdas negativas, y el total no se '
-     'movio. ⚠ Lo unico que sigue sin poder derivarse es `dist_num`: es un porcentaje.'),
-    ('NEW TOTAL COLOMBIA', 'Supermercados (retirado)', FALSE, FALSE, TRUE, FALSE, TRUE, 8,
-     '⚠ EL NOMBRE ENGANABA: no era el total del pais, era el canal de SUPERMERCADOS. **Ya no viene '
-     'en el export desde el 2026-09-07**; lo reemplaza SUPERMERCADOS (derivado). Se conserva la '
-     'fila como historia y para que nadie lo vuelva a leer como «total nacional».'),
-    ('TOTAL COLOMBIA FARMACIAS', 'Farmacias', FALSE, TRUE, TRUE, TRUE, TRUE, 3,
-     'Subconjunto de Supermercados + Farmacias. Su valor no cambio con el export nuevo '
-     '(484.179.801.326 antes y despues), asi que el share propio de farmacias es comparable.'),
+    ('SUPERMERCADOS COLOMBIA', 'Supermercados', FALSE, TRUE, TRUE, TRUE, TRUE, 2,
+     'MEDIDO por Nielsen, en archivo propio desde el export del 2026-11-20. 🔴 NO es el mismo '
+     'universo que el «Supermercados» publicado hasta esa fecha (SUPERMERCADOS (derivado) / NEW '
+     'TOTAL COLOMBIA): vale el 64,2 % de aquel en las 160 semanas comunes, y la razon no es '
+     'constante. Las cifras de supermercados anteriores a esa fecha NO son comparables. Sin UPC. '
+     'La marca propia solo aparece desde la semana del 2026-10-25.'),
+    ('FARMACIAS Areas Colombia', 'Farmacias', FALSE, TRUE, TRUE, TRUE, TRUE, 3,
+     'El MISMO universo que TOTAL COLOMBIA FARMACIAS con otro nombre (export del 2026-11-20): '
+     'razon 1,0000 en las 160 semanas comunes, 136 de ellas al peso. El share propio de farmacias '
+     'sigue siendo comparable hacia atras.'),
     ('TOTAL CO ECOMMERCE', 'E-commerce', FALSE, TRUE, TRUE, TRUE, TRUE, 4,
-     'FUERA del combinado (no cuadra en su aritmetica). ⚠ El export del 2026-08-06 RE-MIDIO '
-     'este universo: paso de 20.355 a 48.733 filas y de 77.582 M a 131.245 M de valor, asi '
-     'que su share NO es comparable con medidas anteriores a esa fecha.'),
+     'Canal aparte de supermercados y farmacias. Identico al peso entre el export del 2026-09-07 '
+     'y el del 2026-11-20. ⚠ El export del 2026-08-06 RE-MIDIO este universo (de 77.582 M a '
+     '131.245 M), asi que su share NO es comparable con medidas anteriores a esa fecha.'),
+    ('TOTAL COLOMBIA FARMACIAS', 'Farmacias (retirado)', FALSE, TRUE, TRUE, FALSE, TRUE, 5,
+     'YA NO VIENE con este nombre desde el export del 2026-11-20: ahora es FARMACIAS Areas '
+     'Colombia, el mismo universo (razon 1,0000). Se conserva la fila como historia.'),
+    ('SUPERMERCADOS (derivado)', 'Supermercados amplio (retirado)', FALSE, TRUE, TRUE, FALSE, FALSE, 6,
+     'RETIRADO el 2026-11-20: era combinado - farmacias, y el combinado dejo de venir. ⚠ NO lo '
+     'reemplaza SUPERMERCADOS COLOMBIA uno a uno: aquel universo era un 56 % MAYOR que el que '
+     'Nielsen entrega ahora como supermercados. La resta sigue escrita (v_nielsen_item_derivado) '
+     'y devuelve 0 filas mientras no haya combinado.'),
+    ('NEW TOTAL SUPERMERCADOS + FARMACIAS COLOMBIA', 'Supermercados + Farmacias (retirado)', FALSE,
+     TRUE, TRUE, FALSE, TRUE, 7,
+     'RETIRADO el 2026-11-20: Nielsen separo farmacias de supermercados y dejo de enviar el '
+     'combinado. Era el roll-up medido (2.501.713.761.171 en su ultima ventana). ⚠ Sumar hoy '
+     'Supermercados + Farmacias NO reproduce esta cifra: el supermercados de ahora es mas '
+     'pequeño que el que iba dentro de este combinado.'),
+    ('NEW TOTAL COLOMBIA', 'Supermercados (retirado)', FALSE, FALSE, TRUE, FALSE, TRUE, 8,
+     '⚠ EL NOMBRE ENGANABA: no era el total del pais, era un canal de supermercados AMPLIO. **Ya '
+     'no viene en el export desde el 2026-09-07**. Se conserva la fila como historia y para que '
+     'nadie lo vuelva a leer como «total nacional».'),
     ('Total Colombia Supermercados', 'Supermercados (retirado)', FALSE, FALSE, TRUE, FALSE, TRUE, 9,
      'YA NO VIENE en el export (lo reemplazo NEW TOTAL SUPERMERCADOS + FARMACIAS el '
      '2026-08-06). Se conserva la fila como historia: solo traia distribucion, sin valor.')

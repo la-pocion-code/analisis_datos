@@ -36,3 +36,6 @@ google_credentials.json
 *.jfif
 # Salida del skill graphify (cache de AST, se regenera)
 graphify-out/
+
+# Respaldos locales de tablas antes de una recarga destructiva (datos, no codigo)
+respaldos/

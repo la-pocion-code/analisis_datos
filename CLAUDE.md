@@ -814,6 +814,27 @@ definidos por el admin). **Contrato de datos completo:
     `'1 sem 9-26 fin 01/03/26'` > `'1 sem 26-26 fin 28/06/26'`). Hizo creer que la serie de
     POCION se cortaba en marzo-2026 y que `PCN POCION` era un renombre; falso, POCION llega a
     junio. Usar `to_date(split_part(periods,'fin ',2),'DD/MM/YY')`, como hacen las dos MV.
+  - 🔴🔴 **VIGENTE DESDE EL 2026-11-20: NIELSEN SEPARÓ FARMACIAS DE SUPERMERCADOS** (tercer
+    cambio de markets). El export trae 3 × 3, uno por archivo y **sin combinado**:
+    `SUPERMERCADOS COLOMBIA`, `FARMACIAS Areas Colombia`, `TOTAL CO ECOMMERCE`. Todo lo que este
+    bloque dice del combinado, del derivado y de la jerarquía es **historia**. Medido en las 160
+    semanas comunes: farmacias es **el mismo universo renombrado** (razón 1,0000) y e-commerce es
+    idéntico al peso, pero 🔴 **`SUPERMERCADOS COLOMBIA` vale el 64,2 % del «supermercados» que se
+    publicaba** (1.284.954 M vs 2.000.793 M; razón 0,68 → 0,61 por año, no es un factor) ⇒ **es otro
+    universo y las cifras de supermercados anteriores a esa fecha NO son comparables**. Por eso
+    entra con su nombre y **no** se le puso el alias del derivado. Qué llevaba dentro el universo
+    viejo es pregunta para Nielsen.
+    ⚠ Ya no hay `es_universo_total` (todos FALSE): el total es la suma de canales base.
+    ⚠ La maquinaria del derivado **se dejó dormida, no se borró** (0 filas sin combinado), así que
+    `v_nielsen_derivado_negativo` vacía **ya no prueba nada**.
+    ⚠ **Un market que no esté en la semilla `bi_nielsen_market` se carga pero la intranet no lo
+    muestra**: tras cada export, comparar `DISTINCT markets` contra la semilla. El cambio se aplicó
+    **solo con el upsert de la semilla + la recarga** (sin recrear las MV ⇒ sin re-ejecutar el 24).
+    ⚠ El nombre del archivo miente (`Shampoo (14).xlsx` trae TRATAMIENTOS); manda la columna.
+    ⚠ La marca propia aparece **por primera vez en supermercados** en la semana del 2026-10-25
+    (3 productos, 204.400 pesos). ⚠ `check_marts` §7n de la intranet tiene los nombres viejos
+    cableados y exige universo total: en rojo hasta actualizarlo allí. Respaldo de la tabla
+    anterior: `respaldos/bi_nielsen_antes_2026-11-20.parquet`. Detalle: `docs/dashboards_intranet.md` §11.3.
   - ⚠⚠ **EL CONJUNTO DE MARKETS NO ES ESTABLE: cambió dos veces en un mes.** El 2026-09-07
     **desapareció `NEW TOTAL COLOMBIA`** (la matriz pasó de 3×4 = 12 archivos a 3×3 = 9). Como ese
     era el canal de **supermercados**, ahora se materializa **`SUPERMERCADOS (derivado)` =

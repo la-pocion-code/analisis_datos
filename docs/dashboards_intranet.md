@@ -988,6 +988,43 @@ volver a cambiar.
 
 ### 11.3 Las trampas del dataset
 
+> 🔴 **ESTADO VIGENTE DESDE EL 2026-11-20 — Nielsen separó FARMACIAS de SUPERMERCADOS.**
+> Lo que sigue en esta sección (combinado, derivado, jerarquía) describe exports anteriores y se
+> conserva como historia. Hoy el export trae **3 categorías × 3 markets, uno por archivo**, sin
+> ningún roll-up (562.218 filas · 164 semanas, 2023-09-10 → 2026-10-25):
+>
+> | market (nombre de Nielsen) | etiqueta | valor de la ventana | contra lo anterior (160 semanas comunes) |
+> |---|---|---|---|
+> | `SUPERMERCADOS COLOMBIA` | Supermercados | 1.319.166.563.337 | 🔴 **64,2 %** de `SUPERMERCADOS (derivado)` — **otro universo** |
+> | `FARMACIAS Areas Colombia` | Farmacias | 512.424.762.407 | razón **1,0000** con `TOTAL COLOMBIA FARMACIAS` — el mismo, renombrado |
+> | `TOTAL CO ECOMMERCE` | E-commerce | 136.804.993.808 | idéntico al peso |
+>
+> - 🔴 **Las cifras de «Supermercados» anteriores al 2026-11-20 NO son comparables con las de
+>   ahora.** El universo que se publicaba (`NEW TOTAL COLOMBIA`, luego combinado − farmacias) era
+>   un 56 % mayor que el que Nielsen entrega hoy como supermercados, y la razón entre los dos no es
+>   constante (0,68 en 2023 → 0,61 en 2026; entre 0,55 y 0,76 por semana): no es un factor, es otro
+>   canal dentro. **Qué llevaba dentro es una pregunta para Nielsen**; el export no lo dice. La
+>   serie de hoy sí es coherente consigo misma: la recarga trae las 164 semanas en el universo nuevo.
+>   Por lo mismo, **el share de cualquier marca en supermercados cambió de base**.
+> - **No hay universo total medido**: `es_universo_total` es `FALSE` en los tres. El total se arma
+>   eligiendo varios canales base (`es_canal_base`), y es una **suma de canales**, ya no una cifra
+>   de Nielsen. ⚠ Supermercados + Farmacias de hoy **no** reproduce el combinado retirado.
+> - Los markets retirados **siguen en `bi_nielsen_market`** con su motivo (`… (retirado)`,
+>   `es_canal_base = FALSE`) y sin datos; la intranet los oculta sola por `con_datos`.
+> - La maquinaria del derivado (`v_nielsen_item_derivado`, la rama `derivado` de
+>   `mv_nielsen_semana`, `v_nielsen_derivado_negativo`) **queda dormida**: sin combinado devuelve
+>   0 filas. `v_nielsen_derivado_negativo` vacía **ya no prueba nada**.
+> - La **marca propia aparece por primera vez en supermercados**, solo en la última semana
+>   (2026-10-25): 3 productos, 204.400 pesos. Hacia atrás, un 0 % ahí es «no nos medían».
+> - `SUPERMERCADOS COLOMBIA` **no trae UPC** (centinela `'(sin upc)'`), y **sí** `dist_num`.
+> - ⚠ **El nombre del archivo no dice lo que trae**: `Shampoo (14).xlsx` es TRATAMIENTOS y
+>   `Tratamientos (11).xlsx` es SHAMPOO. El loader lee market y categoría de las columnas.
+> - ⚠ **Pendiente en el repo `intranet`**: `check_marts` §7n tiene cableados los nombres viejos
+>   (`TOTAL COLOMBIA FARMACIAS`, el derivado, el combinado) y exige un universo total; va a salir
+>   en rojo hasta que se actualice. Los paneles no: se guían por `es_canal_base`/`con_datos`.
+> - Respaldo de la tabla anterior (636.791 filas, con el combinado):
+>   `respaldos/bi_nielsen_antes_2026-11-20.parquet` (local, sin versionar).
+
 0. ⚠⚠ **EL CONJUNTO DE MARKETS NO ES ESTABLE: cambió DOS VECES en un mes.** El 2026-08-06 se
    retiró `Total Colombia Supermercados` y entró el combinado; el **2026-09-07 desapareció
    `NEW TOTAL COLOMBIA`** (la matriz pasó de 3 categorías × 4 markets = 12 archivos a 3 × 3 = 9).

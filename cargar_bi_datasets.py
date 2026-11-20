@@ -41,6 +41,11 @@ COMBINADOS por Python:
      silencio los valores de `mv_nielsen_semana`.
   3. Tarda ~8,5 min (573k filas) y deja la tabla con lock exclusivo mientras inserta: no
      lanzarla en el tick `:00` del cron, y usar `--seco` antes si el export cambio.
+  4. El MARKET y la CATEGORIA salen de las columnas, NUNCA del nombre del archivo: en el export
+     del 2026-11-20 `Shampoo (14).xlsx` trae TRATAMIENTOS y `Tratamientos (11).xlsx` trae
+     SHAMPOO. Y los markets cambian de nombre entre exports (ver la semilla
+     `bi_nielsen_market` en 28_nielsen_dashboards.sql): un market que no este en esa semilla
+     se carga bien pero la intranet NO lo muestra.
 
 ⚠ RECARGAR UNA TABLA QUE TIENE UNA MV ENCIMA: `bi_presupuesto` y `bi_nielsen` alimentan MV de
 los dashboards, así que `DROP TABLE` es IMPOSIBLE (Postgres lo rechaza sin CASCADE, y CASCADE se
